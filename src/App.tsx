@@ -302,13 +302,13 @@ function AppContent() {
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
     let saved = localStorage.getItem('ordina_server_url');
-    if (saved && saved.includes('ais-dev')) {
-      saved = 'https://ordina-production-71fa.up.railway.app';
+    if (saved && (saved.includes('ais-dev') || saved.includes('railway'))) {
+      saved = 'https://ordina-server.onrender.com';
       localStorage.setItem('ordina_server_url', saved);
     }
     if (saved) return saved;
     if ((window as any).Capacitor) {
-      return 'https://ordina-production-71fa.up.railway.app';
+      return 'https://ordina-server.onrender.com';
     }
     return undefined;
   });
@@ -458,7 +458,7 @@ function AppContent() {
 
   useEffect(() => {
     const wakeUpServer = async () => {
-      const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-production-71fa.up.railway.app' : window.location.origin);
+      const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : window.location.origin);
       const cleanUrl = targetServerUrl.replace(/\/$/, '');
 
       let success = false;
@@ -499,7 +499,7 @@ function AppContent() {
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
     const transports = ['polling', 'websocket'];
-    const targetUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-production-71fa.up.railway.app' : undefined);
+    const targetUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : undefined);
 
     const socketOptions = {
       reconnection: true,
@@ -1646,7 +1646,7 @@ function AppContent() {
     const handleOAuthMessage = (event: MessageEvent) => {
       const savedUrl = localStorage.getItem('ordina_server_url');
       const backendOrigin = (savedUrl ? savedUrl : ((window as any).Capacitor 
-        ? 'https://ordina-production-71fa.up.railway.app' 
+        ? 'https://ordina-server.onrender.com' 
         : window.location.origin)).replace(/\/$/, '');
 
       const isTrustedOrigin = 
@@ -3141,7 +3141,7 @@ function AppContent() {
                         if (!socketConnected) {
                           addToast('Переподключение к серверу...', 'info');
                           if (socket) socket.connect();
-                          const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-production-71fa.up.railway.app' : window.location.origin);
+                          const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : window.location.origin);
                           fetch(`${targetServerUrl.replace(/\/$/, '')}/api/health`).catch(() => {});
                         }
                       }}

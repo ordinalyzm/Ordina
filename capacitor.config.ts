@@ -8,10 +8,12 @@ const config: CapacitorConfig = {
     androidScheme: 'https',
     cleartext: true,
     allowNavigation: [
+      'ordina-server.onrender.com',
       'ordina-production-71fa.up.railway.app',
       '*.up.railway.app',
       '*.railway.app',
-      '*.run.app'
+      '*.run.app',
+      '*.onrender.com'
     ]
   },
   plugins: {
