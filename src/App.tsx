@@ -27,7 +27,7 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -53,6 +53,10 @@ import BotConstructor from './components/BotConstructor';
 import TitleManagerModal from './components/TitleManagerModal';
 import { RenderTitle } from './lib/TitleRenderer';
 import ImageCropperModal from './components/ImageCropperModal';
+import { playIncomingMessageSound, playSentMessageSound, triggerHapticFeedback } from './lib/audio';
+import { showSystemNotification } from './lib/notifications';
+import { MeshInspectorModal } from './components/MeshInspectorModal';
+import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -633,7 +637,7 @@ function AppContent() {
           }));
         }
         
-        if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && msg.senderId !== user?.uid) {
+        if (msg.senderId !== user?.uid) {
            const usersList = await new Promise<UserProfile[]>(resolve => setUsers(prev => { resolve(prev); return prev; }));
            const sender = usersList.find(u => u.uid === msg.senderId)?.displayName || 'Пользователь';
            const profileData = await new Promise<UserProfile | null>(resolve => setProfile(prev => { resolve(prev); return prev; }));
@@ -642,7 +646,11 @@ function AppContent() {
            const hasMention = msg.text?.includes(`@${profileData?.displayName}`) || msg.text?.includes('@all');
 
            if (!isMuted || hasMention) {
-               new Notification(`Новое сообщение от ${sender}`, { body: msg.text || 'Вам прислали файл' });
+               playIncomingMessageSound();
+               triggerHapticFeedback([100, 50, 100]);
+               showSystemNotification(`Новое сообщение от ${sender}`, msg.text || 'Вам прислали файл', {
+                 tag: `msg-${chatId}`,
+               });
            }
         }
       }
@@ -1158,6 +1166,8 @@ function AppContent() {
   const [showStickersModal, setShowStickersModal] = useState(false);
   const [showBotsModal, setShowBotsModal] = useState(false);
   const [showTitleManager, setShowTitleManager] = useState(false);
+  const [showNotificationSettingsModal, setShowNotificationSettingsModal] = useState(false);
+  const [showMeshInspectorModal, setShowMeshInspectorModal] = useState(false);
   const [viewedStickerPack, setViewedStickerPack] = useState<any>(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState<{ url: string, name: string } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ file: File, type: 'image' | 'video' | 'file', previewUrl: string } | null>(null);
@@ -4644,25 +4654,36 @@ function AppContent() {
               <div className="p-6 space-y-4 overflow-y-auto">
                 <button 
                   onClick={() => {
-                    if (typeof Notification !== 'undefined') {
-                       Notification.requestPermission().then(perm => {
-                          if (perm === 'granted') {
-                             (window as any).addToast?.('Уведомления включены!', 'success');
-                          } else {
-                             (window as any).addToast?.('Уведомления отклонены', 'error');
-                          }
-                       });
-                    }
+                    setShowSettings(false);
+                    setShowNotificationSettingsModal(true);
                   }}
                   className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
                 >
                   <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500">
-                    <MessageSquare size={20} />
+                    <Bell size={20} />
                   </div>
                   <div className="text-left flex-1">
-                    <p className="font-bold text-sm">Уведомления</p>
+                    <p className="font-bold text-sm">Уведомления и звуки</p>
                     <p className="text-xs text-slate-500">
-                      {typeof Notification !== 'undefined' && Notification.permission === 'granted' ? 'Включены' : 'Нажмите чтобы включить'}
+                      Звуковые сигналы, вибрация, DND и push-окна
+                    </p>
+                  </div>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowMeshInspectorModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600">
+                    <Radio size={20} />
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="font-bold text-sm">Mesh-сеть & Инспектор P2P</p>
+                    <p className="text-xs text-slate-500">
+                      Диагностика узлов, пинг, топология и буфер
                     </p>
                   </div>
                 </button>
@@ -7212,28 +7233,11 @@ function AppContent() {
             </button>
 
             <button 
-              onClick={async () => {
-                try {
-                  if ('bluetooth' in navigator) {
-                    const bt = (navigator as any).bluetooth;
-                    const device = await bt.requestDevice({ 
-                      acceptAllDevices: true,
-                      optionalServices: ['generic_access'] 
-                    });
-                    if (device) {
-                      addToast(`Соединение установлено: ${device.name || 'Неизвестное устройство'} (BLE)`, 'success');
-                    }
-                  } else {
-                    addToast('Ваш браузер не поддерживает Web Bluetooth API (попробуйте Chrome или PWA сборку)', 'error');
-                  }
-                } catch (e: any) {
-                  addToast(`Отменено или ошибка BLE: ${e.message}`, 'error');
-                }
-              }}
-              className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 hover:bg-indigo-500/30"
+              onClick={() => setShowMeshInspectorModal(true)}
+              className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30"
             >
-              <Phone size={18} />
-              БЛИЖНИЙ ПОИСК (Bluetooth)
+              <Radio size={18} />
+              ИНСПЕКТОР И ДИАГНОСТИКА MESH
             </button>
           </div>
           
@@ -7638,6 +7642,25 @@ function AppContent() {
           </div>
         </div>
       )}
+
+      {profile && (
+        <MeshInspectorModal
+          isOpen={showMeshInspectorModal}
+          onClose={() => setShowMeshInspectorModal(false)}
+          nodes={radarNodes}
+          currentUser={profile}
+          onSendTestPacket={(targetId) => {
+            addToast(`Тестовый Mesh-пакет отправлен узлу ${targetId.substring(0, 8)}`, 'info');
+            playSentMessageSound();
+          }}
+        />
+      )}
+
+      <NotificationSettingsModal
+        isOpen={showNotificationSettingsModal}
+        onClose={() => setShowNotificationSettingsModal(false)}
+        addToast={addToast}
+      />
 
     </div>
   </div>
