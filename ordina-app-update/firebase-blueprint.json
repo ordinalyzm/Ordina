@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "User account information and mesh networking state.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "email": { "type": "string" },
+        "status": { "type": "string", "enum": ["online", "offline"] },
+        "lastSeen": { "type": "string", "format": "date-time" },
+        "meshPosition": {
+          "type": "object",
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        }
+      },
+      "required": ["uid", "displayName"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A chat message sent between users or in a group.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderId": { "type": "string" },
+        "receiverId": { "type": "string" },
+        "groupId": { "type": "string" },
+        "text": { "type": "string" },
+        "type": { "type": "string", "enum": ["text", "image", "video", "file"] },
+        "fileUrl": { "type": "string" },
+        "fileName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "deleted": { "type": "boolean" },
+        "replyToId": { "type": "string" },
+        "forwardedFrom": { "type": "string" },
+        "relayPath": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["senderId", "createdAt"]
+    },
+    "Group": {
+      "title": "Group or Channel",
+      "description": "A group chat or a broadcast channel.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "type": "string", "enum": ["group", "channel"] },
+        "ownerId": { "type": "string" },
+        "members": { "type": "array", "items": { "type": "string" } },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "type", "ownerId"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": { "schema": "User", "description": "User profiles" },
+    "/messages/{messageId}": { "schema": "Message", "description": "Direct and group messages" },
+    "/groups/{groupId}": { "schema": "Group", "description": "Group and channel metadata" }
+  }
+}
