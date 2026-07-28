@@ -1,5 +1,0 @@
-{
-  "name": "Ордина",
-  "description": "Мессенджер с поддержкой Mesh-сетей и идеологией Ординализма.",
-  "requestFramePermissions": ["camera", "microphone", "geolocation"]
-}

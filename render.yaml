@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: ordina-app
-    env: node
-    buildCommand: npm install && npm run build
-    startCommand: npm run start
-    envVars:
-      - key: NPM_CONFIG_PRODUCTION
-        value: "false"
