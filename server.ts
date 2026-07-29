@@ -47,7 +47,7 @@ function saveLocalDb() {
   }
 }
 
-let useLocalFallback = false;
+let useLocalFallback = !process.env.DATABASE_URL;
 
 async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[], rowCount: number }> {
   const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -356,7 +356,7 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
   return { rows: [], rowCount: 0 };
 }
 
-const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:zqW9elT7ZPVWk0jk@db.pykhcxdanexuhjtkuxdq.supabase.co:5432/postgres';
+const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/postgres';
 
 const pool = new Pool({
   connectionString,
@@ -372,9 +372,9 @@ pool.query = async function(this: any, sql: any, params: any) {
   }
   try {
     return await originalQuery(sql, params);
-  } catch (err) {
+  } catch (err: any) {
     if (!useLocalFallback) {
-      console.warn('⚠️ [Database] Postgres query failed, dynamically activating local/offline JSON fallback:', err);
+      console.log('ℹ️ [Database] Postgres database connection unavailable, using local JSON storage.');
       useLocalFallback = true;
     }
     return queryLocal(sql, params) as any;

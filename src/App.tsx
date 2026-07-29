@@ -1968,11 +1968,13 @@ function AppContent() {
       await signInWithEmailAndPassword(auth, email, authPassword);
       log('EMAIL_LOGIN_SUCCESS');
     } catch (error: any) {
-      console.error('Login error:', error);
+      console.warn('Login attempt failed:', error?.code || error?.message);
       if (error?.code === 'auth/invalid-credential' || error?.code === 'auth/user-not-found' || error?.code === 'auth/wrong-password') {
-        addToast('Неверный email или пароль. Проверьте правильность ввода.', 'error');
+        addToast('Неверный email или пароль. Если у вас еще нет аккаунта, перейдите на вкладку «Регистрация».', 'error');
+      } else if (error?.code === 'auth/too-many-requests') {
+        addToast('Слишком много попыток входа. Попробуйте снова чуть позже или сбросьте пароль.', 'error');
       } else {
-        addToast('Ошибка входа. Проверьте соединение.', 'error');
+        addToast(`Ошибка входа: ${error?.message || 'Проверьте данные'}`, 'error');
       }
     } finally {
       setIsLoggingIn(false);
