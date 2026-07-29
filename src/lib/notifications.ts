@@ -40,22 +40,56 @@ export function saveNotificationSettings(settings: NotificationSettings) {
   }
 }
 
+export function openAppSettings() {
+  if (typeof window === 'undefined') return;
+
+  const isCapacitor = Boolean((window as any).Capacitor) || window.location.hostname === 'localhost';
+
+  if (isCapacitor) {
+    try {
+      const plugins = (window as any).Capacitor?.Plugins;
+      if (plugins?.NativeSettings?.open) {
+        plugins.NativeSettings.open({
+          option: 'application_details',
+        });
+        return;
+      }
+    } catch (e) {
+      console.warn('NativeSettings open error:', e);
+    }
+
+    try {
+      // Android Intent URL to open App Details settings for package com.ordina.app
+      window.location.href = 'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.ordina.app;end';
+      return;
+    } catch (e) {
+      console.warn('Intent redirect error:', e);
+    }
+  }
+
+  alert('Откройте настройки вашего устройства -> Приложения -> Ordina -> Разрешения');
+}
+
 export async function requestSystemNotificationPermission(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
 
   try {
-    const isCapacitor = Boolean((window as any).Capacitor);
+    const isCapacitor = Boolean((window as any).Capacitor) || window.location.hostname === 'localhost';
     
     // Check Capacitor native notification permission if available
-    if (isCapacitor && (window as any).Capacitor?.Plugins) {
+    if ((window as any).Capacitor?.Plugins) {
       const plugins = (window as any).Capacitor.Plugins;
       if (plugins.LocalNotifications?.requestPermissions) {
-        const res = await plugins.LocalNotifications.requestPermissions();
-        if (res?.display === 'granted') return true;
+        try {
+          const res = await plugins.LocalNotifications.requestPermissions();
+          if (res?.display === 'granted') return true;
+        } catch (e) {}
       }
       if (plugins.PushNotifications?.requestPermissions) {
-        const res = await plugins.PushNotifications.requestPermissions();
-        if (res?.receive === 'granted') return true;
+        try {
+          const res = await plugins.PushNotifications.requestPermissions();
+          if (res?.receive === 'granted') return true;
+        } catch (e) {}
       }
     }
 
@@ -63,14 +97,17 @@ export async function requestSystemNotificationPermission(): Promise<boolean> {
       if (Notification.permission === 'granted') {
         return true;
       }
-      if (Notification.permission !== 'denied') {
-        const permission = await Notification.requestPermission();
-        return permission === 'granted';
+      const permission = await Notification.requestPermission();
+      if (permission === 'granted') {
+        return true;
       }
     }
   } catch (e) {
     console.warn('Notification permission request error:', e);
   }
+
+  // If permission cannot be requested or was denied, open system settings
+  openAppSettings();
 
   return false;
 }

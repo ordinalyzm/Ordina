@@ -6,9 +6,10 @@ import {
   requestSystemNotificationPermission,
   showSystemNotification,
   getNotificationPermissionState,
+  openAppSettings,
 } from '../lib/notifications';
 import { playIncomingMessageSound, triggerHapticFeedback } from '../lib/audio';
-import { Bell, Volume2, VolumeX, Smartphone, Eye, Moon, Check, Sparkles, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Bell, Volume2, VolumeX, Smartphone, Eye, Moon, Check, Sparkles, ShieldCheck, AlertCircle, Settings } from 'lucide-react';
 
 interface NotificationSettingsModalProps {
   isOpen: boolean;
@@ -46,13 +47,11 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
       if (addToast) addToast('Уведомления разрешены системой!', 'success');
       playIncomingMessageSound();
     } else {
-      const isCapacitor = Boolean((window as any).Capacitor);
+      openAppSettings();
       if (addToast) {
         addToast(
-          isCapacitor
-            ? 'Разрешите уведомления в настройках телефона (Настройки -> Приложения -> Ordina -> Уведомления)'
-            : 'Доступ к уведомлениям не предоставлен системой',
-          'error'
+          'Открываем настройки приложения. Включите разрешения (Уведомления) вручную',
+          'info'
         );
       }
     }
@@ -98,7 +97,7 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
         {/* Content */}
         <div className="p-5 overflow-y-auto space-y-5 flex-1">
           {/* Permission Card */}
-          <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/60 flex items-center justify-between">
+          <div className="p-4 rounded-xl bg-slate-800/50 border border-slate-700/60 flex items-center justify-between gap-3">
             <div className="space-y-1">
               <div className="text-xs font-bold text-white flex items-center gap-2">
                 Системный доступ OS
@@ -113,18 +112,29 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
                 )}
               </div>
               <p className="text-[11px] text-slate-400">
-                Разрешает фоновые всплывающие окна, когда приложение свернуто
+                Разрешает фоновые всплывающие окна и звуки на вашем устройстве
               </p>
             </div>
 
-            {permState !== 'granted' && (
+            <div className="flex items-center gap-2 shrink-0">
+              {permState !== 'granted' && (
+                <button
+                  type="button"
+                  onClick={handleRequestPermission}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-md shadow-blue-600/20 whitespace-nowrap"
+                >
+                  Запросить
+                </button>
+              )}
               <button
-                onClick={handleRequestPermission}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition shadow-md shadow-blue-600/20 whitespace-nowrap"
+                type="button"
+                onClick={openAppSettings}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-bold transition whitespace-nowrap flex items-center gap-1.5"
+                title="Открыть настройки Android"
               >
-                Запросить
+                <Settings className="w-3.5 h-3.5" /> Настройки OS
               </button>
-            )}
+            </div>
           </div>
 
           {/* Main Toggles */}

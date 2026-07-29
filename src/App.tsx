@@ -54,7 +54,7 @@ import TitleManagerModal from './components/TitleManagerModal';
 import { RenderTitle } from './lib/TitleRenderer';
 import ImageCropperModal from './components/ImageCropperModal';
 import { playIncomingMessageSound, playSentMessageSound, triggerHapticFeedback } from './lib/audio';
-import { showSystemNotification } from './lib/notifications';
+import { showSystemNotification, openAppSettings } from './lib/notifications';
 import { MeshInspectorModal } from './components/MeshInspectorModal';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 
@@ -2442,7 +2442,8 @@ function AppContent() {
         setRecordingTime(prev => prev + 1);
       }, 1000);
     } catch (err) {
-      addToast('Нет доступа к микрофону', 'error');
+      addToast('Нет доступа к микрофону. Открываем настройки...', 'error');
+      openAppSettings();
     }
   };
 
@@ -7265,7 +7266,8 @@ function AppContent() {
                       },
                       (err) => {
                         console.warn('Geolocation denied:', err);
-                        addToast('Доступ к геолокации отклонен устройством', 'error');
+                        addToast('Доступ к геолокации отклонен. Открываем настройки...', 'error');
+                        openAppSettings();
                       },
                       { enableHighAccuracy: true, timeout: 8000 }
                     );
