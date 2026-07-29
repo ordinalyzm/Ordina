@@ -29,6 +29,7 @@
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "capacitor-native-settings": "^8.1.0",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",

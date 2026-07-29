@@ -1,5 +1,7 @@
 // Notification Service for System Notifications and Push Alerts
 
+import { NativeSettings, AndroidSettings, IOSSettings } from 'capacitor-native-settings';
+
 export interface NotificationSettings {
   enabled: boolean;
   soundEnabled: boolean;
@@ -40,31 +42,45 @@ export function saveNotificationSettings(settings: NotificationSettings) {
   }
 }
 
-export function openAppSettings() {
+export async function openAppSettings() {
   if (typeof window === 'undefined') return;
 
-  const isCapacitor = Boolean((window as any).Capacitor) || window.location.hostname === 'localhost';
-
-  if (isCapacitor) {
-    try {
-      const plugins = (window as any).Capacitor?.Plugins;
-      if (plugins?.NativeSettings?.open) {
-        plugins.NativeSettings.open({
-          option: 'application_details',
-        });
-        return;
-      }
-    } catch (e) {
-      console.warn('NativeSettings open error:', e);
-    }
-
-    try {
-      // Android Intent URL to open App Details settings for package com.ordina.app
-      window.location.href = 'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.ordina.app;end';
+  try {
+    if (typeof NativeSettings.openAndroid === 'function') {
+      await NativeSettings.openAndroid({
+        option: AndroidSettings.ApplicationDetails,
+      });
       return;
-    } catch (e) {
-      console.warn('Intent redirect error:', e);
     }
+  } catch (e) {
+    console.warn('NativeSettings openAndroid ApplicationDetails error:', e);
+  }
+
+  try {
+    await NativeSettings.open({
+      optionAndroid: AndroidSettings.ApplicationDetails,
+      optionIOS: IOSSettings.App,
+    });
+    return;
+  } catch (e) {
+    console.warn('NativeSettings open error:', e);
+  }
+
+  try {
+    const plugins = (window as any).Capacitor?.Plugins;
+    if (plugins?.App?.openUrl) {
+      await plugins.App.openUrl({ url: 'package:com.ordina.app' });
+      return;
+    }
+  } catch (e) {
+    console.warn('Capacitor App plugin openUrl error:', e);
+  }
+
+  try {
+    window.location.href = 'intent:#Intent;action=android.settings.APPLICATION_DETAILS_SETTINGS;data=package:com.ordina.app;end';
+    return;
+  } catch (e) {
+    console.warn('Intent redirect error:', e);
   }
 
   alert('Откройте настройки вашего устройства -> Приложения -> Ordina -> Разрешения');
