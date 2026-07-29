@@ -46,7 +46,15 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
       if (addToast) addToast('Уведомления разрешены системой!', 'success');
       playIncomingMessageSound();
     } else {
-      if (addToast) addToast('Доступ к уведомлениям отклонен в браузере', 'error');
+      const isCapacitor = Boolean((window as any).Capacitor);
+      if (addToast) {
+        addToast(
+          isCapacitor
+            ? 'Разрешите уведомления в настройках телефона (Настройки -> Приложения -> Ordina -> Уведомления)'
+            : 'Доступ к уведомлениям не предоставлен системой',
+          'error'
+        );
+      }
     }
   };
 

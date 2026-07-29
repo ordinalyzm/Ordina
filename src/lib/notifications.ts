@@ -44,6 +44,21 @@ export async function requestSystemNotificationPermission(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
 
   try {
+    const isCapacitor = Boolean((window as any).Capacitor);
+    
+    // Check Capacitor native notification permission if available
+    if (isCapacitor && (window as any).Capacitor?.Plugins) {
+      const plugins = (window as any).Capacitor.Plugins;
+      if (plugins.LocalNotifications?.requestPermissions) {
+        const res = await plugins.LocalNotifications.requestPermissions();
+        if (res?.display === 'granted') return true;
+      }
+      if (plugins.PushNotifications?.requestPermissions) {
+        const res = await plugins.PushNotifications.requestPermissions();
+        if (res?.receive === 'granted') return true;
+      }
+    }
+
     if ('Notification' in window && typeof Notification.requestPermission === 'function') {
       if (Notification.permission === 'granted') {
         return true;

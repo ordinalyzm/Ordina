@@ -237,7 +237,7 @@ export default function App() {
 
 function ToastsContainer({ toasts }: { toasts: { id: string, message: string, type: 'error'|'success'|'info' }[] }) {
   return (
-    <div className="fixed top-12 left-1/2 -translate-x-1/2 z-[2000] flex flex-col gap-2 pointer-events-none w-full max-w-sm px-4">
+    <div className="fixed top-12 sm:top-14 left-1/2 -translate-x-1/2 z-[999999] flex flex-col gap-2 pointer-events-none w-full max-w-sm px-4 pt-[env(safe-area-inset-top,0px)]">
       <AnimatePresence>
         {toasts.map(toast => (
           <motion.div
@@ -246,16 +246,16 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, scale: 0.9 }}
             className={cn(
-              "px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-3 pointer-events-auto w-full",
-              toast.type === 'success' ? "bg-emerald-500 text-white" :
-              toast.type === 'error' ? "bg-red-500 text-white" : "bg-slate-800 text-white"
+              "px-5 py-3.5 rounded-2xl shadow-2xl flex items-center gap-3 pointer-events-auto w-full border border-white/20 backdrop-blur-xl",
+              toast.type === 'success' ? "bg-emerald-600/95 text-white shadow-emerald-900/40" :
+              toast.type === 'error' ? "bg-red-600/95 text-white shadow-red-900/40" : "bg-slate-900/95 text-white shadow-slate-950/50"
             )}
           >
             <div className="shrink-0">
               {toast.type === 'success' ? <Check size={20} /> : 
                toast.type === 'error' ? <X size={20} /> : <Info size={20} />}
             </div>
-            <span className="text-sm font-bold leading-tight">{toast.message}</span>
+            <span className="text-sm font-bold leading-tight drop-shadow-sm">{toast.message}</span>
           </motion.div>
         ))}
       </AnimatePresence>
@@ -278,9 +278,10 @@ function AppContent() {
 
   const [deviceName, setDeviceName] = useState<string>(() => {
     let name = localStorage.getItem('ordina_device_name');
-    if (!name) {
-      if ((window as any).Capacitor) {
-        name = 'Мобильное приложение (Android/Capacitor)';
+    const isCapacitor = Boolean((window as any).Capacitor) || window.location.hostname === 'localhost';
+    if (!name || (isCapacitor && name === 'Мобильный браузер')) {
+      if (isCapacitor) {
+        name = 'Приложение Ordina (Android APK)';
       } else if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
         name = 'Мобильный браузер';
       } else {
@@ -4096,9 +4097,6 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {/* Toast Notifications */}
-      <ToastsContainer toasts={toasts} />
-
       {/* PDF Preview Modal */}
       <AnimatePresence>
         {previewPdfUrl && (
@@ -7482,8 +7480,6 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      <ToastsContainer toasts={toasts} />
-
       <AnimatePresence>
         {textSelectForQuote && (
           <div 
@@ -7716,6 +7712,9 @@ function AppContent() {
         onClose={() => setShowNotificationSettingsModal(false)}
         addToast={addToast}
       />
+
+      {/* Highest priority Toasts container on top of all modals and overlays */}
+      <ToastsContainer toasts={toasts} />
 
     </div>
   </div>
