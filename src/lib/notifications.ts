@@ -41,29 +41,41 @@ export function saveNotificationSettings(settings: NotificationSettings) {
 }
 
 export async function requestSystemNotificationPermission(): Promise<boolean> {
-  if (typeof window === 'undefined' || !('Notification' in window)) {
-    return false;
-  }
+  if (typeof window === 'undefined') return false;
 
-  if (Notification.permission === 'granted') {
-    return true;
-  }
-
-  if (Notification.permission !== 'denied') {
-    const permission = await Notification.requestPermission();
-    return permission === 'granted';
+  try {
+    if ('Notification' in window && typeof Notification.requestPermission === 'function') {
+      if (Notification.permission === 'granted') {
+        return true;
+      }
+      if (Notification.permission !== 'denied') {
+        const permission = await Notification.requestPermission();
+        return permission === 'granted';
+      }
+    }
+  } catch (e) {
+    console.warn('Notification permission request error:', e);
   }
 
   return false;
 }
 
 export function isNotificationSupported(): boolean {
-  return typeof window !== 'undefined' && 'Notification' in window;
+  if (typeof window === 'undefined') return false;
+  try {
+    return 'Notification' in window && typeof Notification !== 'undefined';
+  } catch (e) {
+    return false;
+  }
 }
 
 export function getNotificationPermissionState(): NotificationPermission | 'unsupported' {
   if (!isNotificationSupported()) return 'unsupported';
-  return Notification.permission;
+  try {
+    return Notification.permission || 'default';
+  } catch (e) {
+    return 'unsupported';
+  }
 }
 
 function isInQuietHours(settings: NotificationSettings): boolean {
@@ -102,7 +114,7 @@ export function showSystemNotification(
     return;
   }
 
-  if (!isNotificationSupported() || Notification.permission !== 'granted') {
+  if (!isNotificationSupported()) {
     return;
   }
 
@@ -114,23 +126,25 @@ export function showSystemNotification(
   }
 
   try {
-    const notification = new Notification(title, {
-      body: formattedBody,
-      icon: options.icon || '/icon.png',
-      tag: options.tag || 'ordina-msg',
-      badge: '/icon.png',
-      renotify: true,
-    } as NotificationOptions);
+    if (Notification.permission === 'granted') {
+      const notification = new Notification(title, {
+        body: formattedBody,
+        icon: options.icon || '/icon.png',
+        tag: options.tag || 'ordina-msg',
+        badge: '/icon.png',
+        renotify: true,
+      } as NotificationOptions);
 
-    if (options.onClick) {
-      notification.onclick = (e) => {
-        e.preventDefault();
-        window.focus();
-        options.onClick?.();
-        notification.close();
-      };
+      if (options.onClick) {
+        notification.onclick = (e) => {
+          e.preventDefault();
+          window.focus();
+          options.onClick?.();
+          notification.close();
+        };
+      }
     }
   } catch (e) {
-    console.warn('Failed to dispatch system notification:', e);
+    console.warn('System Notification API unavailable or inhibited in this context:', e);
   }
 }

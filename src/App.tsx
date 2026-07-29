@@ -328,17 +328,37 @@ function AppContent() {
   const [socket, setSocket] = useState<Socket | null>(null);
   const [socketPresences, setSocketPresences] = useState<Array<{uid: string, status: string, customStatus?: string}>>([]);
 
-  const formatLastSeen = (u: UserProfile | null | undefined): string => {
-    if (!u || !u.lastSeen) return 'Оффлайн';
-    const d = new Date(u.lastSeen);
-    return `был(а) в ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+  const isUserOnline = (u: UserProfile | null | undefined): boolean => {
+    if (!u) return false;
+    if (u.uid === user?.uid) return true;
+    if (socketPresences?.some(p => p.uid === u.uid)) return true;
+    if ((u as any).isOnline === true) return true;
+    if (u.status === 'online') {
+      if (!u.lastSeen) return true;
+      return (new Date().getTime() - new Date(u.lastSeen).getTime()) < 5 * 60 * 1000;
+    }
+    if (u.lastSeen) {
+      return (new Date().getTime() - new Date(u.lastSeen).getTime()) < 5 * 60 * 1000;
+    }
+    return false;
   };
 
-  const isUserOnline = (u: UserProfile) => {
-    if (socketPresences?.find(p => p.uid === u.uid)) return true;
-    if (u.status !== 'online') return false;
-    if (!u.lastSeen) return false;
-    return (new Date().getTime() - new Date(u.lastSeen).getTime()) < 3 * 60 * 1000;
+  const formatLastSeen = (u: UserProfile | null | undefined): string => {
+    if (!u) return 'Оффлайн';
+    if (isUserOnline(u)) return 'В сети';
+    if (!u.lastSeen) return 'Оффлайн';
+    const d = new Date(u.lastSeen);
+    if (isNaN(d.getTime())) return 'Оффлайн';
+
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const hours = d.getHours().toString().padStart(2, '0');
+    const minutes = d.getMinutes().toString().padStart(2, '0');
+
+    if (isToday) {
+      return `был(а) сегодня в ${hours}:${minutes}`;
+    }
+    return `был(а) ${d.toLocaleDateString('ru-RU')} в ${hours}:${minutes}`;
   };
   const [inputText, setInputText] = useState('');
   const [showRadar, setShowRadar] = useState(false);
@@ -3133,8 +3153,12 @@ function AppContent() {
                 setViewedProfile(profile);
                 setShowProfile(true);
               }}>
-                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold">
-                  {profile?.displayName?.[0] || 'U'}
+                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold overflow-hidden shrink-0">
+                  {profile?.photoURL ? (
+                    <img src={profile.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                  ) : (
+                    profile?.displayName?.[0] || 'U'
+                  )}
                 </div>
                 <div>
                   <h2 className="font-bold text-sm">{profile?.displayName || 'Пользователь'}</h2>
@@ -3697,12 +3721,12 @@ function AppContent() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[1500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[90vh] flex flex-col"
+              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[85vh] sm:max-h-[90vh] flex flex-col"
             >
               <div className="relative h-40 bg-blue-600 flex items-center justify-center shrink-0">
                 {(viewedProfile || profile)?.profileBackgroundURL ? (
@@ -3731,9 +3755,11 @@ function AppContent() {
                     setShowProfile(false);
                     setTimeout(() => setViewedProfile(null), 300);
                   }}
-                  className="absolute top-4 left-4 p-2 bg-black/20 hover:bg-black/30 rounded-full text-white z-10"
+                  className="absolute top-3 left-3 p-3 pr-4 rounded-r-2xl rounded-l-md bg-black/40 hover:bg-black/60 text-white z-10 transition-all active:scale-95 flex items-center gap-1 backdrop-blur-md text-xs font-bold"
+                  title="Назад"
                 >
-                  <ArrowLeft size={20} />
+                  <ArrowLeft size={22} />
+                  <span>Назад</span>
                 </button>
                 <div className="w-20 h-20 rounded-full bg-white/20 border-4 border-white/30 flex items-center justify-center text-white text-3xl font-bold relative z-10 overflow-hidden group/avatar">
                   {(viewedProfile || profile)?.photoURL ? (
@@ -4638,17 +4664,21 @@ function AppContent() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]"
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[90vh] flex flex-col"
+              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[85vh] sm:max-h-[90vh] flex flex-col"
             >
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
+              <div className="p-4 sm:p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <h2 className="text-xl font-bold">Настройки</h2>
-                <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-100 rounded-xl">
-                  <X size={20} />
+                <button 
+                  onClick={() => setShowSettings(false)} 
+                  className="p-3 pl-4 -mr-2 rounded-l-2xl rounded-r-md hover:bg-slate-100 active:bg-slate-200 text-slate-600 transition-all active:scale-95 flex items-center justify-center"
+                  title="Закрыть"
+                >
+                  <X size={22} />
                 </button>
               </div>
               <div className="p-6 space-y-4 overflow-y-auto">
@@ -4758,26 +4788,28 @@ function AppContent() {
                   </div>
                 </a>
 
-                <button 
-                  onClick={() => {
-                    const pass = prompt('Введите пароль разработчика:');
-                    if (pass === '02042026') {
-                      setShowDebug(true);
-                      setShowSettings(false);
-                    } else {
-                      addToast('Неверный пароль', 'error');
-                    }
-                  }}
-                  className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
-                >
-                  <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500">
-                    <Settings size={20} />
-                  </div>
-                  <div className="text-left">
-                    <p className="font-bold text-sm">Панель отладки</p>
-                    <p className="text-xs text-slate-500">Только для разработчиков</p>
-                  </div>
-                </button>
+                {(user?.email === 'ordinalyzm25@gmail.com' || profile?.displayName === 'MEGAKPYIIIuTeJIb' || profile?.username === 'MEGAKPYIIIuTeJIb' || isGlobalAdmin) && (
+                  <button 
+                    onClick={() => {
+                      const pass = prompt('Введите пароль разработчика:');
+                      if (pass === '02042026') {
+                        setShowDebug(true);
+                        setShowSettings(false);
+                      } else {
+                        addToast('Неверный пароль', 'error');
+                      }
+                    }}
+                    className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500">
+                      <Settings size={20} />
+                    </div>
+                    <div className="text-left">
+                      <p className="font-bold text-sm">Панель отладки</p>
+                      <p className="text-xs text-slate-500">Только для владельца (разработчика)</p>
+                    </div>
+                  </button>
+                )}
                 
                 <button 
                   onClick={handleLogout}
@@ -5719,9 +5751,10 @@ function AppContent() {
                       setMobileView('list');
                     }
                   }} 
-                  className="p-2 hover:bg-slate-100 rounded-xl relative z-[120] pointer-events-auto"
+                  className="p-3 pl-4 -ml-2 rounded-r-2xl rounded-l-md hover:bg-slate-100 active:bg-slate-200 relative z-[120] pointer-events-auto transition-all active:scale-95 text-slate-700 flex items-center justify-center"
+                  title="Назад"
                 >
-                  <ArrowLeft size={20} />
+                  <ArrowLeft size={22} />
                 </button>
                 <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
                   if (activeThread) return;
@@ -7200,9 +7233,10 @@ function AppContent() {
                   setShowRadar(false);
                   setMobileView('list');
                 }} 
-                className="p-2 hover:bg-white/10 rounded-xl transition-colors"
+                className="p-3 pl-4 -ml-3 rounded-r-2xl rounded-l-md hover:bg-white/10 active:bg-white/20 transition-all flex items-center gap-1 active:scale-95 text-white"
+                title="Назад"
               >
-                <ArrowLeft size={20} />
+                <ArrowLeft size={22} />
               </button>
               <h2 className="font-bold tracking-tight">Радар ({profile?.displayName || 'User'})</h2>
             </div>
@@ -7220,7 +7254,26 @@ function AppContent() {
           
           <div className="p-6 bg-slate-900/50 border-b border-white/5 flex flex-col gap-3">
             <button 
-              onClick={() => setIsRadarActive(!isRadarActive)}
+              onClick={() => {
+                const nextState = !isRadarActive;
+                setIsRadarActive(nextState);
+                if (nextState) {
+                  if ('geolocation' in navigator) {
+                    navigator.geolocation.getCurrentPosition(
+                      (pos) => {
+                        addToast(`Геолокация определена: ${pos.coords.latitude.toFixed(3)}, ${pos.coords.longitude.toFixed(3)}`, 'success');
+                      },
+                      (err) => {
+                        console.warn('Geolocation denied:', err);
+                        addToast('Доступ к геолокации отклонен устройством', 'error');
+                      },
+                      { enableHighAccuracy: true, timeout: 8000 }
+                    );
+                  } else {
+                    addToast('Геолокация не поддерживается устройством', 'error');
+                  }
+                }
+              }}
               className={cn(
                 "w-full py-4 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all shadow-lg border",
                 isRadarActive 
