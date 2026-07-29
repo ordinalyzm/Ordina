@@ -1,6 +1,8 @@
 // Notification Service for System Notifications and Push Alerts
 
 import { NativeSettings, AndroidSettings, IOSSettings } from 'capacitor-native-settings';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import { PushNotifications } from '@capacitor/push-notifications';
 
 export interface NotificationSettings {
   enabled: boolean;
@@ -90,9 +92,27 @@ export async function requestSystemNotificationPermission(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
 
   try {
-    const isCapacitor = Boolean((window as any).Capacitor) || window.location.hostname === 'localhost';
-    
-    // Check Capacitor native notification permission if available
+    // Try Capacitor LocalNotifications first
+    if (typeof LocalNotifications !== 'undefined' && typeof LocalNotifications.requestPermissions === 'function') {
+      try {
+        const res = await LocalNotifications.requestPermissions();
+        if (res?.display === 'granted') return true;
+      } catch (e) {
+        console.warn('LocalNotifications.requestPermissions error:', e);
+      }
+    }
+
+    // Try Capacitor PushNotifications
+    if (typeof PushNotifications !== 'undefined' && typeof PushNotifications.requestPermissions === 'function') {
+      try {
+        const res = await PushNotifications.requestPermissions();
+        if (res?.receive === 'granted') return true;
+      } catch (e) {
+        console.warn('PushNotifications.requestPermissions error:', e);
+      }
+    }
+
+    // Check window.Capacitor plugins fallback
     if ((window as any).Capacitor?.Plugins) {
       const plugins = (window as any).Capacitor.Plugins;
       if (plugins.LocalNotifications?.requestPermissions) {
