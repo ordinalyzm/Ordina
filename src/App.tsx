@@ -53,6 +53,7 @@ import BotConstructor from './components/BotConstructor';
 import TitleManagerModal from './components/TitleManagerModal';
 import { RenderTitle } from './lib/TitleRenderer';
 import ImageCropperModal from './components/ImageCropperModal';
+import { useVoicePlayer, VoiceBubbleWidget, GlobalVoiceBanner } from './components/VoiceMessagePlayer';
 import { playIncomingMessageSound, playSentMessageSound, triggerHapticFeedback } from './lib/audio';
 import { showSystemNotification, openAppSettings } from './lib/notifications';
 import { MeshInspectorModal } from './components/MeshInspectorModal';
@@ -265,6 +266,7 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
 
 function AppContent() {
   const [user, setUser] = useState<User | null>(null);
+  const voicePlayer = useVoicePlayer();
   
   // Device registration tracking
   const [deviceId] = useState<string>(() => {
@@ -6317,13 +6319,33 @@ function AppContent() {
                           );
                         })()}
 
-                        {msg.text && (msg.type !== 'text' || !msg.isEncrypted) && (
+                        {msg.text && (msg.type !== 'text' || !msg.isEncrypted) && msg.type !== 'audio' && (
                           <p className={cn(
                             "text-sm leading-relaxed mb-2 whitespace-pre-wrap break-words",
                             msg.type === 'text' ? "" : "opacity-90"
                           )}>
                             {formatMessageText(msg.text, showChatSearch ? chatSearchQuery : undefined)}
                           </p>
+                        )}
+
+                        {msg.type === 'audio' && (
+                          <VoiceBubbleWidget
+                            msg={msg}
+                            isMe={msg.senderId === user?.uid}
+                            activeVoice={voicePlayer.activeVoice}
+                            isAccelerated={voicePlayer.isAccelerated}
+                            onPlay={() => {
+                              const sender = users.find(u => u.uid === msg.senderId);
+                              voicePlayer.playVoice({
+                                id: msg.id,
+                                fileUrl: msg.fileUrl || '',
+                                senderName: sender?.displayName || (msg.senderId === user?.uid ? 'Вы' : 'Пользователь'),
+                                senderAvatar: sender?.photoURL,
+                                createdAt: msg.createdAt,
+                              });
+                            }}
+                            onSeek={(time) => voicePlayer.seekVoice(time)}
+                          />
                         )}
 
                         {msg.type === 'text' && msg.isEncrypted && (
@@ -7732,6 +7754,20 @@ function AppContent() {
           </div>
         )}
       </AnimatePresence>
+
+      <GlobalVoiceBanner
+        activeVoice={voicePlayer.activeVoice}
+        isAccelerated={voicePlayer.isAccelerated}
+        onPlayPause={() => {
+          if (voicePlayer.activeVoice?.isPlaying) {
+            voicePlayer.pauseVoice();
+          } else {
+            voicePlayer.resumeVoice();
+          }
+        }}
+        onSeek={(time) => voicePlayer.seekVoice(time)}
+        onClose={() => voicePlayer.closeBanner()}
+      />
 
       <ImageCropperModal
         isOpen={cropModalInfo !== null}

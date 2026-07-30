@@ -507,6 +507,93 @@ async function startServer() {
   app.get('/api/ping', (req, res) => {
     res.send('pong');
   });
+
+  app.post('/api/bot-ai', async (req, res) => {
+    try {
+      const { prompt, currentBot } = req.body;
+      if (!prompt || typeof prompt !== 'string') {
+        return res.status(400).json({ error: 'Запрос не может быть пустым' });
+      }
+
+      const systemPrompt = `Ты — экспертный ИИ-разработчик ботов для платформы Ordina Messenger / Telegram.
+Твоя задача: по запросу пользователя сгенерировать или отредактировать конфигурацию бота на основе готовой схемы.
+
+Структура конфигурации бота (JSON):
+{
+  "name": "Название бота",
+  "username": "уникальный_юзернейм",
+  "description": "Описание назначения бота",
+  "isActive": true,
+  "rules": [
+    {
+      "id": "уникальный_id",
+      "trigger": {
+        "type": "command", // command, text, new_member
+        "params": { "value": "/start" },
+        "forAdminsOnly": false
+      },
+      "conditions": [
+        {
+          "id": "cond_id",
+          "type": "variable_equals",
+          "params": { "key": "city", "value": "Москва" }
+        }
+      ],
+      "actions": [
+        {
+          "id": "act_id",
+          "type": "send_message", // send_message, set_variable, fetch_random_user, wait_feedback, send_message_to_user, moderate
+          "params": {
+            "text": "Привет, {user_name}! Заходи в чат.",
+            "key": "переменная",
+            "value": "значение"
+          }
+        }
+      ]
+    }
+  ]
+}
+
+Инструкция:
+1. Если передан currentBot, сохрани существующие работающие правила и дополни или отредактируй их согласно запросу пользователя.
+2. Верни ИСКЛЮЧИТЕЛЬНО валидный JSON объект конфигурации бота без каких-либо вводных слов, кодовых блоков markdown или разметки (чистый JSON).`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: systemPrompt },
+              { text: `Запрос пользователя: "${prompt}"\n\nТекущая конфигурация бота (если есть):\n${JSON.stringify(currentBot || null, null, 2)}` }
+            ]
+          }
+        ]
+      });
+
+      let responseText = response.text || '';
+      responseText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+      const parsedBot = JSON.parse(responseText);
+      
+      if (!parsedBot.id) parsedBot.id = currentBot?.id || uuidv4();
+      if (!parsedBot.name) parsedBot.name = 'Новый ИИ Бот';
+      if (!parsedBot.rules) parsedBot.rules = [];
+      parsedBot.rules.forEach((r: any, rIdx: number) => {
+        if (!r.id) r.id = `rule_${Date.now()}_${rIdx}`;
+        if (!r.trigger) r.trigger = { type: 'command', params: { value: '/start' } };
+        if (!r.actions) r.actions = [];
+        r.actions.forEach((a: any, aIdx: number) => {
+          if (!a.id) a.id = `act_${Date.now()}_${aIdx}`;
+        });
+      });
+
+      res.json({ success: true, bot: parsedBot });
+    } catch (e: any) {
+      console.error('[Bot AI Error]:', e);
+      res.status(500).json({ error: e.message || 'Ошибка генерации конфигурации бота' });
+    }
+  });
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
     maxHttpBufferSize: 5e7,

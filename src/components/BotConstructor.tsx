@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check } from 'lucide-react';
+import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check, Sparkles, Loader2 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 
 export interface BotConfig {
@@ -56,6 +56,9 @@ interface BotConstructorProps {
 export default function BotConstructor({ isOpen, onClose, user, socket }: BotConstructorProps) {
   const [bots, setBots] = useState<BotConfig[]>([]);
   const [editingBot, setEditingBot] = useState<BotConfig | null>(null);
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isAiGenerating, setIsAiGenerating] = useState(false);
 
   useEffect(() => {
     if (!isOpen || !socket || !user) return;
@@ -92,6 +95,32 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
     }
   };
 
+  const handleGenerateBotWithAi = async () => {
+    if (!aiPrompt.trim()) return;
+    setIsAiGenerating(true);
+    try {
+      const res = await fetch('/api/bot-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: aiPrompt.trim(), currentBot: editingBot })
+      });
+      const data = await res.json();
+      if (data.success && data.bot) {
+        setEditingBot(data.bot);
+        setShowAiModal(false);
+        setAiPrompt('');
+        if ((window as any).addToast) (window as any).addToast('Бот сгенерирован ИИ!', 'success');
+      } else {
+        alert(data.error || 'Ошибка при генерации бота');
+      }
+    } catch (err: any) {
+      console.error(err);
+      alert('Ошибка при вызове ИИ генератора');
+    } finally {
+      setIsAiGenerating(false);
+    }
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -117,32 +146,52 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
             </div>
             <div>
               <h2 className="font-bold text-lg">{editingBot ? 'Редактировать: ' + editingBot.name : 'Мои боты'}</h2>
-              <p className="text-xs text-slate-500">Конструктор ботов без кода</p>
+              <p className="text-xs text-slate-500">Конструктор ботов без кода + Бесплатная ИИ</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
-            <X size={24} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowAiModal(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-xs font-bold shadow-md hover:shadow-lg transition-all"
+            >
+              <Sparkles size={14} />
+              <span>Написать с ИИ</span>
+            </button>
+            <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors">
+              <X size={24} />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto bg-slate-50 p-6">
           {!editingBot ? (
             <div className="max-w-2xl mx-auto space-y-4">
-              <button 
-                onClick={() => {
-                  setEditingBot({
-                    id: uuidv4(),
-                    name: 'Новый бот',
-                    isActive: true,
-                    triggers: [],
-                    conditions: [],
-                    actions: [], rules: [] });
-                }}
-                className="w-full h-24 border-2 border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 rounded-2xl flex items-center justify-center gap-3 text-slate-500 transition-all font-medium"
-              >
-                <Plus size={24} />
-                Создать бота с нуля
-              </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button 
+                  onClick={() => {
+                    setEditingBot({
+                      id: uuidv4(),
+                      name: 'Новый бот',
+                      isActive: true,
+                      triggers: [],
+                      conditions: [],
+                      actions: [], rules: [] });
+                  }}
+                  className="h-28 border-2 border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-600 transition-all font-medium"
+                >
+                  <Plus size={24} className="text-blue-600" />
+                  <span>Создать бота с нуля</span>
+                </button>
+
+                <button 
+                  onClick={() => setShowAiModal(true)}
+                  className="h-28 bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500 text-white hover:opacity-95 rounded-2xl flex flex-col items-center justify-center gap-2 transition-all font-bold shadow-lg p-4"
+                >
+                  <Sparkles size={24} />
+                  <span>Написать бота через ИИ</span>
+                  <span className="text-[10px] opacity-90 font-normal">Бесплатная автогенерация логики</span>
+                </button>
+              </div>
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {bots.map(bot => (
@@ -166,6 +215,89 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
             <BotEditor bot={editingBot} setBot={setEditingBot} onSave={handleSaveBot} />
           )}
         </div>
+
+        {/* AI Bot Generation Modal */}
+        <AnimatePresence>
+          {showAiModal && (
+            <div className="fixed inset-0 z-[1300] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setShowAiModal(false)}>
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="bg-white rounded-3xl w-full max-w-lg p-6 shadow-2xl relative"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between mb-4 border-b border-slate-100 pb-3">
+                  <div className="flex items-center gap-2 text-purple-600">
+                    <Sparkles size={22} />
+                    <h3 className="font-bold text-lg text-slate-900">Бесплатный ИИ-Конструктор Ботов</h3>
+                  </div>
+                  <button onClick={() => setShowAiModal(false)} className="text-slate-400 hover:text-slate-600">
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <p className="text-xs text-slate-600 mb-4 leading-relaxed">
+                  Опишите логику или задачи бота простыми словами. ИИ бесплатно сгенерирует или отредактирует команды, правила, условия и ответы бота!
+                </p>
+
+                {/* Quick Prompts */}
+                <div className="mb-4">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block mb-2">Быстрые шаблоны:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { label: '👋 Приветственный бот', prompt: 'Создай бота, который приветствует участников и отвечает на /help и /rules' },
+                      { label: '🛡️ Модератор чата', prompt: 'Создай бота-модератора, реагирующего на стоп-слова и спам с авто-баном' },
+                      { label: '💬 Сбор отзывов', prompt: 'Создай бота для сбора вопросов и обратной связи от пользователей' },
+                      { label: '🎯 Помощник с кнопками', prompt: 'Создай бота с командами /info, /about и inline-кнопками ссылок' },
+                    ].map((item, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setAiPrompt(item.prompt)}
+                        className="text-xs bg-purple-50 hover:bg-purple-100 text-purple-700 font-medium px-3 py-1.5 rounded-full transition-colors border border-purple-100 text-left"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <textarea
+                  value={aiPrompt}
+                  onChange={(e) => setAiPrompt(e.target.value)}
+                  placeholder="Например: 'Создай бота, который приветствует участников, а по командам /start и /help выдает кнопки со ссылкой и описанием'..."
+                  className="w-full h-32 p-3 text-sm bg-slate-50 border border-slate-200 rounded-2xl resize-none outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white mb-4 transition-all"
+                />
+
+                <div className="flex gap-3">
+                  <button
+                    disabled={isAiGenerating || !aiPrompt.trim()}
+                    onClick={handleGenerateBotWithAi}
+                    className="flex-1 py-3 bg-gradient-to-r from-purple-600 to-blue-600 text-white rounded-2xl font-bold text-sm shadow-md hover:shadow-lg disabled:opacity-50 flex items-center justify-center gap-2 transition-all"
+                  >
+                    {isAiGenerating ? (
+                      <>
+                        <Loader2 size={18} className="animate-spin" />
+                        ИИ создает логику бота...
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles size={18} />
+                        {editingBot ? 'Отредактировать бота через ИИ' : 'Написать бота через ИИ'}
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setShowAiModal(false)}
+                    className="px-4 py-3 bg-slate-100 text-slate-700 rounded-2xl font-bold text-sm hover:bg-slate-200 transition-colors"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
       </motion.div>
     </div>
   );
