@@ -262,18 +262,12 @@ export function VoiceBubbleWidget({
     }
 
     if (!subtitlesText) {
-      if (msg.text && msg.text !== '🎤 Голосовое сообщение') {
+      if (msg.subtitles && msg.subtitles.trim()) {
+        setSubtitlesText(msg.subtitles.trim());
+      } else if (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение')) {
         setSubtitlesText(msg.text);
       } else {
-        // Sample speech recognition or speech transcript
-        const options = [
-          'Привет! Отправляю тебе голосовое сообщение.',
-          'Встречаемся завтра в 15:00.',
-          'Отличная работа, все проверил!',
-          'Перезвони, когда будешь свободен.',
-        ];
-        const randomSpeech = options[Math.floor(Math.random() * options.length)];
-        setSubtitlesText(randomSpeech);
+        setSubtitlesText('*музыка / фоновый шум*');
       }
     }
     setShowSubtitles(true);

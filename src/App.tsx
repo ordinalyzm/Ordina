@@ -1181,18 +1181,51 @@ function AppContent() {
   
   const [cropModalInfo, setCropModalInfo] = useState<{ src: string, type: 'user' | 'group', groupId?: string } | null>(null);
   const [showFullAvatar, setShowFullAvatar] = useState<{ src: string } | null>(null);
+  const [fullImgScale, setFullImgScale] = useState(1);
+  const [fullImgRotation, setFullImgRotation] = useState(0);
+
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [recordingDragX, setRecordingDragX] = useState(0);
   const isRecordingCancelledRef = useRef(false);
   const recordStartPointerXRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const transcribedSpeechRef = useRef<string>('');
   const audioChunksRef = useRef<BlobPart[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isMultiDragSelecting, setIsMultiDragSelecting] = useState(false);
+  const dragSelectingActiveRef = useRef(false);
+  const msgLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const saveMediaToDevice = async (fileUrl?: string, fileName?: string) => {
+    if (!fileUrl) return;
+    try {
+      let finalUrl = fileUrl;
+      if (fileUrl.startsWith('firestore://')) {
+        const { getFileFromFirestore } = await import('./lib/fileStorage');
+        const fileId = fileUrl.replace('firestore://', '');
+        const fileData = await getFileFromFirestore(fileId);
+        if (fileData) finalUrl = fileData.url;
+      }
+
+      const name = fileName || `ordina_${Date.now()}.${fileUrl.includes('image') ? 'jpg' : fileUrl.includes('audio') ? 'webm' : 'bin'}`;
+      const link = document.createElement('a');
+      link.href = finalUrl;
+      link.download = name;
+      link.target = '_blank';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      addToast(`Файл "${name}" загружен`, 'success');
+    } catch (e) {
+      console.error('Download file error:', e);
+      addToast('Ошибка сохранения файла', 'error');
+    }
+  };
   const [scheduleDate, setScheduleDate] = useState<string>('');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
 
@@ -2444,6 +2477,10 @@ function AppContent() {
     if (isRecordingCancelledRef.current) return;
     isRecordingCancelledRef.current = true;
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch(e) {}
+      speechRecognitionRef.current = null;
+    }
     if (mediaRecorderRef.current) {
       try {
         mediaRecorderRef.current.onstop = null;
@@ -2467,6 +2504,33 @@ function AppContent() {
     recordStartPointerXRef.current = startX;
     isRecordingCancelledRef.current = false;
     setRecordingDragX(0);
+
+    // Initialize Web Speech Recognition
+    transcribedSpeechRef.current = '';
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRec) {
+      try {
+        const rec = new SpeechRec();
+        rec.lang = 'ru-RU';
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.onresult = (ev: any) => {
+          let current = '';
+          for (let i = ev.resultIndex; i < ev.results.length; ++i) {
+            if (ev.results[i].isFinal) {
+              current += ev.results[i][0].transcript;
+            }
+          }
+          if (current) {
+            transcribedSpeechRef.current = (transcribedSpeechRef.current + ' ' + current).trim();
+          }
+        };
+        rec.start();
+        speechRecognitionRef.current = rec;
+      } catch (err) {
+        console.warn('SpeechRec error:', err);
+      }
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -2530,6 +2594,10 @@ function AppContent() {
 
   const stopRecording = () => {
     if (isRecordingCancelledRef.current) return;
+    if (speechRecognitionRef.current) {
+      try { speechRecognitionRef.current.stop(); } catch(e) {}
+      speechRecognitionRef.current = null;
+    }
     if (mediaRecorderRef.current && isRecording) {
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       mediaRecorderRef.current.stop();
@@ -2546,12 +2614,14 @@ function AppContent() {
     }
     if (!user || !selectedChat) return;
     try {
+      const speechText = transcribedSpeechRef.current.trim();
       const newMessage: any = {
         id: createMessageId(user.uid, Date.now()),
         senderId: user.uid,
         text: '🎤 Голосовое сообщение',
         type: 'audio',
         fileUrl: base64Audio,
+        subtitles: speechText || undefined,
         duration: durationInSecs || recordingTime || 1,
         createdAt: new Date().toISOString(),
         isEncrypted: false,
@@ -5542,14 +5612,28 @@ function AppContent() {
                   </h4>
                   <div className="flex flex-col sm:flex-row items-center gap-6 p-4 bg-slate-50 rounded-2xl">
                     <div className="relative group shrink-0">
-                      <div className="w-24 h-24 rounded-2xl bg-white shadow-sm flex items-center justify-center overflow-hidden border-2 border-slate-100">
+                      <div className="w-24 h-24 rounded-2xl bg-white shadow-sm flex items-center justify-center overflow-hidden border-2 border-slate-100 relative">
                         {(activeChatData as Group)?.photoURL ? (
                           <img src={(activeChatData as Group).photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
                         ) : (
                           <span className="text-3xl font-bold text-slate-300">{(activeChatData as Group).name[0]}</span>
                         )}
                       </div>
-                      <label className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-white text-[10px] font-bold cursor-pointer transition-opacity rounded-2xl">
+                      {(activeChatData as Group)?.photoURL && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if ((activeChatData as Group)?.photoURL) {
+                              setCropModalInfo({ src: (activeChatData as Group).photoURL!, type: 'group', groupId: (activeChatData as Group).id });
+                            }
+                          }}
+                          className="absolute -bottom-1 -right-1 p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg transition-transform active:scale-95 z-20 flex items-center justify-center"
+                          title="Кадрировать аватар"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                      )}
+                      <label className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center text-white text-[10px] font-bold cursor-pointer transition-opacity rounded-2xl z-10">
                         <ImageIcon size={20} className="mb-1" />
                         Изменить
                         <input 
@@ -5560,7 +5644,7 @@ function AppContent() {
                             const file = e.target.files?.[0];
                             if (file) {
                               const base64 = await fileToBase64(file);
-                              handleUpdateGroupSettings((activeChatData as Group).id, { photoURL: base64 });
+                              setCropModalInfo({ src: base64, type: 'group', groupId: (activeChatData as Group).id });
                             }
                           }} 
                         />
@@ -6204,6 +6288,38 @@ function AppContent() {
             <div 
               ref={messagesContainerRef}
               onScroll={handleScroll}
+              onPointerMove={(e) => {
+                if (dragSelectingActiveRef.current || isMultiDragSelecting) {
+                  const target = document.elementFromPoint(e.clientX, e.clientY);
+                  const msgEl = target?.closest('[data-msg-id]');
+                  if (msgEl) {
+                    const msgId = msgEl.getAttribute('data-msg-id');
+                    if (msgId && !selectedMsgIds.includes(msgId)) {
+                      setSelectedMsgIds(prev => [...prev, msgId]);
+                    }
+                  }
+                }
+              }}
+              onTouchMove={(e) => {
+                if ((dragSelectingActiveRef.current || isMultiDragSelecting) && e.touches[0]) {
+                  const target = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
+                  const msgEl = target?.closest('[data-msg-id]');
+                  if (msgEl) {
+                    const msgId = msgEl.getAttribute('data-msg-id');
+                    if (msgId && !selectedMsgIds.includes(msgId)) {
+                      setSelectedMsgIds(prev => [...prev, msgId]);
+                    }
+                  }
+                }
+              }}
+              onPointerUp={() => {
+                dragSelectingActiveRef.current = false;
+                setIsMultiDragSelecting(false);
+              }}
+              onTouchEnd={() => {
+                dragSelectingActiveRef.current = false;
+                setIsMultiDragSelecting(false);
+              }}
               className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full"
             >
               {isLoadingMessages ? (
@@ -6331,21 +6447,43 @@ function AppContent() {
                             <motion.div 
                             key={msg.id}
                             id={`msg-${msg.id}`}
-                            layout
+                            data-msg-id={msg.id}
                             drag="x"
-                            dragConstraints={{ left: -100, right: 0 }}
-                            dragElastic={0.3}
+                            dragConstraints={{ left: -50, right: 0 }}
+                            dragElastic={0.05}
                             dragSnapToOrigin={true}
                             onDragEnd={(event, info) => {
-                              if (info.offset.x < -30 || info.velocity.x < -150) {
+                              if (info.offset.x < -20 || info.velocity.x < -100) {
                                 setEditingMessage(null);
                                 setReplyTo(msg);
                                 triggerHapticFeedback();
                               }
                             }}
-                            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                            onPointerDown={() => {
+                              if (msgLongPressTimerRef.current) clearTimeout(msgLongPressTimerRef.current);
+                              msgLongPressTimerRef.current = setTimeout(() => {
+                                setIsSelectionMode(true);
+                                setSelectedMsgIds(prev => prev.includes(msg.id) ? prev : [...prev, msg.id]);
+                                dragSelectingActiveRef.current = true;
+                                setIsMultiDragSelecting(true);
+                                triggerHapticFeedback();
+                              }, 350);
+                            }}
+                            onPointerUp={() => {
+                              if (msgLongPressTimerRef.current) {
+                                clearTimeout(msgLongPressTimerRef.current);
+                                msgLongPressTimerRef.current = null;
+                              }
+                            }}
+                            onPointerCancel={() => {
+                              if (msgLongPressTimerRef.current) {
+                                clearTimeout(msgLongPressTimerRef.current);
+                                msgLongPressTimerRef.current = null;
+                              }
+                            }}
                             onClick={(e) => {
                               if (isSelectionMode) {
                                 e.stopPropagation();
@@ -6359,17 +6497,17 @@ function AppContent() {
                               }
                             }}
                             onPointerEnter={(e) => {
-                              if (isSelectionMode && (e.buttons === 1 || e.buttons === 2)) {
+                              if ((isSelectionMode || isMultiDragSelecting || dragSelectingActiveRef.current) && (e.buttons === 1 || e.buttons === 2)) {
                                 if (!selectedMsgIds.includes(msg.id)) {
                                   setSelectedMsgIds(prev => [...prev, msg.id]);
                                 }
                               }
                             }}
                             className={cn(
-                              "flex flex-col transition-all duration-500 w-full relative group min-w-0 touch-pan-y", 
+                              "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y", 
                               isMe ? "items-end" : "items-start",
                               highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
-                              selectedMsgIds.includes(msg.id) ? "bg-blue-50/60 p-1.5 rounded-2xl border border-blue-200/80" : ""
+                              selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
                             )}
                             onContextMenu={(e) => handleContextMenu(e, msg)}
                             onTouchStart={(e) => startMsgTouchTimer(e, msg)}
@@ -7066,15 +7204,29 @@ function AppContent() {
                   <Share size={16} className="text-slate-400" /> Переслать
                 </button>
 
-                <button 
-                  onClick={() => { 
-                    setTextSelectForQuote(contextMenu.msg);
-                    setContextMenu(null); 
-                  }}
-                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
-                >
-                  <Quote size={16} className="text-slate-400" /> Цитировать (Выделить текст)
-                </button>
+                {contextMenu.msg.text && contextMenu.msg.type !== 'audio' && contextMenu.msg.text !== '🎤 Голосовое сообщение' && !contextMenu.msg.text.includes('Голосовое сообщение') && (
+                  <button 
+                    onClick={() => { 
+                      setTextSelectForQuote(contextMenu.msg);
+                      setContextMenu(null); 
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                  >
+                    <Quote size={16} className="text-slate-400" /> Цитировать (Выделить текст)
+                  </button>
+                )}
+
+                {contextMenu.msg.fileUrl && (
+                  <button 
+                    onClick={() => { 
+                      saveMediaToDevice(contextMenu.msg.fileUrl, contextMenu.msg.fileName);
+                      setContextMenu(null); 
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700 font-medium text-blue-600"
+                  >
+                    <Download size={16} className="text-blue-500" /> Сохранить в устройство
+                  </button>
+                )}
 
                 <button 
                   onClick={() => { 
@@ -7985,11 +8137,70 @@ function AppContent() {
       />
 
       {showFullAvatar && (
-        <div className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-center cursor-pointer p-4" onClick={() => setShowFullAvatar(null)}>
-          <button className="absolute top-4 right-4 text-white hover:bg-white/20 p-2 rounded-full transition-colors z-10">
-            <X size={24} />
-          </button>
-          <img src={showFullAvatar.src} alt="" className="w-full h-full object-contain cursor-default" onClick={e => e.stopPropagation()} referrerPolicy="no-referrer" />
+        <div 
+          className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-between cursor-pointer p-4 overflow-hidden select-none" 
+          onClick={() => { setShowFullAvatar(null); setFullImgScale(1); setFullImgRotation(0); }}
+        >
+          {/* Top bar controls */}
+          <div className="w-full flex items-center justify-between z-20 shrink-0" onClick={e => e.stopPropagation()}>
+            <span className="text-white/70 text-xs font-semibold px-2">Просмотр (нажмите вверху/вбоку для выхода)</span>
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setFullImgScale(prev => Math.min(3, prev + 0.5))} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors"
+                title="Приблизить"
+              >
+                <Search size={18} />
+              </button>
+              <button 
+                onClick={() => setFullImgScale(1)} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors text-xs font-bold"
+                title="Сбросить масштаб"
+              >
+                1x
+              </button>
+              <button 
+                onClick={() => setFullImgRotation(prev => (prev + 90) % 360)} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors"
+                title="Повернуть"
+              >
+                <RotateCw size={18} />
+              </button>
+              <button 
+                onClick={() => saveMediaToDevice(showFullAvatar.src, 'image.jpg')} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors"
+                title="Скачать на устройство"
+              >
+                <Download size={18} />
+              </button>
+              <button 
+                onClick={() => { setShowFullAvatar(null); setFullImgScale(1); setFullImgRotation(0); }} 
+                className="p-2.5 bg-white/10 hover:bg-white/20 text-white rounded-full transition-colors"
+                title="Закрыть"
+              >
+                <X size={20} />
+              </button>
+            </div>
+          </div>
+
+          {/* Image */}
+          <div className="flex-1 w-full flex items-center justify-center relative overflow-hidden my-4" onClick={() => { setShowFullAvatar(null); setFullImgScale(1); setFullImgRotation(0); }}>
+            <img 
+              src={showFullAvatar.src} 
+              alt="" 
+              style={{ 
+                transform: `scale(${fullImgScale}) rotate(${fullImgRotation}deg)`,
+                transition: 'transform 0.2s ease-out'
+              }}
+              className="max-w-full max-h-[85vh] object-contain cursor-grab active:cursor-grabbing shadow-2xl rounded-lg" 
+              onClick={(e) => e.stopPropagation()} 
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setFullImgScale(prev => prev === 1 ? 2.5 : 1);
+              }}
+              referrerPolicy="no-referrer" 
+            />
+          </div>
         </div>
       )}
 
