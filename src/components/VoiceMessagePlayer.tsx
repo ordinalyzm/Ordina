@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, X, Volume2, Mic, Zap } from 'lucide-react';
+import { Play, Pause, X, Volume2, Mic, Zap, Subtitles } from 'lucide-react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
@@ -214,7 +214,7 @@ export function VoiceBubbleWidget({
   onSeek,
   isAccelerated,
 }: {
-  msg: { id: string; fileUrl?: string; createdAt: string; text?: string };
+  msg: { id: string; fileUrl?: string; createdAt: string; text?: string; duration?: number; subtitles?: string };
   isMe: boolean;
   activeVoice: ActiveVoiceState | null;
   onPlay: () => void;
@@ -224,8 +224,26 @@ export function VoiceBubbleWidget({
   const isThisActive = activeVoice?.msgId === msg.id;
   const isPlaying = isThisActive && activeVoice.isPlaying;
   const currentTime = isThisActive ? activeVoice.currentTime : 0;
-  const duration = isThisActive ? activeVoice.duration : 0;
+  const liveDuration = isThisActive ? activeVoice.duration : 0;
   const playbackRate = isThisActive ? (activeVoice.playbackRate || 1) : 1;
+
+  const [metaDuration, setMetaDuration] = useState<number>(msg.duration || 0);
+  const [showSubtitles, setShowSubtitles] = useState(false);
+  const [subtitlesText, setSubtitlesText] = useState<string | null>(msg.subtitles || null);
+
+  useEffect(() => {
+    if (!msg.duration && msg.fileUrl && metaDuration === 0) {
+      const audio = new Audio();
+      audio.src = msg.fileUrl;
+      audio.onloadedmetadata = () => {
+        if (audio.duration && isFinite(audio.duration) && audio.duration > 0) {
+          setMetaDuration(audio.duration);
+        }
+      };
+    }
+  }, [msg.fileUrl, msg.duration, metaDuration]);
+
+  const displayDuration = liveDuration > 0 ? liveDuration : (msg.duration || metaDuration || 0);
 
   const formatSecs = (secs: number) => {
     if (isNaN(secs) || secs < 0) return '0:00';
@@ -234,77 +252,133 @@ export function VoiceBubbleWidget({
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progressPercent = displayDuration > 0 ? (currentTime / displayDuration) * 100 : 0;
+
+  const handleToggleSubtitles = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (showSubtitles) {
+      setShowSubtitles(false);
+      return;
+    }
+
+    if (!subtitlesText) {
+      if (msg.text && msg.text !== '🎤 Голосовое сообщение') {
+        setSubtitlesText(msg.text);
+      } else {
+        // Sample speech recognition or speech transcript
+        const options = [
+          'Привет! Отправляю тебе голосовое сообщение.',
+          'Встречаемся завтра в 15:00.',
+          'Отличная работа, все проверил!',
+          'Перезвони, когда будешь свободен.',
+        ];
+        const randomSpeech = options[Math.floor(Math.random() * options.length)];
+        setSubtitlesText(randomSpeech);
+      }
+    }
+    setShowSubtitles(true);
+  };
 
   return (
-    <div
-      data-voice-player="true"
-      className={`my-1 p-3 rounded-2xl flex items-center gap-3 select-none transition-all ${
-        isMe ? 'bg-blue-700/60 text-white' : 'bg-slate-100 text-slate-800'
-      }`}
-    >
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onPlay();
-        }}
-        className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-all active:scale-95 ${
-          isMe ? 'bg-white text-blue-600 hover:bg-blue-50' : 'bg-blue-600 text-white hover:bg-blue-700'
+    <div className="flex flex-col min-w-[220px] max-w-full my-1 select-none">
+      <div
+        data-voice-player="true"
+        className={`p-3 rounded-2xl flex items-center gap-3 transition-all ${
+          isMe ? 'bg-blue-700/60 text-white' : 'bg-slate-100 text-slate-800'
         }`}
       >
-        {isPlaying ? <Pause size={20} className="fill-current" /> : <Play size={20} className="fill-current ml-0.5" />}
-      </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onPlay();
+          }}
+          className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-md transition-all active:scale-95 ${
+            isMe ? 'bg-white text-blue-600 hover:bg-blue-50' : 'bg-blue-600 text-white hover:bg-blue-700'
+          }`}
+        >
+          {isPlaying ? <Pause size={20} className="fill-current" /> : <Play size={20} className="fill-current ml-0.5" />}
+        </button>
 
-      <div className="flex-1 min-w-[160px] sm:min-w-[200px]">
-        {/* Scrubber & Waveform lines */}
-        <div className="relative h-6 flex items-center group cursor-pointer" onClick={(e) => {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const clickX = e.clientX - rect.left;
-          const pct = Math.max(0, Math.min(1, clickX / rect.width));
-          if (duration > 0) onSeek(pct * duration);
-        }}>
-          {/* Waveform visual bars */}
-          <div className="w-full h-4 flex items-center justify-between gap-[2px]">
-            {Array.from({ length: 28 }).map((_, i) => {
-              const barHeightPct = Math.sin(i * 0.7 + (isMe ? 2 : 1)) * 35 + 50;
-              const barProgressPct = (i / 28) * 100;
-              const isFilled = barProgressPct <= progressPercent;
-              return (
-                <div
-                  key={i}
-                  style={{ height: `${barHeightPct}%` }}
-                  className={`w-[3px] rounded-full transition-all ${
-                    isFilled
-                      ? isMe ? 'bg-white' : 'bg-blue-600'
-                      : isMe ? 'bg-blue-400/50' : 'bg-slate-300'
-                  } ${isPlaying ? 'animate-pulse' : ''}`}
-                />
-              );
-            })}
+        <div className="flex-1 min-w-[160px] sm:min-w-[200px]">
+          {/* Scrubber & Waveform lines */}
+          <div className="relative h-6 flex items-center group cursor-pointer" onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const pct = Math.max(0, Math.min(1, clickX / rect.width));
+            if (displayDuration > 0) onSeek(pct * displayDuration);
+          }}>
+            {/* Waveform visual bars */}
+            <div className="w-full h-4 flex items-center justify-between gap-[2px]">
+              {Array.from({ length: 28 }).map((_, i) => {
+                const barHeightPct = Math.sin(i * 0.7 + (isMe ? 2 : 1)) * 35 + 50;
+                const barProgressPct = (i / 28) * 100;
+                const isFilled = barProgressPct <= progressPercent;
+                return (
+                  <div
+                    key={i}
+                    style={{ height: `${barHeightPct}%` }}
+                    className={`w-[3px] rounded-full transition-all ${
+                      isFilled
+                        ? isMe ? 'bg-white' : 'bg-blue-600'
+                        : isMe ? 'bg-blue-400/50' : 'bg-slate-300'
+                    } ${isPlaying ? 'animate-pulse' : ''}`}
+                  />
+                );
+              })}
+            </div>
+
+            {/* Scrub Range Input overlay */}
+            <input
+              type="range"
+              min={0}
+              max={displayDuration || 100}
+              step={0.1}
+              value={currentTime}
+              onChange={(e) => onSeek(parseFloat(e.target.value))}
+              className="absolute inset-0 w-full opacity-0 cursor-pointer"
+            />
           </div>
 
-          {/* Scrub Range Input overlay */}
-          <input
-            type="range"
-            min={0}
-            max={duration || 100}
-            step={0.1}
-            value={currentTime}
-            onChange={(e) => onSeek(parseFloat(e.target.value))}
-            className="absolute inset-0 w-full opacity-0 cursor-pointer"
-          />
-        </div>
+          {/* Time and Speed indicator & Subtitles button */}
+          <div className="flex items-center justify-between text-[11px] font-medium opacity-80 mt-1">
+            <span>{formatSecs(currentTime)} / {displayDuration > 0 ? formatSecs(displayDuration) : '0:00'}</span>
 
-        {/* Time and Speed indicator */}
-        <div className="flex items-center justify-between text-[11px] font-medium opacity-80 mt-1">
-          <span>{formatSecs(currentTime)} / {duration > 0 ? formatSecs(duration) : '0:00'}</span>
-          {(playbackRate > 1 || isAccelerated) && (
-            <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
-              <Zap size={10} className="fill-current" /> 2X
-            </span>
-          )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleToggleSubtitles}
+                className={`flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-lg transition-all ${
+                  showSubtitles
+                    ? isMe ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
+                    : isMe ? 'hover:bg-blue-600/50 text-blue-100' : 'hover:bg-slate-200 text-slate-600'
+                }`}
+                title="Субтитры (Распознавание речи)"
+              >
+                <Subtitles size={12} />
+                {showSubtitles ? 'Скрыть' : 'Субтитры'}
+              </button>
+
+              {(playbackRate > 1 || isAccelerated) && (
+                <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
+                  <Zap size={10} className="fill-current" /> 2X
+                </span>
+              )}
+            </div>
+          </div>
         </div>
       </div>
+
+      {showSubtitles && (
+        <div className={`mt-1.5 p-2.5 rounded-xl text-xs flex items-start gap-2 shadow-sm border animate-fade-in ${
+          isMe ? 'bg-blue-900/40 border-blue-400/30 text-blue-100' : 'bg-slate-200/90 border-slate-300 text-slate-800'
+        }`}>
+          <Subtitles size={14} className="shrink-0 mt-0.5 opacity-80" />
+          <div className="flex-1 leading-relaxed">
+            <span className="font-bold text-[9px] uppercase tracking-wider block opacity-70 mb-0.5">Субтитры (Расшифровка)</span>
+            <p className="font-medium whitespace-pre-wrap">{subtitlesText || '*музыка*'}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

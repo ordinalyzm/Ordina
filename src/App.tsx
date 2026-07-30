@@ -27,7 +27,7 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -1183,9 +1183,16 @@ function AppContent() {
   const [showFullAvatar, setShowFullAvatar] = useState<{ src: string } | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [recordingDragX, setRecordingDragX] = useState(0);
+  const isRecordingCancelledRef = useRef(false);
+  const recordStartPointerXRef = useRef<number | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<BlobPart[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [isMultiDragSelecting, setIsMultiDragSelecting] = useState(false);
   const [scheduleDate, setScheduleDate] = useState<string>('');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
 
@@ -2314,6 +2321,12 @@ function AppContent() {
 
   const handleSendMessage = async (e?: React.FormEvent, scheduleAt?: string) => {
     e?.preventDefault();
+
+    if (isEncryptionEnabled) {
+      addToast('Включена защита от случайной отправки. Нажмите снова на щит для разблокировки', 'info');
+      return;
+    }
+
     if (!user || !selectedChat || (!inputText.trim() && !editingMessage)) {
       if (!scheduleAt) return; // if schedule date but no text, allow only if text is provided. Actually need text or editing.
       if (!inputText.trim()) return;
@@ -2427,20 +2440,52 @@ function AppContent() {
     }
   };
 
-  const startRecording = async () => {
+  const cancelRecording = () => {
+    if (isRecordingCancelledRef.current) return;
+    isRecordingCancelledRef.current = true;
+    if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.onstop = null;
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+    }
+    setIsRecording(false);
+    setRecordingDragX(0);
+    recordStartPointerXRef.current = null;
+    triggerHapticFeedback();
+    addToast('Запись отменена', 'info');
+  };
+
+  const startRecording = async (e?: React.PointerEvent | React.TouchEvent) => {
+    if (isEncryptionEnabled) {
+      addToast('Включена защита от случайной отправки. Нажмите снова на щит для разблокировки', 'info');
+      return;
+    }
+
+    const startX = e && 'clientX' in e ? e.clientX : (e && 'touches' in e && e.touches[0] ? e.touches[0].clientX : null);
+    recordStartPointerXRef.current = startX;
+    isRecordingCancelledRef.current = false;
+    setRecordingDragX(0);
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          audioChunksRef.current.push(e.data);
+      mediaRecorder.ondataavailable = (ev) => {
+        if (ev.data.size > 0) {
+          audioChunksRef.current.push(ev.data);
         }
       };
 
+      let recSecs = 0;
       mediaRecorder.onstop = async () => {
+        if (isRecordingCancelledRef.current) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
         const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const reader = new FileReader();
         reader.readAsDataURL(audioBlob);
@@ -2450,7 +2495,7 @@ function AppContent() {
             addToast('Аудио слишком большое (лимит 15 МБ).', 'error');
             return;
           }
-          sendAudioMessage(base64Audio);
+          sendAudioMessage(base64Audio, recSecs || 1);
         };
         stream.getTracks().forEach(track => track.stop());
       };
@@ -2459,7 +2504,10 @@ function AppContent() {
       setIsRecording(true);
       setRecordingTime(0);
       recordingTimerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
+        setRecordingTime(prev => {
+          recSecs = prev + 1;
+          return prev + 1;
+        });
       }, 1000);
     } catch (err) {
       addToast('Нет доступа к микрофону. Открываем настройки...', 'error');
@@ -2467,15 +2515,35 @@ function AppContent() {
     }
   };
 
+  const handleRecordingPointerMove = (e: React.PointerEvent | React.TouchEvent) => {
+    if (!isRecording || recordStartPointerXRef.current === null) return;
+    const currentX = 'clientX' in e ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : null);
+    if (currentX === null) return;
+    const deltaX = currentX - recordStartPointerXRef.current;
+    if (deltaX < 0) {
+      setRecordingDragX(deltaX);
+      if (deltaX < -85) { // Telegram threshold to cancel recording
+        cancelRecording();
+      }
+    }
+  };
+
   const stopRecording = () => {
+    if (isRecordingCancelledRef.current) return;
     if (mediaRecorderRef.current && isRecording) {
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       mediaRecorderRef.current.stop();
       setIsRecording(false);
+      setRecordingDragX(0);
+      recordStartPointerXRef.current = null;
     }
   };
 
-  const sendAudioMessage = (base64Audio: string) => {
+  const sendAudioMessage = (base64Audio: string, durationInSecs?: number) => {
+    if (isEncryptionEnabled) {
+      addToast('Включена защита от случайной отправки. Нажмите снова на щит для разблокировки', 'info');
+      return;
+    }
     if (!user || !selectedChat) return;
     try {
       const newMessage: any = {
@@ -2484,6 +2552,7 @@ function AppContent() {
         text: '🎤 Голосовое сообщение',
         type: 'audio',
         fileUrl: base64Audio,
+        duration: durationInSecs || recordingTime || 1,
         createdAt: new Date().toISOString(),
         isEncrypted: false,
         asChannel: selectedChat.type === 'channel' && !postAsMe,
@@ -5836,6 +5905,65 @@ function AppContent() {
                     </select>
                   )}
                 </div>
+              ) : selectedMsgIds.length > 0 ? (
+                <div className="flex-1 flex items-center justify-between px-2 py-1 bg-slate-900 text-white z-30 rounded-xl shadow-md">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedMsgIds([]); setIsSelectionMode(false); }}
+                      className="p-1.5 hover:bg-white/10 rounded-full transition-colors"
+                      title="Отмена"
+                    >
+                      <X size={20} />
+                    </button>
+                    <span className="font-bold text-sm">Выбрано: {selectedMsgIds.length}</span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 sm:gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const selectedMsgs = messages.filter(m => selectedMsgIds.includes(m.id));
+                        const combinedText = selectedMsgs.map(m => m.text).filter(Boolean).join('\n---\n');
+                        if (combinedText) {
+                          copyToClipboard(combinedText);
+                          addToast(`Текст (${selectedMsgs.length} сообщ.) скопирован`, 'success');
+                        }
+                      }}
+                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Copy size={14} /> <span className="hidden sm:inline">Копировать</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const firstMsg = messages.find(m => selectedMsgIds.includes(m.id));
+                        if (firstMsg) {
+                          setForwardingMessage(firstMsg);
+                          setForwardSelectedChats([]);
+                          setForwardComment('');
+                        }
+                      }}
+                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Share size={14} /> <span className="hidden sm:inline">Переслать</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        selectedMsgIds.forEach(id => deleteMessage(id, false));
+                        setSelectedMsgIds([]);
+                        setIsSelectionMode(false);
+                        addToast('Выбранные сообщения удалены', 'info');
+                      }}
+                      className="px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Trash2 size={14} /> <span className="hidden sm:inline">Удалить</span>
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <>
               <div className="flex items-center gap-4">
@@ -6206,21 +6334,42 @@ function AppContent() {
                             layout
                             drag="x"
                             dragConstraints={{ left: -100, right: 0 }}
-                            dragElastic={0.1}
+                            dragElastic={0.3}
                             dragSnapToOrigin={true}
                             onDragEnd={(event, info) => {
-                              if (info.offset.x < -40) {
+                              if (info.offset.x < -30 || info.velocity.x < -150) {
                                 setEditingMessage(null);
                                 setReplyTo(msg);
+                                triggerHapticFeedback();
                               }
                             }}
                             initial={{ opacity: 0, y: 10, scale: 0.95 }}
                             animate={{ opacity: 1, y: 0, scale: 1 }}
                             exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
+                            onClick={(e) => {
+                              if (isSelectionMode) {
+                                e.stopPropagation();
+                                if (selectedMsgIds.includes(msg.id)) {
+                                  const next = selectedMsgIds.filter(id => id !== msg.id);
+                                  setSelectedMsgIds(next);
+                                  if (next.length === 0) setIsSelectionMode(false);
+                                } else {
+                                  setSelectedMsgIds(prev => [...prev, msg.id]);
+                                }
+                              }
+                            }}
+                            onPointerEnter={(e) => {
+                              if (isSelectionMode && (e.buttons === 1 || e.buttons === 2)) {
+                                if (!selectedMsgIds.includes(msg.id)) {
+                                  setSelectedMsgIds(prev => [...prev, msg.id]);
+                                }
+                              }
+                            }}
                             className={cn(
                               "flex flex-col transition-all duration-500 w-full relative group min-w-0 touch-pan-y", 
                               isMe ? "items-end" : "items-start",
-                              highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : ""
+                              highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
+                              selectedMsgIds.includes(msg.id) ? "bg-blue-50/60 p-1.5 rounded-2xl border border-blue-200/80" : ""
                             )}
                             onContextMenu={(e) => handleContextMenu(e, msg)}
                             onTouchStart={(e) => startMsgTouchTimer(e, msg)}
@@ -6232,6 +6381,16 @@ function AppContent() {
                               "max-w-[85%] sm:max-w-[70%] relative flex items-start gap-2",
                               isMe ? "flex-row-reverse" : "flex-row"
                             )}>
+                              {isSelectionMode && (
+                                <div className="self-center shrink-0 p-1 cursor-pointer">
+                                  <div className={cn(
+                                    "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
+                                    selectedMsgIds.includes(msg.id) ? "bg-blue-600 border-blue-600 text-white" : "border-slate-300 bg-white"
+                                  )}>
+                                    {selectedMsgIds.includes(msg.id) && <Check size={12} strokeWidth={3} />}
+                                  </div>
+                                </div>
+                              )}
                               {!isMe && selectedChat.type !== 'user' && (
                                 <div 
                                   onClick={() => {
@@ -6917,6 +7076,35 @@ function AppContent() {
                   <Quote size={16} className="text-slate-400" /> Цитировать (Выделить текст)
                 </button>
 
+                <button 
+                  onClick={() => { 
+                    setIsSelectionMode(true);
+                    if (!selectedMsgIds.includes(contextMenu.msg.id)) {
+                      setSelectedMsgIds(prev => [...prev, contextMenu.msg.id]);
+                    }
+                    setContextMenu(null); 
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                >
+                  <CheckCheck size={16} className="text-slate-400" /> Выбрать несколько
+                </button>
+
+                {contextMenu.msg.type === 'audio' && (
+                  <button 
+                    onClick={() => {
+                      const msgEl = document.getElementById(`msg-${contextMenu.msg.id}`);
+                      if (msgEl) {
+                        const subBtn = msgEl.querySelector('button[title*="Субтитры"]') as HTMLButtonElement;
+                        if (subBtn) subBtn.click();
+                      }
+                      setContextMenu(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                  >
+                    <Subtitles size={16} className="text-blue-500" /> Субтитры (Распознать)
+                  </button>
+                )}
+
                 {contextMenu.msg.senderId === user?.uid && (
                   <button 
                     onClick={() => { setReplyTo(null); setEditingMessage(contextMenu.msg); setInputText(contextMenu.msg.text); setContextMenu(null); }}
@@ -7290,15 +7478,18 @@ function AppContent() {
                       ) : (
                         <button 
                           type="button"
-                          onPointerDown={(e) => { e.preventDefault(); startRecording(); }}
+                          onPointerDown={(e) => { e.preventDefault(); startRecording(e); }}
+                          onPointerMove={(e) => handleRecordingPointerMove(e)}
+                          onTouchMove={(e) => handleRecordingPointerMove(e)}
                           onPointerUp={(e) => { e.preventDefault(); stopRecording(); }}
-                          onPointerLeave={(e) => { e.preventDefault(); stopRecording(); }}
+                          onTouchEnd={(e) => { e.preventDefault(); stopRecording(); }}
+                          onPointerCancel={(e) => { e.preventDefault(); cancelRecording(); }}
                           disabled={isSending || !canSendMessages}
                           className={cn(
-                            "p-4 text-white rounded-2xl transition-all shadow-lg select-none",
+                            "p-4 text-white rounded-2xl transition-all shadow-lg select-none touch-none",
                             isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse scale-110" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
                           )}
-                          title="Удерживайте для записи"
+                          title="Удерживайте для записи. Свайп влево для отмены."
                         >
                           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                         </button>
@@ -7306,13 +7497,21 @@ function AppContent() {
                     </form>
                     
                     {isRecording && (
-                      <div className="absolute bottom-[80px] left-1/2 -translate-x-1/2 z-[5000] flex items-center gap-3 bg-white px-6 py-3 rounded-full shadow-2xl border border-slate-100 font-bold text-red-500 pointer-events-none">
-                        <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <div>
+                      <motion.div 
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        style={{ transform: `translateX(${Math.min(0, recordingDragX)}px)` }}
+                        className="absolute bottom-[80px] left-1/2 -translate-x-1/2 z-[5000] flex items-center gap-3 bg-slate-900 text-white px-5 py-3 rounded-full shadow-2xl border border-slate-700 font-bold select-none transition-transform pointer-events-none"
+                      >
+                        <div className="w-3 h-3 rounded-full bg-red-500 animate-ping" />
+                        <span className="text-red-400 font-mono text-sm">
                           {Math.floor(recordingTime / 60)}:{(recordingTime % 60).toString().padStart(2, '0')}
+                        </span>
+                        <div className="flex items-center gap-1 text-slate-300 text-xs font-normal ml-2 animate-pulse">
+                          <ChevronLeft size={16} /> ‹‹‹ Свайп влево для отмены
                         </div>
-                        <span className="text-sm font-normal text-slate-500 ml-2">Отпустите для отправки.</span>
-                      </div>
+                      </motion.div>
                     )}
                   </>
                 );

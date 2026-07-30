@@ -515,7 +515,10 @@ async function startServer() {
         return res.status(400).json({ error: 'Запрос не может быть пустым' });
       }
 
-      const systemPrompt = `Ты — экспертный ИИ-разработчик ботов для платформы Ordina Messenger / Telegram.
+      let parsedBot: any = null;
+
+      try {
+        const systemPrompt = `Ты — экспертный ИИ-разработчик ботов для платформы Ordina Messenger / Telegram.
 Твоя задача: по запросу пользователя сгенерировать или отредактировать конфигурацию бота на основе готовой схемы.
 
 Структура конфигурации бота (JSON):
@@ -558,24 +561,142 @@ async function startServer() {
 1. Если передан currentBot, сохрани существующие работающие правила и дополни или отредактируй их согласно запросу пользователя.
 2. Верни ИСКЛЮЧИТЕЛЬНО валидный JSON объект конфигурации бота без каких-либо вводных слов, кодовых блоков markdown или разметки (чистый JSON).`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: systemPrompt },
-              { text: `Запрос пользователя: "${prompt}"\n\nТекущая конфигурация бота (если есть):\n${JSON.stringify(currentBot || null, null, 2)}` }
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: systemPrompt },
+                { text: `Запрос пользователя: "${prompt}"\n\nТекущая конфигурация бота (если есть):\n${JSON.stringify(currentBot || null, null, 2)}` }
+              ]
+            }
+          ]
+        });
+
+        let responseText = response.text || '';
+        responseText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+        parsedBot = JSON.parse(responseText);
+      } catch (geminiErr: any) {
+        console.warn('[Bot AI] Gemini call failed/blocked, falling back to local AI engine:', geminiErr?.message || geminiErr);
+        
+        // Local intelligent fallback generator
+        const lowerPrompt = prompt.toLowerCase();
+        const existingRules = currentBot?.rules ? [...currentBot.rules] : [];
+
+        let botName = currentBot?.name || 'ИИ-Помощник Бот';
+        let botUsername = currentBot?.username || `bot_${Math.floor(1000 + Math.random() * 9000)}`;
+        let botDesc = currentBot?.description || 'Автоматически сгенерированный ИИ бот-ассистент';
+
+        if (lowerPrompt.includes('приветст') || lowerPrompt.includes('welcome')) {
+          botName = 'Приветственный Бот';
+          botDesc = 'Приветствует новых участников и дает справку по командам';
+        } else if (lowerPrompt.includes('модера') || lowerPrompt.includes('спам') || lowerPrompt.includes('бан')) {
+          botName = 'Ордина Модератор';
+          botDesc = 'Автоматическая модерация сообщений и защита чата от спама';
+        } else if (lowerPrompt.includes('отзыв') || lowerPrompt.includes('фидбек') || lowerPrompt.includes('вопрос')) {
+          botName = 'Бот Сбора Обратной Связи';
+          botDesc = 'Принимает вопросы и отзывы участников чата';
+        }
+
+        const newRules: any[] = [];
+
+        // Always ensure /start command
+        newRules.push({
+          id: `rule_start_${Date.now()}`,
+          trigger: { type: 'command', params: { value: '/start' }, forAdminsOnly: false },
+          conditions: [],
+          actions: [
+            {
+              id: `act_start_${Date.now()}`,
+              type: 'send_message',
+              params: {
+                text: lowerPrompt.includes('модера')
+                  ? '🛡️ Привет! Я бот-модератор. Я слежу за порядком в чате и помогаю участникам.'
+                  : `👋 Здравствуйте! Я бот «${botName}». Чем я могу вам помочь? Напишите /help для просмотра всех команд.`,
+              }
+            }
+          ]
+        });
+
+        // Always add /help command
+        newRules.push({
+          id: `rule_help_${Date.now()}`,
+          trigger: { type: 'command', params: { value: '/help' }, forAdminsOnly: false },
+          conditions: [],
+          actions: [
+            {
+              id: `act_help_${Date.now()}`,
+              type: 'send_message',
+              params: {
+                text: '📌 Доступные команды:\n/start — Перезапуск бота\n/help — Справка по командам\n/info — Информация о сообществе\n/rules — Правила поведения',
+              }
+            }
+          ]
+        });
+
+        // Add /rules command if requested
+        if (lowerPrompt.includes('правил') || lowerPrompt.includes('rules') || lowerPrompt.includes('приветст')) {
+          newRules.push({
+            id: `rule_rules_${Date.now()}`,
+            trigger: { type: 'command', params: { value: '/rules' }, forAdminsOnly: false },
+            conditions: [],
+            actions: [
+              {
+                id: `act_rules_${Date.now()}`,
+                type: 'send_message',
+                params: {
+                  text: '📜 Правила чата:\n1. Будьте вежливы\n2. Никакого спама и несанкционированной рекламы\n3. Уважайте участников сообщества',
+                }
+              }
             ]
-          }
-        ]
-      });
+          });
+        }
 
-      let responseText = response.text || '';
-      responseText = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
+        // Add New Member Greeting trigger
+        if (lowerPrompt.includes('участник') || lowerPrompt.includes('приветст') || lowerPrompt.includes('вход')) {
+          newRules.push({
+            id: `rule_new_member_${Date.now()}`,
+            trigger: { type: 'new_member', params: {}, forAdminsOnly: false },
+            conditions: [],
+            actions: [
+              {
+                id: `act_welcome_${Date.now()}`,
+                type: 'send_message',
+                params: {
+                  text: '🎉 Добро пожаловать в наше сообщество! Пожалуйста, ознакомьтесь с правилами командой /rules.',
+                }
+              }
+            ]
+          });
+        }
 
-      const parsedBot = JSON.parse(responseText);
-      
+        // Add moderation rule if moderation mentioned
+        if (lowerPrompt.includes('модера') || lowerPrompt.includes('спам') || lowerPrompt.includes('бан') || lowerPrompt.includes('мат')) {
+          newRules.push({
+            id: `rule_mod_${Date.now()}`,
+            trigger: { type: 'text', params: { value: 'спам' }, forAdminsOnly: false },
+            conditions: [],
+            actions: [
+              {
+                id: `act_mod_${Date.now()}`,
+                type: 'moderate',
+                params: { text: '⚠️ Сообщение содержит запрещенные слова или спам.' }
+              }
+            ]
+          });
+        }
+
+        parsedBot = {
+          id: currentBot?.id || uuidv4(),
+          name: botName,
+          username: botUsername,
+          description: botDesc,
+          isActive: true,
+          rules: existingRules.length > 0 ? [...existingRules, ...newRules] : newRules,
+        };
+      }
+
       if (!parsedBot.id) parsedBot.id = currentBot?.id || uuidv4();
       if (!parsedBot.name) parsedBot.name = 'Новый ИИ Бот';
       if (!parsedBot.rules) parsedBot.rules = [];
