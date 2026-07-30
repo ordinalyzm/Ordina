@@ -27,7 +27,7 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -362,6 +362,24 @@ function AppContent() {
     return `был(а) ${d.toLocaleDateString('ru-RU')} в ${hours}:${minutes}`;
   };
   const [inputText, setInputText] = useState('');
+  const [mutedChats, setMutedChats] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ordina_muted_chats') || '[]');
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const toggleMuteChat = (chatId: string) => {
+    setMutedChats(prev => {
+      const next = prev.includes(chatId) ? prev.filter(id => id !== chatId) : [...prev, chatId];
+      try {
+        localStorage.setItem('ordina_muted_chats', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
+
   const [showRadar, setShowRadar] = useState(false);
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
@@ -3726,11 +3744,13 @@ function AppContent() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]"
+            onClick={() => { setShowProfile(false); setTimeout(() => setViewedProfile(null), 300); }}
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[85vh] sm:max-h-[90vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="relative h-40 bg-blue-600 flex items-center justify-center shrink-0">
                 {(viewedProfile || profile)?.profileBackgroundURL ? (
@@ -4666,11 +4686,13 @@ function AppContent() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-[10000] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 pt-[env(safe-area-inset-top,0px)] pb-[env(safe-area-inset-bottom,0px)]"
+            onClick={() => setShowSettings(false)}
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[85vh] sm:max-h-[90vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="p-4 sm:p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <h2 className="text-xl font-bold">Настройки</h2>
@@ -5156,16 +5178,16 @@ function AppContent() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-[500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            className="fixed inset-0 z-[500] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4"
             onClick={() => setShowGroupInfo(false)}
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl"
+              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[90vh]"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="relative h-48 bg-slate-100 flex items-center justify-center overflow-hidden">
+              <div className="relative h-44 sm:h-48 bg-slate-100 flex items-center justify-center overflow-hidden shrink-0">
                 {(activeChatData as Group)?.photoURL ? (
                   <img 
                     src={(activeChatData as Group).photoURL} 
@@ -5181,21 +5203,96 @@ function AppContent() {
                 )}
                 <button 
                   onClick={() => setShowGroupInfo(false)}
-                  className="absolute top-4 left-4 p-2 bg-black/20 hover:bg-black/30 rounded-full text-white z-10"
+                  className="absolute top-4 left-4 p-2.5 bg-black/40 hover:bg-black/60 rounded-full text-white z-10 transition-colors shadow-md active:scale-95"
+                  title="Закрыть"
                 >
-                  <ArrowLeft size={20} />
+                  <ArrowLeft size={18} />
                 </button>
+
+                {((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'owner' || (activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'admin') && (
+                  <button 
+                    onClick={() => {
+                      setShowGroupInfo(false);
+                      setShowGroupSettings(true);
+                    }}
+                    className="absolute top-4 right-4 p-2.5 bg-black/40 hover:bg-black/60 rounded-full text-white z-10 transition-all shadow-md active:scale-95 flex items-center gap-1 px-3 text-xs font-bold"
+                    title="Настройки канала"
+                  >
+                    <Settings size={16} />
+                    <span>Настройки</span>
+                  </button>
+                )}
               </div>
-              <div className="p-8">
-                <div className="mb-6">
-                  <h2 className="text-2xl font-bold text-slate-900">{(activeChatData as Group)?.name}</h2>
-                  <p className="text-xs font-bold text-blue-600 uppercase">{(activeChatData as Group)?.type === 'group' ? 'Группа' : 'Канал'}</p>
+              <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1 custom-scrollbar">
+                <div>
+                  <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{(activeChatData as Group)?.name}</h2>
+                  <p className="text-xs font-bold text-blue-600 uppercase">
+                    {(activeChatData as Group)?.type === 'group' ? 'Группа' : 'Канал'} • {(activeChatData as Group)?.members?.length || 0} участников
+                  </p>
+                </div>
+
+                {/* Telegram-style Quick Action Grid */}
+                <div className="grid grid-cols-3 gap-2">
+                  <button 
+                    onClick={() => {
+                      setShowGroupInfo(false);
+                      setShowChatSearch(true);
+                    }}
+                    className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
+                  >
+                    <Search size={18} className="mb-1 text-blue-600" />
+                    <span className="text-[11px] font-bold">Поиск</span>
+                  </button>
+
+                  <button 
+                    onClick={() => {
+                      toggleMuteChat((activeChatData as Group).id);
+                      addToast(mutedChats.includes((activeChatData as Group).id) ? 'Уведомления включены' : 'Уведомления отключены', 'info');
+                    }}
+                    className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
+                  >
+                    {mutedChats.includes((activeChatData as Group).id) ? (
+                      <>
+                        <BellOff size={18} className="mb-1 text-amber-500" />
+                        <span className="text-[11px] font-bold">Без звука</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bell size={18} className="mb-1 text-emerald-600" />
+                        <span className="text-[11px] font-bold">Со звуком</span>
+                      </>
+                    )}
+                  </button>
+
+                  {((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'owner' || (activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'admin') ? (
+                    <button 
+                      onClick={() => {
+                        setShowGroupInfo(false);
+                        setShowGroupSettings(true);
+                      }}
+                      className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 rounded-2xl text-blue-700 transition-colors active:scale-95"
+                    >
+                      <Settings size={18} className="mb-1 text-blue-600" />
+                      <span className="text-[11px] font-bold">Настройки</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={() => {
+                        navigator.clipboard.writeText(window.location.origin + '?group=' + (activeChatData as Group).id);
+                        addToast('Ссылка на канал скопирована', 'success');
+                      }}
+                      className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
+                    >
+                      <Share2 size={18} className="mb-1 text-indigo-600" />
+                      <span className="text-[11px] font-bold">Ссылка</span>
+                    </button>
+                  )}
                 </div>
                 
-                <div className="space-y-6">
+                <div className="space-y-4">
                   {(activeChatData as Group)?.description && (
                     <div className="p-4 bg-slate-50 rounded-2xl">
-                      <p className="text-xs font-bold text-slate-400 uppercase mb-2">Описание</p>
+                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">Описание</p>
                       <p className="text-sm text-slate-700 leading-relaxed">{(activeChatData as Group).description}</p>
                     </div>
                   )}
@@ -5219,7 +5316,7 @@ function AppContent() {
                     </button>
                   )}
                   <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
-                    <QRCodeSVG value={(activeChatData as Group)?.id || ''} size={80} />
+                    <QRCodeSVG value={(activeChatData as Group)?.id || ''} size={70} />
                     <div>
                       <p className="text-xs font-bold text-slate-400 uppercase">QR-код группы</p>
                       <p className="text-xs text-slate-500">Для приглашения участников</p>
@@ -7224,7 +7321,8 @@ function AppContent() {
             color: 'white' 
           }}
           className={cn(
-            window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[400px] border-l border-slate-800 shadow-2xl"
+            "pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)]",
+            window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[400px] border-l border-slate-800 shadow-2xl pt-0 pb-0"
           )}
         >
           <div className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-slate-900 text-white shrink-0">
@@ -7371,12 +7469,14 @@ function AppContent() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[1000] flex items-center justify-center p-4"
+            onClick={() => setDangerousFile(null)}
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               exit={{ scale: 0.9, y: 20 }}
               className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="p-6 text-center">
                 <div className="w-16 h-16 bg-red-100 text-red-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -7486,11 +7586,13 @@ function AppContent() {
         {textSelectForQuote && (
           <div 
             className="fixed inset-0 z-[1200] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 select-none"
+            onClick={() => setTextSelectForQuote(null)}
           >
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
               className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[90vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
             >
               <div className="p-4 border-b border-slate-100 flex items-center justify-between shrink-0">
                 <h3 className="font-bold text-lg">Выделите текст для цитаты</h3>

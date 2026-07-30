@@ -187,6 +187,28 @@ function isInQuietHours(settings: NotificationSettings): boolean {
   }
 }
 
+export async function initLocalNotificationChannels() {
+  if (typeof window === 'undefined') return;
+  try {
+    if (typeof LocalNotifications !== 'undefined' && typeof LocalNotifications.createChannel === 'function') {
+      await LocalNotifications.createChannel({
+        id: 'ordina_messages',
+        name: 'Сообщения Ordina',
+        description: 'Уведомления о новых личных сообщениях и публикациях в каналах',
+        importance: 5,
+        visibility: 1,
+        vibration: true,
+        sound: 'res://raw/notification_sound',
+      });
+    }
+  } catch (e) {
+    console.warn('LocalNotifications.createChannel error:', e);
+  }
+}
+
+// Auto-run channel creation on module import
+initLocalNotificationChannels();
+
 export function showSystemNotification(
   title: string,
   body: string,
@@ -202,10 +224,6 @@ export function showSystemNotification(
     return;
   }
 
-  if (!isNotificationSupported()) {
-    return;
-  }
-
   let formattedBody = body;
   if (settings.previewMode === 'sender_only') {
     formattedBody = 'Новое сообщение';
@@ -213,26 +231,51 @@ export function showSystemNotification(
     formattedBody = 'У вас новое уведомление';
   }
 
+  // 1. Try Capacitor LocalNotifications for native Android/iOS background push heads-up alerts
   try {
-    if (Notification.permission === 'granted') {
-      const notification = new Notification(title, {
-        body: formattedBody,
-        icon: options.icon || '/icon.png',
-        tag: options.tag || 'ordina-msg',
-        badge: '/icon.png',
-        renotify: true,
-      } as NotificationOptions);
-
-      if (options.onClick) {
-        notification.onclick = (e) => {
-          e.preventDefault();
-          window.focus();
-          options.onClick?.();
-          notification.close();
-        };
-      }
+    if (typeof LocalNotifications !== 'undefined' && typeof LocalNotifications.schedule === 'function') {
+      LocalNotifications.schedule({
+        notifications: [
+          {
+            title: title,
+            body: formattedBody,
+            id: Math.floor(Math.random() * 1000000),
+            schedule: { at: new Date(Date.now() + 100) },
+            channelId: 'ordina_messages',
+            extra: {
+              tag: options.tag,
+            },
+          },
+        ],
+      }).catch((e) => console.warn('LocalNotifications schedule error:', e));
     }
   } catch (e) {
-    console.warn('System Notification API unavailable or inhibited in this context:', e);
+    console.warn('LocalNotifications schedule catch error:', e);
+  }
+
+  // 2. Try standard Web Notification API as fallback
+  if (isNotificationSupported()) {
+    try {
+      if (Notification.permission === 'granted') {
+        const notification = new Notification(title, {
+          body: formattedBody,
+          icon: options.icon || '/icon.png',
+          tag: options.tag || 'ordina-msg',
+          badge: '/icon.png',
+          renotify: true,
+        } as NotificationOptions);
+
+        if (options.onClick) {
+          notification.onclick = (e) => {
+            e.preventDefault();
+            window.focus();
+            options.onClick?.();
+            notification.close();
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('System Notification API unavailable or inhibited in this context:', e);
+    }
   }
 }
