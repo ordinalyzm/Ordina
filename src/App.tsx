@@ -388,6 +388,8 @@ function AppContent() {
   const [chatSearchFilterUser, setChatSearchFilterUser] = useState<string | null>(null);
   
   const [showCreateChatModal, setShowCreateChatModal] = useState(false);
+  const [showMultiDeleteModal, setShowMultiDeleteModal] = useState(false);
+  const [deleteTimerDelay, setDeleteTimerDelay] = useState<number>(0);
   const [createChatType, setCreateChatType] = useState<'group' | 'channel'>('group');
   const [createChatName, setCreateChatName] = useState('');
   
@@ -2404,7 +2406,7 @@ function AppContent() {
         }
       }
 
-      const isChannelSend = selectedChat.type === 'channel' && !postAsMe;
+      const isChannelSend = (selectedChat.type === 'channel' || (activeChatData as Group)?.type === 'channel') && !postAsMe;
 
       const shouldEncrypt = (isEncryptionEnabled && (!((users.find(u => u.uid === selectedChat.id)) as any)?.isBot) && selectedChat.type === 'user') || (isEncryptionEnabled && selectedChat.type === 'group');
 
@@ -2515,14 +2517,14 @@ function AppContent() {
         rec.continuous = true;
         rec.interimResults = true;
         rec.onresult = (ev: any) => {
-          let current = '';
-          for (let i = ev.resultIndex; i < ev.results.length; ++i) {
-            if (ev.results[i].isFinal) {
-              current += ev.results[i][0].transcript;
+          let fullTranscript = '';
+          for (let i = 0; i < ev.results.length; ++i) {
+            if (ev.results[i] && ev.results[i][0]) {
+              fullTranscript += ev.results[i][0].transcript;
             }
           }
-          if (current) {
-            transcribedSpeechRef.current = (transcribedSpeechRef.current + ' ' + current).trim();
+          if (fullTranscript.trim()) {
+            transcribedSpeechRef.current = fullTranscript.trim();
           }
         };
         rec.start();
@@ -6036,12 +6038,7 @@ function AppContent() {
 
                     <button
                       type="button"
-                      onClick={() => {
-                        selectedMsgIds.forEach(id => deleteMessage(id, false));
-                        setSelectedMsgIds([]);
-                        setIsSelectionMode(false);
-                        addToast('Выбранные сообщения удалены', 'info');
-                      }}
+                      onClick={() => setShowMultiDeleteModal(true)}
                       className="px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
                     >
                       <Trash2 size={14} /> <span className="hidden sm:inline">Удалить</span>
@@ -6147,7 +6144,7 @@ function AppContent() {
                     <Settings size={20} />
                   </button>
                 )}
-                 {selectedChat.type === 'user' && (
+                 {selectedChat.type === 'user' && selectedChat.id !== user?.uid && (
                   <button 
                     onClick={() => {
                       if ((window as any).addToast) {
@@ -7228,19 +7225,6 @@ function AppContent() {
                   </button>
                 )}
 
-                <button 
-                  onClick={() => { 
-                    setIsSelectionMode(true);
-                    if (!selectedMsgIds.includes(contextMenu.msg.id)) {
-                      setSelectedMsgIds(prev => [...prev, contextMenu.msg.id]);
-                    }
-                    setContextMenu(null); 
-                  }}
-                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
-                >
-                  <CheckCheck size={16} className="text-slate-400" /> Выбрать несколько
-                </button>
-
                 {contextMenu.msg.type === 'audio' && (
                   <button 
                     onClick={() => {
@@ -8262,6 +8246,97 @@ function AppContent() {
         onClose={() => setShowNotificationSettingsModal(false)}
         addToast={addToast}
       />
+
+      {showMultiDeleteModal && (
+        <div className="fixed inset-0 bg-black/50 z-[9999] flex items-center justify-center p-4" onClick={() => setShowMultiDeleteModal(false)}>
+          <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-800">Удаление сообщений</h3>
+              <button onClick={() => setShowMultiDeleteModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="text-sm text-slate-600">
+              Выбрано сообщений: <span className="font-bold text-slate-800">{selectedMsgIds.length}</span>. Выберите действие:
+            </p>
+
+            <div className="space-y-2 pt-1">
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">
+                Отложенный таймер удаления:
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { label: 'Сразу', ms: 0 },
+                  { label: '5 сек', ms: 5000 },
+                  { label: '10 сек', ms: 10000 },
+                  { label: '30 сек', ms: 30000 },
+                ].map((opt) => (
+                  <button
+                    key={opt.ms}
+                    type="button"
+                    onClick={() => setDeleteTimerDelay(opt.ms)}
+                    className={cn(
+                      "py-1.5 px-2 rounded-xl text-xs font-bold transition-all border",
+                      deleteTimerDelay === opt.ms
+                        ? "bg-blue-600 text-white border-blue-600 shadow-sm"
+                        : "bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="pt-3 space-y-2 flex flex-col">
+              <button
+                type="button"
+                onClick={() => {
+                  selectedMsgIds.forEach(id => deleteMessage(id, false, deleteTimerDelay));
+                  setSelectedMsgIds([]);
+                  setIsSelectionMode(false);
+                  setShowMultiDeleteModal(false);
+                  addToast(deleteTimerDelay > 0 ? `Сообщения будут удалены через ${deleteTimerDelay / 1000} сек` : 'Сообщения удалены у вас', 'info');
+                }}
+                className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+              >
+                <Trash2 size={16} /> Удалить для себя
+              </button>
+
+              {(() => {
+                const selectedMsgs = messages.filter(m => selectedMsgIds.includes(m.id));
+                const canDeleteAllForEveryone = selectedMsgs.length > 0 && selectedMsgs.every(m => canDeleteForEveryoneState(m));
+                if (!canDeleteAllForEveryone) return null;
+
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      selectedMsgIds.forEach(id => deleteMessage(id, true, deleteTimerDelay));
+                      setSelectedMsgIds([]);
+                      setIsSelectionMode(false);
+                      setShowMultiDeleteModal(false);
+                      addToast(deleteTimerDelay > 0 ? `Сообщения будут удалены для всех через ${deleteTimerDelay / 1000} сек` : 'Сообщения удалены для всех', 'info');
+                    }}
+                    className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
+                  >
+                    <Trash2 size={16} /> Удалить для всех
+                  </button>
+                );
+              })()}
+
+              <button
+                type="button"
+                onClick={() => setShowMultiDeleteModal(false)}
+                className="w-full py-2 px-4 text-slate-500 hover:text-slate-700 font-medium text-xs text-center transition-colors mt-1"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Highest priority Toasts container on top of all modals and overlays */}
       <ToastsContainer toasts={toasts} />
