@@ -257,52 +257,45 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
 
   return (
     <div className="relative w-full h-full bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-2xl flex items-center justify-center">
-      {nodes.length === 0 ? (
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full border-4 border-blue-500 border-t-transparent animate-spin" />
-          <div className="text-blue-400 text-sm font-bold animate-pulse uppercase tracking-widest">Поиск узлов...</div>
-        </div>
-      ) : (
-        <canvas 
-          ref={canvasRef} 
-          className="w-full h-full cursor-crosshair relative z-10 block"
-          style={{ display: 'block', width: '100%', height: '100%' }}
-          onClick={(e) => {
-            const rect = canvasRef.current?.getBoundingClientRect();
-            if (!rect) return;
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            
-            const centerX = rect.width / 2;
-            const centerY = rect.height / 2;
-            const maxRadius = Math.min(centerX, centerY) * 0.9;
-            
-            const currentUserNode = nodes.find(n => n.id === currentUserNodeId);
-            
-            const clickedNode = nodes.find(node => {
-              let nx, ny;
-              if (currentUserNode && node.lat !== undefined && node.lng !== undefined && currentUserNode.lat !== undefined && currentUserNode.lng !== undefined) {
-                if (node.id === currentUserNodeId) {
-                  nx = centerX;
-                  ny = centerY;
-                } else {
-                  const dx = (node.lng - currentUserNode.lng) * Math.cos((currentUserNode.lat + node.lat) / 2 * Math.PI / 180) * 111320;
-                  const dy = (node.lat - currentUserNode.lat) * 111000;
-                  nx = centerX + (dx / REAL_MESH_RANGE) * maxRadius;
-                  ny = centerY - (dy / REAL_MESH_RANGE) * maxRadius;
-                }
+      <canvas 
+        ref={canvasRef} 
+        className="w-full h-full cursor-crosshair relative z-10 block"
+        style={{ display: 'block', width: '100%', height: '100%' }}
+        onClick={(e) => {
+          const rect = canvasRef.current?.getBoundingClientRect();
+          if (!rect) return;
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          
+          const centerX = rect.width / 2;
+          const centerY = rect.height / 2;
+          const maxRadius = Math.min(centerX, centerY) * 0.9;
+          
+          const currentUserNode = nodes.find(n => n.id === currentUserNodeId);
+          
+          const clickedNode = nodes.find(node => {
+            let nx, ny;
+            if (currentUserNode && node.lat !== undefined && node.lng !== undefined && currentUserNode.lat !== undefined && currentUserNode.lng !== undefined) {
+              if (node.id === currentUserNodeId) {
+                nx = centerX;
+                ny = centerY;
               } else {
-                nx = (node.x / 400) * rect.width;
-                ny = (node.y / 400) * rect.height;
+                const dx = (node.lng - currentUserNode.lng) * Math.cos((currentUserNode.lat + node.lat) / 2 * Math.PI / 180) * 111320;
+                const dy = (node.lat - currentUserNode.lat) * 111000;
+                nx = centerX + (dx / REAL_MESH_RANGE) * maxRadius;
+                ny = centerY - (dy / REAL_MESH_RANGE) * maxRadius;
               }
-              
-              return Math.sqrt(Math.pow(nx - x, 2) + Math.pow(ny - y, 2)) < 20;
-            });
+            } else {
+              nx = (node.x / 400) * rect.width;
+              ny = (node.y / 400) * rect.height;
+            }
             
-            if (clickedNode && onNodeClick) onNodeClick(clickedNode);
-          }}
-        />
-      )}
+            return Math.sqrt(Math.pow(nx - x, 2) + Math.pow(ny - y, 2)) < 20;
+          });
+          
+          if (clickedNode && onNodeClick) onNodeClick(clickedNode);
+        }}
+      />
       <div className="absolute top-4 left-4 flex flex-col gap-2 bg-black/40 p-3 rounded-xl backdrop-blur-md border border-white/10 z-20">
         <div className="flex items-center gap-2 text-[10px] font-bold text-white uppercase tracking-tighter">
           <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" /> Вы

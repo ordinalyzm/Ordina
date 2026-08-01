@@ -911,7 +911,8 @@ io.on('connection', (socket) => {
         
         await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2) ON CONFLICT (uid) DO UPDATE SET data = EXCLUDED.data', [uid, JSON.stringify(finalData)]);
         
-        onlineUsers.set(uid, { socketId: socket.id, status: finalData.status || 'offline', customStatus: finalData.customStatus });
+        finalData.status = finalData.status || 'online';
+        onlineUsers.set(uid, { socketId: socket.id, status: finalData.status, customStatus: finalData.customStatus });
         socket.join(`user:${uid}`);
         
         // Emit synced early to prevent UI block
@@ -928,9 +929,21 @@ io.on('connection', (socket) => {
           socket.join(`chat:${g.id}`);
         });
         
-        if (isNewUser) {
-          io.emit('user:updated', finalData);
-        }
+        // Always broadcast user update so multi-user clients see everyone online
+        io.emit('user:updated', finalData);
+
+        // Send latest users list to connecting socket immediately
+        try {
+          const { rows: uRows } = await pool.query('SELECT data FROM users');
+          const allUsersList = uRows.map((r: any) => JSON.parse(r.data));
+          const { rows: bRows } = await pool.query('SELECT data FROM bots');
+          const botsAsUsers = bRows.map((r: any) => {
+             const b = JSON.parse(r.data);
+             if (b.isActive === false) return null;
+             return getBotAsUser(b);
+          }).filter(Boolean);
+          socket.emit('users:list', [...allUsersList, ...botsAsUsers]);
+        } catch (e) {}
 
         if (finalData.email === 'ordinalyzm25@gmail.com') {
           const globalId = 'global_channel';

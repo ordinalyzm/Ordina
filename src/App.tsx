@@ -309,15 +309,11 @@ function AppContent() {
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
     let saved = localStorage.getItem('ordina_server_url');
-    if (saved && (saved.includes('ais-dev') || saved.includes('railway'))) {
-      saved = 'https://ordina-server.onrender.com';
-      localStorage.setItem('ordina_server_url', saved);
+    if (saved && (saved.includes('onrender.com') || saved.includes('ais-dev') || saved.includes('railway'))) {
+      localStorage.removeItem('ordina_server_url');
+      saved = null;
     }
-    if (saved) return saved;
-    if ((window as any).Capacitor) {
-      return 'https://ordina-server.onrender.com';
-    }
-    return undefined;
+    return saved || undefined;
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -505,7 +501,7 @@ function AppContent() {
 
   useEffect(() => {
     const wakeUpServer = async () => {
-      const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : window.location.origin);
+      const targetServerUrl = socketUrl || window.location.origin;
       const cleanUrl = targetServerUrl.replace(/\/$/, '');
 
       let success = false;
@@ -546,7 +542,7 @@ function AppContent() {
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
     const transports = ['polling', 'websocket'];
-    const targetUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : undefined);
+    const targetUrl = socketUrl;
 
     const socketOptions = {
       reconnection: true,
@@ -1456,16 +1452,36 @@ function AppContent() {
   };
 
   const radarNodes = useMemo(() => {
-    return users.map(u => ({
-      id: u.uid,
-      displayName: u.displayName || 'Аноним',
-      x: u.meshPosition?.x,
-      y: u.meshPosition?.y,
-      lat: u.meshPosition?.lat,
-      lng: u.meshPosition?.lng,
-      isOnline: u.status === 'online'
-    }));
-  }, [users]);
+    const list: any[] = [];
+    const currentUid = user?.uid || profile?.uid || 'local_me';
+    const currentName = user?.displayName || profile?.displayName || 'Вы';
+
+    users.forEach(u => {
+      list.push({
+        id: u.uid,
+        displayName: u.displayName || (u as any).name || 'Аноним',
+        x: u.meshPosition?.x,
+        y: u.meshPosition?.y,
+        lat: u.meshPosition?.lat,
+        lng: u.meshPosition?.lng,
+        isOnline: isUserOnline(u)
+      });
+    });
+
+    if (!list.some(n => n.id === currentUid)) {
+      list.unshift({
+        id: currentUid,
+        displayName: currentName,
+        x: profile?.meshPosition?.x || 200,
+        y: profile?.meshPosition?.y || 200,
+        lat: profile?.meshPosition?.lat,
+        lng: profile?.meshPosition?.lng,
+        isOnline: true
+      });
+    }
+
+    return list;
+  }, [users, user, profile, isUserOnline]);
 
   const handleDatabaseError = (error: any, operationType: string) => {
     console.error(`Database error during ${operationType}:`, error);
@@ -7771,22 +7787,11 @@ function AppContent() {
                   );
                 }
                 
-                if (users.length === 0) {
-                  return (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#020617] text-blue-500 gap-6">
-                      <div className="relative w-20 h-20">
-                        <div className="absolute inset-0 border-4 border-blue-500/10 rounded-full" />
-                        <div className="absolute inset-0 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
-                      </div>
-                      <p className="text-xs font-bold uppercase tracking-[0.3em] animate-pulse">INIT_SCANNING</p>
-                    </div>
-                  );
-                }
                 return (
                   <div className="w-full h-full relative bg-[#020617]">
                     <Radar 
                       nodes={radarNodes}
-                      currentUserNodeId={user?.uid || ''}
+                      currentUserNodeId={user?.uid || profile?.uid || 'local_me'}
                       onNodeClick={(node) => {
                         selectChat({ type: 'user', id: node.id });
                         setShowRadar(false);
