@@ -269,7 +269,7 @@ export const getServerUrl = (customUrl?: string): string => {
     return customUrl.trim().replace(/\/$/, '');
   }
   if ((window as any).Capacitor) {
-    return 'https://ais-dev-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
+    return '';
   }
   return window.location.origin.replace(/\/$/, '');
 };
@@ -509,6 +509,11 @@ function AppContent() {
     const wakeUpServer = async () => {
       const targetServerUrl = getServerUrl(socketUrl);
 
+      // In Capacitor without custom server URL configured, skip server ping
+      if ((window as any).Capacitor && !socketUrl) {
+        return;
+      }
+
       let success = false;
       let attempts = 0;
       const maxAttempts = 15;
@@ -521,7 +526,8 @@ function AppContent() {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s per ping attempt
           
-          const res = await fetch(`${targetServerUrl}/api/health`, {
+          const healthUrl = targetServerUrl ? `${targetServerUrl}/api/health` : '/api/health';
+          const res = await fetch(healthUrl, {
             method: 'GET',
             signal: controller.signal,
             headers: { 'Accept': 'application/json' }
@@ -530,11 +536,11 @@ function AppContent() {
 
           if (res.ok) {
             success = true;
-            console.log('[WakeUp] Backend server is active at', targetServerUrl);
+            console.log('[WakeUp] Backend server is active at', targetServerUrl || 'local');
             break;
           }
         } catch (err) {
-          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl} (attempt ${attempts}/${maxAttempts})...`);
+          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl || 'local'} (attempt ${attempts}/${maxAttempts})...`);
         }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -548,6 +554,11 @@ function AppContent() {
   useEffect(() => {
     const transports = ['polling', 'websocket'];
     const targetUrl = socketUrl || ((window as any).Capacitor ? getServerUrl() : undefined);
+
+    if ((window as any).Capacitor && !targetUrl) {
+      console.log('[Socket] Capacitor app running without custom server URL. Socket connection deferred.');
+      return;
+    }
 
     const socketOptions = {
       reconnection: true,
