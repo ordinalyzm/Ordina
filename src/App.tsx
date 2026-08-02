@@ -923,7 +923,10 @@ function AppContent() {
     });
 
     newSocket.on('connect_error', (err) => {
-      console.error('Socket connect error:', err);
+      // Use debug log to prevent spamming console errors during cold server wake-up
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('Socket connecting...', err?.message || err);
+      }
       setIsLoadingMessages(false);
     });
 

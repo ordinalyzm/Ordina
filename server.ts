@@ -432,7 +432,17 @@ async function initDb() {
   }
 }
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiClient: GoogleGenAI | null = null;
+function getAiClient(): GoogleGenAI | null {
+  if (!aiClient && process.env.GEMINI_API_KEY) {
+    try {
+      aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    } catch (e) {
+      console.warn('[Gemini] Failed to initialize GoogleGenAI client:', e);
+    }
+  }
+  return aiClient;
+}
 
 const cleanupStickers = async () => {
   try {
@@ -578,6 +588,11 @@ async function startServer() {
 Инструкция:
 1. Если передан currentBot, сохрани существующие работающие правила и дополни или отредактируй их согласно запросу пользователя.
 2. Верни ИСКЛЮЧИТЕЛЬНО валидный JSON объект конфигурации бота без каких-либо вводных слов, кодовых блоков markdown или разметки (чистый JSON).`;
+
+        const ai = getAiClient();
+        if (!ai) {
+          throw new Error('GEMINI_API_KEY environment variable is missing');
+        }
 
         const response = await ai.models.generateContent({
           model: 'gemini-2.5-flash',
@@ -2063,8 +2078,14 @@ io.on('connection', (socket) => {
         const match = data.fileUrl.match(mimePattern);
         const mimeType = match ? match[1] : 'audio/webm';
         
+        const ai = getAiClient();
+        if (!ai) {
+          console.warn('[Transcribe] Gemini API key not available.');
+          return;
+        }
+
         const response = await ai.models.generateContent({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash',
           contents: [{
             role: 'user',
             parts: [
@@ -2349,10 +2370,9 @@ io.on('connection', (socket) => {
         return res.status(400).json({ error: 'Prompt is required' });
       }
 
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (apiKey) {
+      const ai = getAiClient();
+      if (ai) {
         try {
-          const ai = new GoogleGenAI({ apiKey });
           const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: `Вы — эксперт по проектированию чат-ботов. Создайте конфигурацию бота на основе промпта пользователя.
