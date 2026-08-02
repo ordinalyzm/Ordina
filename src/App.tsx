@@ -264,6 +264,19 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
   );
 }
 
+const DEFAULT_CLOUD_SERVER = 'https://ais-dev-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
+
+export const getEffectiveServerUrl = (customUrl?: string): string => {
+  if (customUrl && customUrl.trim()) {
+    return customUrl.trim().replace(/\/$/, '');
+  }
+  const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000');
+  if (isCapacitor) {
+    return DEFAULT_CLOUD_SERVER;
+  }
+  return window.location.origin.replace(/\/$/, '');
+};
+
 function AppContent() {
   const [user, setUser] = useState<User | null>(null);
   const voicePlayer = useVoicePlayer();
@@ -308,11 +321,7 @@ function AppContent() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
-    let saved = localStorage.getItem('ordina_server_url');
-    if (saved && (saved.includes('onrender.com') || saved.includes('ais-dev') || saved.includes('railway'))) {
-      localStorage.removeItem('ordina_server_url');
-      saved = null;
-    }
+    const saved = localStorage.getItem('ordina_server_url');
     return saved || undefined;
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -501,8 +510,7 @@ function AppContent() {
 
   useEffect(() => {
     const wakeUpServer = async () => {
-      const targetServerUrl = socketUrl || window.location.origin;
-      const cleanUrl = targetServerUrl.replace(/\/$/, '');
+      const targetServerUrl = getEffectiveServerUrl(socketUrl);
 
       let success = false;
       let attempts = 0;
@@ -516,7 +524,7 @@ function AppContent() {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s per ping attempt
           
-          const res = await fetch(`${cleanUrl}/api/health`, {
+          const res = await fetch(`${targetServerUrl}/api/health`, {
             method: 'GET',
             signal: controller.signal,
             headers: { 'Accept': 'application/json' }
@@ -525,11 +533,11 @@ function AppContent() {
 
           if (res.ok) {
             success = true;
-            console.log('[WakeUp] Backend server is active!');
+            console.log('[WakeUp] Backend server is active at', targetServerUrl);
             break;
           }
         } catch (err) {
-          console.log(`[WakeUp] Waiting for server wake-up (attempt ${attempts}/${maxAttempts})...`);
+          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl} (attempt ${attempts}/${maxAttempts})...`);
         }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -542,7 +550,7 @@ function AppContent() {
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
     const transports = ['polling', 'websocket'];
-    const targetUrl = socketUrl;
+    const targetUrl = getEffectiveServerUrl(socketUrl);
 
     const socketOptions = {
       reconnection: true,
@@ -555,9 +563,7 @@ function AppContent() {
       autoConnect: true,
     };
 
-    const newSocket = targetUrl 
-      ? io(targetUrl, socketOptions) 
-      : io(socketOptions);
+    const newSocket = io(targetUrl, socketOptions);
 
     setSocket(newSocket);
 
@@ -1753,10 +1759,7 @@ function AppContent() {
     });
 
     const handleOAuthMessage = (event: MessageEvent) => {
-      const savedUrl = localStorage.getItem('ordina_server_url');
-      const backendOrigin = (savedUrl ? savedUrl : ((window as any).Capacitor 
-        ? 'https://ordina-server.onrender.com' 
-        : window.location.origin)).replace(/\/$/, '');
+      const backendOrigin = getEffectiveServerUrl(socketUrl);
 
       const isTrustedOrigin = 
         event.origin === window.location.origin || 
@@ -3161,8 +3164,8 @@ function AppContent() {
           )}
           <button 
             onClick={() => {
-              const currentUrl = socketUrl || window.location.origin;
-              const newUrl = prompt('Введите адрес сервера (например, https://my-server.run.app):', currentUrl);
+              const currentUrl = getEffectiveServerUrl(socketUrl);
+              const newUrl = prompt('Введите адрес сервера (например, https://ais-dev-...run.app):', currentUrl);
               if (newUrl !== null) {
                 const trimmed = newUrl.trim();
                 if (trimmed) {
@@ -3356,8 +3359,8 @@ function AppContent() {
                         if (!socketConnected) {
                           addToast('Переподключение к серверу...', 'info');
                           if (socket) socket.connect();
-                          const targetServerUrl = socketUrl || ((window as any).Capacitor ? 'https://ordina-server.onrender.com' : window.location.origin);
-                          fetch(`${targetServerUrl.replace(/\/$/, '')}/api/health`).catch(() => {});
+                          const targetServerUrl = getEffectiveServerUrl(socketUrl);
+                          fetch(`${targetServerUrl}/api/health`).catch(() => {});
                         }
                       }}
                       className={cn(
