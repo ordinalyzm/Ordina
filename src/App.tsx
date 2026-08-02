@@ -264,12 +264,15 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
   );
 }
 
+const DEFAULT_CLOUD_SERVER = 'https://ordina-server.onrender.com';
+
 export const getServerUrl = (customUrl?: string): string => {
   if (customUrl && customUrl.trim()) {
     return customUrl.trim().replace(/\/$/, '');
   }
-  if ((window as any).Capacitor) {
-    return '';
+  const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
+  if (isCapacitor) {
+    return DEFAULT_CLOUD_SERVER;
   }
   return window.location.origin.replace(/\/$/, '');
 };
@@ -318,7 +321,11 @@ function AppContent() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
-    const saved = localStorage.getItem('ordina_server_url');
+    let saved = localStorage.getItem('ordina_server_url');
+    if (saved && (saved.includes('ais-dev') || saved.includes('ais-pre'))) {
+      localStorage.removeItem('ordina_server_url');
+      saved = null;
+    }
     return saved || undefined;
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -509,11 +516,6 @@ function AppContent() {
     const wakeUpServer = async () => {
       const targetServerUrl = getServerUrl(socketUrl);
 
-      // In Capacitor without custom server URL configured, skip server ping
-      if ((window as any).Capacitor && !socketUrl) {
-        return;
-      }
-
       let success = false;
       let attempts = 0;
       const maxAttempts = 15;
@@ -553,12 +555,7 @@ function AppContent() {
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
     const transports = ['polling', 'websocket'];
-    const targetUrl = socketUrl || ((window as any).Capacitor ? getServerUrl() : undefined);
-
-    if ((window as any).Capacitor && !targetUrl) {
-      console.log('[Socket] Capacitor app running without custom server URL. Socket connection deferred.');
-      return;
-    }
+    const targetUrl = getServerUrl(socketUrl);
 
     const socketOptions = {
       reconnection: true,
