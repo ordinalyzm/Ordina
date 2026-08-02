@@ -264,15 +264,12 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
   );
 }
 
-const DEFAULT_CLOUD_SERVER = 'https://ais-pre-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
-
-export const getEffectiveServerUrl = (customUrl?: string): string => {
-  if (customUrl && customUrl.trim() && !customUrl.includes('localhost')) {
+export const getServerUrl = (customUrl?: string): string => {
+  if (customUrl && customUrl.trim()) {
     return customUrl.trim().replace(/\/$/, '');
   }
-  const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
-  if (isCapacitor) {
-    return DEFAULT_CLOUD_SERVER;
+  if ((window as any).Capacitor) {
+    return 'https://ais-dev-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
   }
   return window.location.origin.replace(/\/$/, '');
 };
@@ -321,11 +318,7 @@ function AppContent() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
-    let saved = localStorage.getItem('ordina_server_url');
-    if (saved && (saved.includes('ais-dev') || saved.includes('onrender.com') || saved.includes('railway'))) {
-      localStorage.removeItem('ordina_server_url');
-      saved = null;
-    }
+    const saved = localStorage.getItem('ordina_server_url');
     return saved || undefined;
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -514,7 +507,7 @@ function AppContent() {
 
   useEffect(() => {
     const wakeUpServer = async () => {
-      const targetServerUrl = getEffectiveServerUrl(socketUrl);
+      const targetServerUrl = getServerUrl(socketUrl);
 
       let success = false;
       let attempts = 0;
@@ -554,7 +547,7 @@ function AppContent() {
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
     const transports = ['polling', 'websocket'];
-    const targetUrl = getEffectiveServerUrl(socketUrl);
+    const targetUrl = socketUrl || ((window as any).Capacitor ? getServerUrl() : undefined);
 
     const socketOptions = {
       reconnection: true,
@@ -567,7 +560,7 @@ function AppContent() {
       autoConnect: true,
     };
 
-    const newSocket = io(targetUrl, socketOptions);
+    const newSocket = targetUrl ? io(targetUrl, socketOptions) : io(socketOptions);
 
     setSocket(newSocket);
 
@@ -1763,7 +1756,7 @@ function AppContent() {
     });
 
     const handleOAuthMessage = (event: MessageEvent) => {
-      const backendOrigin = getEffectiveServerUrl(socketUrl);
+      const backendOrigin = getServerUrl(socketUrl);
 
       const isTrustedOrigin = 
         event.origin === window.location.origin || 
@@ -3168,8 +3161,8 @@ function AppContent() {
           )}
           <button 
             onClick={() => {
-              const currentUrl = getEffectiveServerUrl(socketUrl);
-              const newUrl = prompt('Введите адрес сервера (например, https://ais-pre-...run.app):', currentUrl);
+              const currentUrl = getServerUrl(socketUrl);
+              const newUrl = prompt('Введите адрес сервера:', currentUrl);
               if (newUrl !== null) {
                 const trimmed = newUrl.trim();
                 if (trimmed) {
@@ -3363,7 +3356,7 @@ function AppContent() {
                         if (!socketConnected) {
                           addToast('Переподключение к серверу...', 'info');
                           if (socket) socket.connect();
-                          const targetServerUrl = getEffectiveServerUrl(socketUrl);
+                          const targetServerUrl = getServerUrl(socketUrl);
                           fetch(`${targetServerUrl}/api/health`).catch(() => {});
                         }
                       }}
