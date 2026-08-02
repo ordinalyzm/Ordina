@@ -264,13 +264,13 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
   );
 }
 
-const DEFAULT_CLOUD_SERVER = 'https://ais-dev-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
+const DEFAULT_CLOUD_SERVER = 'https://ais-pre-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
 
 export const getEffectiveServerUrl = (customUrl?: string): string => {
-  if (customUrl && customUrl.trim()) {
+  if (customUrl && customUrl.trim() && !customUrl.includes('localhost')) {
     return customUrl.trim().replace(/\/$/, '');
   }
-  const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000');
+  const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
   if (isCapacitor) {
     return DEFAULT_CLOUD_SERVER;
   }
