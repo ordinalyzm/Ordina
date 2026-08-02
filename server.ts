@@ -366,6 +366,13 @@ const pool = new Pool({
   connectionTimeoutMillis: 4000
 });
 
+pool.on('error', (err) => {
+  if (!useLocalFallback) {
+    console.log('ℹ️ [Database] Postgres database connection unavailable, using local JSON storage.');
+    useLocalFallback = true;
+  }
+});
+
 const originalQuery = pool.query.bind(pool);
 pool.query = async function(this: any, sql: any, params: any) {
   if (useLocalFallback) {
