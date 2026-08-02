@@ -321,7 +321,11 @@ function AppContent() {
   const [showDevicesModal, setShowDevicesModal] = useState(false);
 
   const [socketUrl, setSocketUrl] = useState<string | undefined>(() => {
-    const saved = localStorage.getItem('ordina_server_url');
+    let saved = localStorage.getItem('ordina_server_url');
+    if (saved && (saved.includes('ais-dev') || saved.includes('onrender.com') || saved.includes('railway'))) {
+      localStorage.removeItem('ordina_server_url');
+      saved = null;
+    }
     return saved || undefined;
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -3165,7 +3169,7 @@ function AppContent() {
           <button 
             onClick={() => {
               const currentUrl = getEffectiveServerUrl(socketUrl);
-              const newUrl = prompt('Введите адрес сервера (например, https://ais-dev-...run.app):', currentUrl);
+              const newUrl = prompt('Введите адрес сервера (например, https://ais-pre-...run.app):', currentUrl);
               if (newUrl !== null) {
                 const trimmed = newUrl.trim();
                 if (trimmed) {
