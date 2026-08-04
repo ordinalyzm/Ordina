@@ -264,7 +264,11 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
   );
 }
 
-const DEFAULT_CLOUD_SERVER = 'https://ordina-server.onrender.com';
+const SERVER_MIRRORS = [
+  'https://ordina-server.onrender.com',
+];
+
+export const DEFAULT_CLOUD_SERVER = SERVER_MIRRORS[0];
 
 export const getServerUrl = (customUrl?: string): string => {
   if (customUrl && customUrl.trim()) {
@@ -272,7 +276,8 @@ export const getServerUrl = (customUrl?: string): string => {
   }
   const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
   if (isCapacitor) {
-    return DEFAULT_CLOUD_SERVER;
+    const activeMirror = localStorage.getItem('ordina_active_mirror');
+    return activeMirror || DEFAULT_CLOUD_SERVER;
   }
   return window.location.origin.replace(/\/$/, '');
 };
@@ -514,38 +519,45 @@ function AppContent() {
 
   useEffect(() => {
     const wakeUpServer = async () => {
-      const targetServerUrl = getServerUrl(socketUrl);
+      const candidates = socketUrl && socketUrl.trim() 
+        ? [socketUrl.trim().replace(/\/$/, '')]
+        : SERVER_MIRRORS;
 
       let success = false;
       let attempts = 0;
-      const maxAttempts = 15;
+      const maxAttempts = 12;
 
       setServerWakingUp(true);
 
       while (!success && attempts < maxAttempts) {
         attempts++;
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s per ping attempt
-          
-          const healthUrl = targetServerUrl ? `${targetServerUrl}/api/health` : '/api/health';
-          const res = await fetch(healthUrl, {
-            method: 'GET',
-            signal: controller.signal,
-            headers: { 'Accept': 'application/json' },
-            mode: 'cors'
-          });
-          clearTimeout(timeoutId);
+        for (const candidate of candidates) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s ping per mirror
+            
+            const healthUrl = `${candidate}/api/health`;
+            const res = await fetch(healthUrl, {
+              method: 'GET',
+              signal: controller.signal,
+              headers: { 'Accept': 'application/json' },
+              mode: 'cors'
+            });
+            clearTimeout(timeoutId);
 
-          if (res.ok) {
-            success = true;
-            console.log('[WakeUp] Backend server is active at', targetServerUrl || 'local');
-            break;
+            if (res.ok) {
+              success = true;
+              localStorage.setItem('ordina_active_mirror', candidate);
+              console.log('[WakeUp] Backend server is active at', candidate);
+              break;
+            }
+          } catch (err: any) {
+            console.log(`[WakeUp] Mirror ${candidate} unreachable (attempt ${attempts}/${maxAttempts}):`, err?.message || err);
           }
-        } catch (err: any) {
-          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl || 'local'} (attempt ${attempts}/${maxAttempts}):`, err?.message || err);
         }
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        if (!success) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
       }
       setServerWakingUp(false);
     };
