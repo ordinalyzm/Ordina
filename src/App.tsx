@@ -526,7 +526,7 @@ function AppContent() {
         attempts++;
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s per ping attempt
+          const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s per ping attempt to allow cloud server cold starts
           
           const healthUrl = targetServerUrl ? `${targetServerUrl}/api/health` : '/api/health';
           const res = await fetch(healthUrl, {
