@@ -758,7 +758,7 @@ async function startServer() {
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
       credentials: true
     },
-    transports: ['websocket', 'polling'],
+    transports: ['polling', 'websocket'],
     pingTimeout: 60000,
     pingInterval: 25000,
     allowEIO3: true

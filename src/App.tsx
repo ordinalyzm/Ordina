@@ -504,7 +504,7 @@ function AppContent() {
         }
         return prev;
       });
-    }, 2500);
+    }, 12000);
 
     return () => clearTimeout(profileTimeout);
   }, [user]);
@@ -526,13 +526,14 @@ function AppContent() {
         attempts++;
         try {
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 45000); // 45s per ping attempt to allow cloud server cold starts
+          const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s per ping attempt
           
           const healthUrl = targetServerUrl ? `${targetServerUrl}/api/health` : '/api/health';
           const res = await fetch(healthUrl, {
             method: 'GET',
             signal: controller.signal,
-            headers: { 'Accept': 'application/json' }
+            headers: { 'Accept': 'application/json' },
+            mode: 'cors'
           });
           clearTimeout(timeoutId);
 
@@ -541,8 +542,8 @@ function AppContent() {
             console.log('[WakeUp] Backend server is active at', targetServerUrl || 'local');
             break;
           }
-        } catch (err) {
-          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl || 'local'} (attempt ${attempts}/${maxAttempts})...`);
+        } catch (err: any) {
+          console.log(`[WakeUp] Waiting for server wake-up at ${targetServerUrl || 'local'} (attempt ${attempts}/${maxAttempts}):`, err?.message || err);
         }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
@@ -554,7 +555,6 @@ function AppContent() {
 
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
-    const transports = ['websocket', 'polling'];
     const targetUrl = getServerUrl(socketUrl);
 
     const socketOptions = {
@@ -563,9 +563,10 @@ function AppContent() {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 45000,
-      transports,
+      transports: ['polling', 'websocket'], // Start with HTTP long-polling for reliable CORS handshake, then upgrade to WebSocket
       upgrade: true,
       autoConnect: true,
+      withCredentials: true,
     };
 
     const newSocket = targetUrl ? io(targetUrl, socketOptions) : io(socketOptions);
