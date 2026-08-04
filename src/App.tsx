@@ -554,7 +554,7 @@ function AppContent() {
 
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
-    const transports = ['polling', 'websocket'];
+    const transports = ['websocket', 'polling'];
     const targetUrl = getServerUrl(socketUrl);
 
     const socketOptions = {
