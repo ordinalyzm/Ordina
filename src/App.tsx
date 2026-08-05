@@ -517,6 +517,7 @@ function AppContent() {
   }, [user]);
 
   // Server wake-up mechanism for cold starts
+  const [activeServerUrl, setActiveServerUrl] = useState<string>(() => getServerUrl(socketUrl));
   const [serverWakingUp, setServerWakingUp] = useState(false);
 
   useEffect(() => {
@@ -552,6 +553,7 @@ function AppContent() {
               if (data && data.status === 'ok' && data.server === 'Ordina Backend') {
                 success = true;
                 localStorage.setItem('ordina_active_mirror', candidate);
+                setActiveServerUrl(candidate);
                 console.log('[WakeUp] Backend server is active at', candidate);
                 break;
               }
@@ -572,7 +574,7 @@ function AppContent() {
 
   // Initialize Socket.io connection (connects unconditionally to wake up server & establish real-time link)
   useEffect(() => {
-    const targetUrl = getServerUrl(socketUrl);
+    const targetUrl = activeServerUrl || getServerUrl(socketUrl);
 
     const socketOptions = {
       reconnection: true,
@@ -964,7 +966,7 @@ function AppContent() {
       newSocket.close();
       setSocketConnected(false);
     };
-  }, [user, socketUrl]);
+  }, [user, socketUrl, activeServerUrl]);
 
   // Sync presence to socket
   useEffect(() => {
