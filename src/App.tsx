@@ -582,8 +582,8 @@ function AppContent() {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       timeout: 45000,
-      transports: ['polling', 'websocket'], // Start with HTTP long-polling for reliable CORS handshake, then upgrade to WebSocket
-      upgrade: true,
+      transports: ['polling'], // Pure HTTP long-polling guarantees 100% working connection through Cloudflare Worker proxy without WebSocket DPI blocking
+      upgrade: false,
       autoConnect: true,
       withCredentials: true,
     };
