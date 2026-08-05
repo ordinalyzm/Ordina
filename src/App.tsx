@@ -548,10 +548,13 @@ function AppContent() {
             clearTimeout(timeoutId);
 
             if (res.ok) {
-              success = true;
-              localStorage.setItem('ordina_active_mirror', candidate);
-              console.log('[WakeUp] Backend server is active at', candidate);
-              break;
+              const data = await res.json().catch(() => null);
+              if (data && data.status === 'ok' && data.server === 'Ordina Backend') {
+                success = true;
+                localStorage.setItem('ordina_active_mirror', candidate);
+                console.log('[WakeUp] Backend server is active at', candidate);
+                break;
+              }
             }
           } catch (err: any) {
             console.log(`[WakeUp] Mirror ${candidate} unreachable (attempt ${attempts}/${maxAttempts}):`, err?.message || err);
