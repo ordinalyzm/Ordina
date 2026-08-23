@@ -100,7 +100,7 @@ export default function ImageCropperModal({ isOpen, imageSrc, onClose, onCropCom
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        className="fixed inset-0 z-[9999] flex flex-col bg-black"
+        className="fixed inset-0 z-[30000] flex flex-col bg-black"
       >
         <div className="flex justify-between items-center p-4 bg-black/50 text-white relative z-10">
           <button onClick={onClose} className="p-2 hover:bg-white/10 rounded-full transition-colors">

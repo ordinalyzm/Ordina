@@ -4060,12 +4060,13 @@ function AppContent() {
                 <div className="w-20 h-20 rounded-full bg-white/20 border-4 border-white/30 flex items-center justify-center text-white text-3xl font-bold relative z-10 overflow-hidden group/avatar">
                   {(viewedProfile || profile)?.photoURL ? (
                     <img 
-                      src={(viewedProfile || profile).photoURL} 
+                      src={(viewedProfile || profile)!.photoURL} 
                       className="w-full h-full object-cover cursor-pointer" 
                       onClick={(e) => {
-                        if (viewedProfile?.uid === user?.uid) {
+                        const isSelf = !viewedProfile || viewedProfile.uid === user?.uid;
+                        if (isSelf && isEditingProfile) {
                           avatarInputRef.current?.click();
-                        } else {
+                        } else if ((viewedProfile || profile)?.photoURL) {
                           setShowFullAvatar({ src: (viewedProfile || profile)!.photoURL! });
                         }
                       }}
@@ -4075,7 +4076,7 @@ function AppContent() {
                   ) : (
                     (viewedProfile || profile)?.displayName?.[0]
                   )}
-                  {viewedProfile?.uid === user?.uid && (
+                  {(!viewedProfile || viewedProfile?.uid === user?.uid) && isEditingProfile && (
                     <button 
                       onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click() }}
                       className="absolute bottom-0 right-0 p-1.5 bg-blue-500 rounded-full text-white shadow-lg pointer-events-auto"
@@ -4300,59 +4301,6 @@ function AppContent() {
                 {!isEditingProfile && (
                   <div className="space-y-6">
                     <div className="space-y-4">
-                      {viewedProfile?.uid === user?.uid && (
-                        <div className="flex flex-col gap-2 p-4 bg-slate-50 rounded-2xl">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <div className="p-2 bg-emerald-100 text-emerald-600 rounded-xl">
-                                <Settings size={20} />
-                              </div>
-                              <div>
-                                <p className="font-bold text-sm">Панель отладки</p>
-                                <p className="text-xs text-slate-500">Показывать консоль логов</p>
-                              </div>
-                            </div>
-                            {showDebug && (
-                              <button 
-                                onClick={() => {
-                                  setShowDebug(false);
-                                  setDebugPassword('');
-                                }}
-                                className="w-12 h-6 rounded-full transition-all relative bg-emerald-500"
-                              >
-                                <div className="absolute top-1 w-4 h-4 bg-white rounded-full transition-all right-1" />
-                              </button>
-                            )}
-                          </div>
-                          {!showDebug && (
-                            <div className="flex gap-2 mt-2">
-                              <input 
-                                type="password" 
-                                placeholder="Пароль разработчика" 
-                                value={debugPassword}
-                                onChange={(e) => setDebugPassword(e.target.value)}
-                                className="flex-1 bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm"
-                              />
-                              <button 
-                                onClick={() => {
-                                  if (debugPassword === 'admin') {
-                                    setShowDebug(true);
-                                    addToast('Панель отладки включена', 'success');
-                                  } else {
-                                    addToast('Неверный пароль', 'error');
-                                  }
-                                }}
-                                className="px-4 py-2 bg-slate-800 text-white rounded-xl text-sm font-bold"
-                              >
-                                Включить
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Removed server config block */}
-
                       <div className="flex items-center gap-4 p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
                         <Smartphone className="text-indigo-500" size={32} />
                         <div>
@@ -5124,90 +5072,7 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {/* Debug Panel */}
-      <AnimatePresence>
-        {showDebug && (
-          <motion.div 
-            drag
-            dragMomentum={false}
-            initial={{ opacity: 0, x: 20, y: 20 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            style={{ zIndex: 10000 }}
-            className="fixed bottom-4 right-4 bg-black/90 flex flex-col p-4 font-mono text-[10px] text-emerald-500 rounded-2xl border border-emerald-900/50 shadow-2xl w-72 h-80 cursor-move overflow-hidden"
-          >
-            <div className="flex items-center justify-between mb-2 border-b border-emerald-900/50 pb-2">
-              <h2 className="text-[10px] font-bold">DEBUG_CONSOLE</h2>
-              <button onClick={() => setShowDebug(false)} className="p-1 hover:bg-emerald-900/30 rounded-lg">
-                <X size={16} />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-1 mb-4">
-              {debugLogs.map((log, i) => (
-                <div key={i}>{log}</div>
-              ))}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button 
-                onClick={() => {
-                  const logStr = debugLogs.join('\n');
-                  copyToClipboard(logStr);
-                  log('LOGS_COPIED_TO_CLIPBOARD');
-                }}
-                className="flex-1 min-w-[140px] py-2 bg-blue-600 hover:bg-blue-700 rounded-xl border border-blue-500 transition-colors text-xs font-bold text-white"
-              >
-                Копировать логи
-              </button>
-              <button 
-                onClick={() => setDebugLogs([])}
-                className="flex-1 min-w-[100px] py-2 bg-red-900/30 hover:bg-red-900/50 rounded-xl border border-red-900/50 text-red-400 transition-colors text-xs"
-              >
-                Очистить
-              </button>
-              <button 
-                onClick={async () => {
-                  try {
-                    const res = await fetch('/manifest.json');
-                    const text = await res.text();
-                    log('MANIFEST_CONTENT: ' + text.slice(0, 100) + '...');
-                    log('MANIFEST_FETCH_SUCCESS');
-                  } catch (e) {
-                    log('MANIFEST_ERROR: ' + String(e));
-                  }
-                }}
-                className="flex-1 min-w-[100px] py-2 bg-emerald-900/30 hover:bg-emerald-900/50 rounded-xl border border-emerald-900/50 transition-colors text-xs"
-              >
-                Манифест
-              </button>
-              <button 
-                onClick={() => log('TEST_SIGNAL_MANUAL')}
-                className="flex-1 min-w-[100px] py-2 bg-emerald-900/30 hover:bg-emerald-900/50 rounded-xl border border-emerald-900/50 transition-colors text-xs"
-              >
-                TEST_LOG
-              </button>
-              <button 
-                onClick={() => {
-                  setIsEncryptionEnabled(true);
-                  log('ENCRYPTION_ENABLED_VIA_DEBUG');
-                }}
-                className="flex-1 min-w-[140px] py-2 bg-blue-900/30 hover:bg-blue-900/50 rounded-xl border border-blue-900/50 text-blue-400 transition-colors text-xs"
-              >
-                Добавить шифрование
-              </button>
-              <button 
-                onClick={() => {
-                  setShowProfile(true);
-                  setIsEditingProfile(true);
-                  log('PROFILE_EDIT_OPENED_VIA_DEBUG');
-                }}
-                className="flex-1 min-w-[140px] py-2 bg-amber-900/30 hover:bg-amber-900/50 rounded-xl border border-amber-900/50 text-amber-400 transition-colors text-xs"
-              >
-                Добавить статусы
-              </button>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+
 
       {/* Forward Modal */}
       <AnimatePresence>
@@ -8241,7 +8106,7 @@ function AppContent() {
 
       {showFullAvatar && (
         <div 
-          className="fixed inset-0 z-[9999] bg-black/90 flex flex-col items-center justify-between cursor-pointer p-4 overflow-hidden select-none" 
+          className="fixed inset-0 z-[35000] bg-black/90 flex flex-col items-center justify-between cursor-pointer p-4 overflow-hidden select-none" 
           onClick={() => { setShowFullAvatar(null); setFullImgScale(1); setFullImgRotation(0); }}
         >
           {/* Top bar controls */}

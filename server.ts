@@ -883,7 +883,7 @@ io.on('connection', (socket) => {
           finalData = {
             ...userData,
             ...serverData,
-            photoURL: userData.photoURL || serverData.photoURL || '',
+            photoURL: serverData.photoURL || userData.photoURL || '',
             bio: serverData.bio || userData.bio || '',
             username: serverData.username || userData.username || '',
             profileBackgroundURL: serverData.profileBackgroundURL || userData.profileBackgroundURL || '',
