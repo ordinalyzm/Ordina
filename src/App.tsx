@@ -341,8 +341,16 @@ function AppContent() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [groups, setGroups] = useState<Group[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ordina_cached_groups') || '[]');
+    } catch { return []; }
+  });
+  const [users, setUsers] = useState<UserProfile[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ordina_cached_users') || '[]');
+    } catch { return []; }
+  });
   const [selectedChat, setSelectedChat] = useState<{ type: 'user' | 'group' | 'channel', id: string } | null>(null);
   const [notifications, setNotifications] = useState<{ [chatId: string]: number }>({});
   const [recentPreviews, setRecentPreviews] = useState<{ [chatId: string]: Message }>({});
@@ -444,6 +452,11 @@ function AppContent() {
 
   useEffect(() => {
     profileRef.current = profile;
+    if (profile?.uid) {
+      try {
+        localStorage.setItem(`ordina_profile_${profile.uid}`, JSON.stringify(profile));
+      } catch (e) {}
+    }
   }, [profile]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -609,10 +622,23 @@ function AppContent() {
       console.log('Socket connected:', newSocket.id);
       setSocketConnected(true);
       if (user) {
+        let localP: any = profileRef.current;
+        if (!localP?.photoURL && user.uid) {
+          try {
+            const savedStr = localStorage.getItem(`ordina_profile_${user.uid}`);
+            if (savedStr) localP = JSON.parse(savedStr);
+          } catch (e) {}
+        }
+
         newSocket.emit('auth:sync', {
           uid: user.uid,
-          displayName: user.displayName || 'Anonymous',
-          photoURL: user.photoURL || '',
+          displayName: localP?.displayName || user.displayName || 'Anonymous',
+          photoURL: localP?.photoURL || user.photoURL || '',
+          bio: localP?.bio || '',
+          username: localP?.username || '',
+          profileBackgroundURL: localP?.profileBackgroundURL || '',
+          customStatus: localP?.customStatus || '',
+          status: localP?.status || 'online',
           email: user.email || '',
           device: {
             id: deviceId,
@@ -813,20 +839,22 @@ function AppContent() {
 
     newSocket.on('users:list', (uList: UserProfile[]) => {
       setUsers(uList);
+      try { localStorage.setItem('ordina_cached_users', JSON.stringify(uList)); } catch (e) {}
     });
 
     newSocket.on('groups:list', (gList: Group[]) => {
       setGroups(gList);
+      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(gList)); } catch (e) {}
     });
 
     newSocket.on('group:updated', (updatedGroup: Group) => {
       setGroups(prev => {
         const index = prev.findIndex(g => g.id === updatedGroup.id);
-        if (index === -1) return [...prev, updatedGroup];
-        const next = [...prev];
-        next[index] = updatedGroup;
+        const next = index === -1 ? [...prev, updatedGroup] : [...prev];
+        if (index !== -1) next[index] = updatedGroup;
+        try { localStorage.setItem('ordina_cached_groups', JSON.stringify(next)); } catch (e) {}
         return next;
-        });
+      });
     });
 
     newSocket.on('message:updated', (updatedMsg: Message) => {
@@ -870,9 +898,9 @@ function AppContent() {
     newSocket.on('user:updated', (updatedUser: UserProfile) => {
       setUsers(prev => {
         const index = prev.findIndex(u => u.uid === updatedUser.uid);
-        if (index === -1) return [...prev, updatedUser];
-        const next = [...prev];
-        next[index] = updatedUser;
+        const next = index === -1 ? [...prev, updatedUser] : [...prev];
+        if (index !== -1) next[index] = updatedUser;
+        try { localStorage.setItem('ordina_cached_users', JSON.stringify(next)); } catch (e) {}
         return next;
       });
       // Use functional update to avoid stale profile closure
@@ -1768,12 +1796,31 @@ function AppContent() {
 
   // Auth listener
   useEffect(() => {
+    const loadCachedProfile = (uid: string, fallback?: UserProfile): UserProfile => {
+      try {
+        const savedStr = localStorage.getItem(`ordina_profile_${uid}`);
+        if (savedStr) {
+          const parsed = JSON.parse(savedStr);
+          return { ...(fallback || {}), ...parsed };
+        }
+      } catch (e) {}
+      return fallback || { uid, displayName: 'Пользователь', status: 'online', lastSeen: new Date().toISOString(), activeChats: ['global_channel'] };
+    };
+
     // 1. Check if there is a saved OAuth user first
     const savedOAuthUser = localStorage.getItem('ordina_oauth_user');
     if (savedOAuthUser) {
       try {
         const u = JSON.parse(savedOAuthUser);
         setUser(u);
+        setProfile(loadCachedProfile(u.uid, {
+          uid: u.uid,
+          displayName: u.displayName || 'Пользователь',
+          photoURL: u.photoURL || '',
+          status: 'online',
+          lastSeen: new Date().toISOString(),
+          activeChats: ['global_channel']
+        }));
       } catch (e) {
         console.error('Error parsing saved OAuth user:', e);
       }
@@ -1788,13 +1835,13 @@ function AppContent() {
         } as any;
         setUser(guestUser);
         
-        const guestProfile: UserProfile = {
+        const guestProfile: UserProfile = loadCachedProfile(guestId, {
           uid: guestId,
           displayName: guestUser.displayName,
           status: 'online',
           lastSeen: new Date().toISOString(),
           activeChats: ['global_channel']
-        };
+        });
         setProfile(guestProfile);
       }
     }
@@ -1810,6 +1857,14 @@ function AppContent() {
         setSelectedChat(null);
       } else {
         setUser(u);
+        setProfile(prev => prev || loadCachedProfile(u.uid, {
+          uid: u.uid,
+          displayName: u.displayName || 'Пользователь',
+          photoURL: u.photoURL || '',
+          status: 'online',
+          lastSeen: new Date().toISOString(),
+          activeChats: ['global_channel']
+        }));
       }
     });
 
@@ -8173,6 +8228,7 @@ function AppContent() {
         onClose={() => setCropModalInfo(null)}
         onCropComplete={(croppedBase64) => {
           if (cropModalInfo?.type === 'user') {
+             setProfile(prev => prev ? { ...prev, photoURL: croppedBase64 } : null);
              socket?.emit('profile:update', { uid: user?.uid, profile: { photoURL: croppedBase64 } });
              setEditAvatar(croppedBase64);
              addToast('Аватар обновлен', 'success');

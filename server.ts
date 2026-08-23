@@ -883,6 +883,11 @@ io.on('connection', (socket) => {
           finalData = {
             ...userData,
             ...serverData,
+            photoURL: userData.photoURL || serverData.photoURL || '',
+            bio: serverData.bio || userData.bio || '',
+            username: serverData.username || userData.username || '',
+            profileBackgroundURL: serverData.profileBackgroundURL || userData.profileBackgroundURL || '',
+            customStatus: serverData.customStatus || userData.customStatus || '',
             uid: uid,
             email: serverData.email || userData.email
           };
