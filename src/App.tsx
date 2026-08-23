@@ -6279,38 +6279,6 @@ function AppContent() {
             <div 
               ref={messagesContainerRef}
               onScroll={handleScroll}
-              onPointerMove={(e) => {
-                if (dragSelectingActiveRef.current || isMultiDragSelecting) {
-                  const target = document.elementFromPoint(e.clientX, e.clientY);
-                  const msgEl = target?.closest('[data-msg-id]');
-                  if (msgEl) {
-                    const msgId = msgEl.getAttribute('data-msg-id');
-                    if (msgId && !selectedMsgIds.includes(msgId)) {
-                      setSelectedMsgIds(prev => [...prev, msgId]);
-                    }
-                  }
-                }
-              }}
-              onTouchMove={(e) => {
-                if ((dragSelectingActiveRef.current || isMultiDragSelecting) && e.touches[0]) {
-                  const target = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY);
-                  const msgEl = target?.closest('[data-msg-id]');
-                  if (msgEl) {
-                    const msgId = msgEl.getAttribute('data-msg-id');
-                    if (msgId && !selectedMsgIds.includes(msgId)) {
-                      setSelectedMsgIds(prev => [...prev, msgId]);
-                    }
-                  }
-                }
-              }}
-              onPointerUp={() => {
-                dragSelectingActiveRef.current = false;
-                setIsMultiDragSelecting(false);
-              }}
-              onTouchEnd={() => {
-                dragSelectingActiveRef.current = false;
-                setIsMultiDragSelecting(false);
-              }}
               className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full"
             >
               {isLoadingMessages ? (
@@ -6439,42 +6407,9 @@ function AppContent() {
                             key={msg.id}
                             id={`msg-${msg.id}`}
                             data-msg-id={msg.id}
-                            drag="x"
-                            dragConstraints={{ left: -50, right: 0 }}
-                            dragElastic={0.05}
-                            dragSnapToOrigin={true}
-                            onDragEnd={(event, info) => {
-                              if (info.offset.x < -20 || info.velocity.x < -100) {
-                                setEditingMessage(null);
-                                setReplyTo(msg);
-                                triggerHapticFeedback();
-                              }
-                            }}
                             initial={{ opacity: 0, y: 10 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                            onPointerDown={() => {
-                              if (msgLongPressTimerRef.current) clearTimeout(msgLongPressTimerRef.current);
-                              msgLongPressTimerRef.current = setTimeout(() => {
-                                setIsSelectionMode(true);
-                                setSelectedMsgIds(prev => prev.includes(msg.id) ? prev : [...prev, msg.id]);
-                                dragSelectingActiveRef.current = true;
-                                setIsMultiDragSelecting(true);
-                                triggerHapticFeedback();
-                              }, 350);
-                            }}
-                            onPointerUp={() => {
-                              if (msgLongPressTimerRef.current) {
-                                clearTimeout(msgLongPressTimerRef.current);
-                                msgLongPressTimerRef.current = null;
-                              }
-                            }}
-                            onPointerCancel={() => {
-                              if (msgLongPressTimerRef.current) {
-                                clearTimeout(msgLongPressTimerRef.current);
-                                msgLongPressTimerRef.current = null;
-                              }
-                            }}
                             onClick={(e) => {
                               if (isSelectionMode) {
                                 e.stopPropagation();
@@ -6483,13 +6418,6 @@ function AppContent() {
                                   setSelectedMsgIds(next);
                                   if (next.length === 0) setIsSelectionMode(false);
                                 } else {
-                                  setSelectedMsgIds(prev => [...prev, msg.id]);
-                                }
-                              }
-                            }}
-                            onPointerEnter={(e) => {
-                              if ((isSelectionMode || isMultiDragSelecting || dragSelectingActiveRef.current) && (e.buttons === 1 || e.buttons === 2)) {
-                                if (!selectedMsgIds.includes(msg.id)) {
                                   setSelectedMsgIds(prev => [...prev, msg.id]);
                                 }
                               }

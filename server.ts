@@ -881,15 +881,17 @@ io.on('connection', (socket) => {
         if (row) {
           const serverData = JSON.parse(row.data);
           finalData = {
-            ...userData,
             ...serverData,
-            photoURL: serverData.photoURL || userData.photoURL || '',
-            bio: serverData.bio || userData.bio || '',
-            username: serverData.username || userData.username || '',
-            profileBackgroundURL: serverData.profileBackgroundURL || userData.profileBackgroundURL || '',
-            customStatus: serverData.customStatus || userData.customStatus || '',
+            ...userData,
+            photoURL: userData.photoURL || serverData.photoURL || '',
+            bio: userData.bio || serverData.bio || '',
+            username: userData.username || serverData.username || '',
+            profileBackgroundURL: userData.profileBackgroundURL || serverData.profileBackgroundURL || '',
+            customStatus: userData.customStatus || serverData.customStatus || '',
+            activeTitleId: userData.activeTitleId || serverData.activeTitleId || '',
+            grantedTitles: userData.grantedTitles || serverData.grantedTitles || [],
             uid: uid,
-            email: serverData.email || userData.email
+            email: userData.email || serverData.email
           };
         } else {
           if (!finalData.username) {
