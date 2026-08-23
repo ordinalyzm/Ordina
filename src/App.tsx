@@ -265,6 +265,7 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
 }
 
 const SERVER_MIRRORS = [
+  'https://ordina-zeta.vercel.app',
   'https://late-snow-f0b0.zhuk-twink.workers.dev',
   'https://throbbing-breeze-f036.zhuk-twink.workers.dev',
   'https://ordina-server.onrender.com',
