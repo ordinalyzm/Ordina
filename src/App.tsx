@@ -266,8 +266,6 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
 
 const SERVER_MIRRORS = [
   'https://ordina-zeta.vercel.app',
-  'https://late-snow-f0b0.zhuk-twink.workers.dev',
-  'https://throbbing-breeze-f036.zhuk-twink.workers.dev',
   'https://ordina-server.onrender.com',
 ];
 
@@ -280,6 +278,10 @@ export const getServerUrl = (customUrl?: string): string => {
   const isCapacitor = !!(window as any).Capacitor || (window.location.hostname === 'localhost' && window.location.port !== '3000' && window.location.port !== '5173');
   if (isCapacitor) {
     const activeMirror = localStorage.getItem('ordina_active_mirror');
+    if (activeMirror && activeMirror.includes('workers.dev')) {
+      localStorage.removeItem('ordina_active_mirror');
+      return DEFAULT_CLOUD_SERVER;
+    }
     return activeMirror || DEFAULT_CLOUD_SERVER;
   }
   return window.location.origin.replace(/\/$/, '');
