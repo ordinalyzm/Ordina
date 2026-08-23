@@ -627,6 +627,20 @@ function AppContent() {
       }
     };
 
+    if (newSocket.connected) {
+      handleConnect();
+    }
+
+    newSocket.on('connect', handleConnect);
+
+    newSocket.on('disconnect', () => {
+      setSocketConnected(false);
+    });
+
+    newSocket.on('presence:update', (presences: any[]) => {
+      setSocketPresences(presences);
+    });
+
      newSocket.on('message:received', async (msg: Message) => {
       const currentChat = selectedChatRef.current;
       const chatId = msg.groupId || (msg.senderId === user?.uid ? msg.receiverId : msg.senderId) || 'global_channel';
