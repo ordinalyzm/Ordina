@@ -240,7 +240,7 @@ export function showSystemNotification(
             title: title,
             body: formattedBody,
             id: Math.floor(Math.random() * 1000000),
-            schedule: { at: new Date(Date.now() + 100) },
+            schedule: { at: new Date(Date.now() + 1000) },
             channelId: 'ordina_messages',
             extra: {
               tag: options.tag,

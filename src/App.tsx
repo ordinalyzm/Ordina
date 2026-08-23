@@ -430,11 +430,21 @@ function AppContent() {
   const [socketTyping, setSocketTyping] = useState<{ [chatId: string]: { [uid: string]: boolean } }>({});
   const messageCacheRef = useRef<{ [chatId: string]: Message[] }>({});
   const selectedChatRef = useRef(selectedChat);
+  const usersRef = useRef(users);
+  const profileRef = useRef(profile);
   const [socketConnected, setSocketConnected] = useState(false);
 
   useEffect(() => {
     selectedChatRef.current = selectedChat;
   }, [selectedChat]);
+
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
   const [isConnecting, setIsConnecting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -617,31 +627,21 @@ function AppContent() {
       }
     };
 
-    if (newSocket.connected) {
-      handleConnect();
-    }
-    
-    newSocket.on('connect', handleConnect);
-
-    newSocket.on('disconnect', () => {
-      setSocketConnected(false);
-    });
-
-    newSocket.on('presence:update', (presences: any[]) => {
-      setSocketPresences(presences);
-    });
-
-    newSocket.on('message:received', async (msg: Message) => {
+     newSocket.on('message:received', async (msg: Message) => {
       const currentChat = selectedChatRef.current;
       const chatId = msg.groupId || (msg.senderId === user?.uid ? msg.receiverId : msg.senderId) || 'global_channel';
 
       if (!chatId) return;
 
+      const cachedList = messageCacheRef.current[chatId] || [];
+      const existingMsgIndex = cachedList.findIndex(m => m.id === msg.id);
+      const isNewMessage = existingMsgIndex === -1;
+
       // Save to local weekly persistent database
       saveMessageToLocalCache(chatId, msg);
 
-      // Send delivery confirmation back to server if we are the recipient
-      if (msg.senderId !== user?.uid) {
+      // Send delivery confirmation ONLY if we are the recipient AND our deviceId is NOT already registered as delivered
+      if (msg.senderId !== user?.uid && !msg.deliveredDevices?.[deviceId]) {
         newSocket.emit('message:delivered', { id: msg.id, chatId, deviceId });
       }
 
@@ -671,6 +671,15 @@ function AppContent() {
           messageCacheRef.current[chatId] = newMsgs;
           return newMsgs;
         });
+      } else {
+        // Update memory cache for background chat
+        if (isNewMessage) {
+          messageCacheRef.current[chatId] = [...cachedList, msg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        } else {
+          const updatedCached = [...cachedList];
+          updatedCached[existingMsgIndex] = msg;
+          messageCacheRef.current[chatId] = updatedCached;
+        }
       }
 
       // MESH RELAY LOGIC: If I am the relay target
@@ -688,7 +697,7 @@ function AppContent() {
             newSocket.emit('message:new', { chatId: targetId, message: forwardedMsg });
           } else {
              // Target still offline, find next hop closer to target
-             const usersList = await new Promise<UserProfile[]>(resolve => setUsers(prev => { resolve(prev); return prev; }));
+             const usersList = usersRef.current;
              const hop = findNextHop(usersList as any, user?.uid || '', targetId);
              if (hop && hop !== user?.uid) {
                 const forwardedMsg = {
@@ -703,28 +712,29 @@ function AppContent() {
       }
       
       if (!isCurrentChat || document.visibilityState !== 'visible') {
-        if (!isCurrentChat) {
+        if (!isCurrentChat && isNewMessage) {
           setNotifications(prev => ({
             ...prev,
             [chatId]: (prev[chatId] || 0) + 1
           }));
         }
         
-        if (msg.senderId !== user?.uid) {
-           const usersList = await new Promise<UserProfile[]>(resolve => setUsers(prev => { resolve(prev); return prev; }));
-           const sender = usersList.find(u => u.uid === msg.senderId)?.displayName || 'Пользователь';
-           const profileData = await new Promise<UserProfile | null>(resolve => setProfile(prev => { resolve(prev); return prev; }));
-           
-           const isMuted = profileData?.mutedChats?.[chatId] && (profileData.mutedChats[chatId] === -1 || profileData.mutedChats[chatId] > Date.now());
-           const hasMention = msg.text?.includes(`@${profileData?.displayName}`) || msg.text?.includes('@all');
+        // ONLY trigger audio, vibration, and system notification for BRAND NEW incoming messages
+        if (msg.senderId !== user?.uid && isNewMessage) {
+            const usersList = usersRef.current;
+            const sender = usersList.find(u => u.uid === msg.senderId)?.displayName || 'Пользователь';
+            const profileData = profileRef.current;
+            
+            const isMuted = profileData?.mutedChats?.[chatId] && (profileData.mutedChats[chatId] === -1 || profileData.mutedChats[chatId] > Date.now());
+            const hasMention = msg.text?.includes(`@${profileData?.displayName}`) || msg.text?.includes('@all');
 
-           if (!isMuted || hasMention) {
-               playIncomingMessageSound();
-               triggerHapticFeedback([100, 50, 100]);
-               showSystemNotification(`Новое сообщение от ${sender}`, msg.text || 'Вам прислали файл', {
-                 tag: `msg-${chatId}`,
-               });
-           }
+            if (!isMuted || hasMention) {
+                playIncomingMessageSound();
+                triggerHapticFeedback([100, 50, 100]);
+                showSystemNotification(`Новое сообщение от ${sender}`, msg.text || 'Вам прислали файл', {
+                  tag: `msg-${chatId}`,
+                });
+            }
         }
       }
 
