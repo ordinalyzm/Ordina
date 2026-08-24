@@ -1035,6 +1035,19 @@ function AppContent() {
     }
   }, [socket, user, profile?.status, profile?.customStatus]);
 
+  // Automatically sync users & groups cache to localStorage whenever they are added, updated, or removed
+  useEffect(() => {
+    if (users.length > 0) {
+      try { localStorage.setItem('ordina_cached_users', JSON.stringify(users)); } catch (e) {}
+    }
+  }, [users]);
+
+  useEffect(() => {
+    if (groups.length > 0) {
+      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(groups)); } catch (e) {}
+    }
+  }, [groups]);
+
   useEffect(() => {
     if (!user || !groups.length) return;
     const global = groups.find(g => g.id === 'global_channel');
@@ -3515,8 +3528,8 @@ function AppContent() {
             animate={{ x: 0 }}
             exit={{ x: -300 }}
             className={cn(
-              "w-full lg:w-80 bg-white border-r border-slate-200 flex flex-col z-20",
-              mobileView !== 'list' && "hidden lg:flex"
+              "bg-white border-r border-slate-200 flex flex-col shrink-0",
+              mobileView === 'chat' ? "absolute inset-0 z-0 lg:relative lg:z-20 lg:w-80 lg:flex" : "relative z-20 w-full lg:w-80"
             )}
           >
             <div className="p-4 border-b border-slate-100 flex items-center justify-between">
@@ -6042,7 +6055,7 @@ function AppContent() {
             const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
 
             if (deltaX > 0 && deltaX > deltaY) {
-              setEdgeSwipeDx(Math.min(deltaX, 120));
+              setEdgeSwipeDx(Math.min(deltaX, window.innerWidth || 400));
             }
           }
         }}
@@ -6067,23 +6080,9 @@ function AppContent() {
           transition: edgeSwipeDx === 0 ? 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none',
         }}
         className={cn(
-        "flex-1 flex flex-col relative bg-white z-10",
+        "flex-1 flex flex-col relative bg-white z-10 w-full h-full",
         mobileView !== 'chat' && "hidden lg:flex"
       )}>
-        {/* Edge Swipe Back Indicator */}
-        {edgeSwipeDx > 0 && (
-          <div 
-            className="absolute left-3 top-1/2 -translate-y-1/2 z-50 pointer-events-none flex items-center justify-center transition-opacity"
-            style={{
-              opacity: Math.min(1, edgeSwipeDx / 40),
-              transform: `scale(${Math.min(1.2, 0.6 + edgeSwipeDx / 80)})`,
-            }}
-          >
-            <div className="w-10 h-10 rounded-full bg-blue-500 text-white shadow-lg flex items-center justify-center">
-              <ChevronLeft size={22} />
-            </div>
-          </div>
-        )}
         {selectedChat ? (
           <>
             {/* Chat Header */}
@@ -6156,7 +6155,7 @@ function AppContent() {
                     {/* Edit option for 1 selected message sent by user */}
                     {selectedMsgIds.length === 1 && (() => {
                       const selMsg = messages.find(m => m.id === selectedMsgIds[0]);
-                      if (!selMsg || selMsg.senderId !== user?.uid || selMsg.isSystem) return null;
+                      if (!selMsg || selMsg.senderId !== user?.uid || (selMsg as any).isSystem) return null;
                       return (
                         <button
                           type="button"

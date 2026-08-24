@@ -66,16 +66,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       longPressTimer.current = null;
     }
 
-    if (isSelectionMode) return;
-
-    // Telegram standard 500ms long press
+    // Telegram standard 500ms long press -> Message selection mode
     longPressTimer.current = setTimeout(() => {
       if (!isMovedRef.current) {
         isLongPressTriggered.current = true;
         if ('vibrate' in navigator) {
           navigator.vibrate(15);
         }
-        onContextMenu(e, msg);
+        onToggleSelect(msg.id);
       }
     }, 500);
   };
