@@ -25,7 +25,7 @@ import {
   Send, Image as ImageIcon, File as FileIcon, Video as VideoIcon, 
   Search, Menu, MoreVertical, Paperclip, Smile, Reply, Forward, 
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
-  Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw,
+  Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw, RefreshCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
   Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles
 } from 'lucide-react';
@@ -1537,16 +1537,30 @@ function AppContent() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [newUnreadCount, setNewUnreadCount] = useState(0);
   const lastChatIdRef = useRef<string | null>(null);
-  
+
+  useEffect(() => {
+    (window as any).saveMessageSubtitles = (msgId: string, subtitles: string) => {
+      if (!selectedChat) return;
+      setMessages(prev => prev.map(m => m.id === msgId ? { ...m, subtitles } : m));
+      socket?.emit('message:update', {
+        id: msgId,
+        chatId: selectedChat.id,
+        update: { subtitles }
+      });
+    };
+  }, [selectedChat, socket]);
+
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
     const distanceToBottom = scrollHeight - scrollTop - clientHeight;
-    // Show button if > ~10 messages up. Assuming ~50px per message.
-    if (distanceToBottom > 500) {
+    // Show button if > ~10 messages up.
+    if (distanceToBottom > 300) {
       setShowScrollToBottom(true);
     } else {
       setShowScrollToBottom(false);
+      setNewUnreadCount(0);
     }
 
     // Load more messages if scrolling up
@@ -1568,17 +1582,21 @@ function AppContent() {
     const isNewChat = lastChatIdRef.current !== (selectedChat?.id || null);
     if (isNewChat) {
       lastChatIdRef.current = selectedChat?.id || null;
+      setNewUnreadCount(0);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }), 50);
     } else {
       const container = messagesContainerRef.current;
       if (container) {
         const { scrollTop, scrollHeight, clientHeight } = container;
         setTimeout(() => {
-          const isNearBottom = scrollHeight - scrollTop - clientHeight < 400;
+          const isNearBottom = scrollHeight - scrollTop - clientHeight < 300;
           const isMyMessage = messages.length > 0 && messages[messages.length - 1].senderId === user?.uid;
           
           if (isNearBottom || isMyMessage) {
             messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            setNewUnreadCount(0);
+          } else {
+            setNewUnreadCount(prev => prev + 1);
           }
         }, 50);
       }
@@ -7283,12 +7301,15 @@ function AppContent() {
                   <Reply size={16} className="text-slate-400" /> Ответить
                 </button>
                 
-                <button 
-                  onClick={() => { copyToClipboard(contextMenu.msg.text); setContextMenu(null); }}
-                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
-                >
-                  <Copy size={16} className="text-slate-400" /> Скопировать
-                </button>
+                {/* Copy text - strictly disallowed for voice, stickers, images, and files */}
+                {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
+                  <button 
+                    onClick={() => { copyToClipboard(contextMenu.msg.text); setContextMenu(null); }}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                  >
+                    <Copy size={16} className="text-slate-400" /> Скопировать
+                  </button>
+                )}
 
                 {contextMenu.msg.type === 'image' && contextMenu.msg.fileName === 'sticker.jpg' && (
                   <button 
@@ -7353,12 +7374,52 @@ function AppContent() {
                   </button>
                 )}
 
-                {contextMenu.msg.senderId === user?.uid && (
+                {/* Edit text - strictly disallowed for voice, stickers, images, and files */}
+                {contextMenu.msg.senderId === user?.uid && (!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
                   <button 
                     onClick={() => { setReplyTo(null); setEditingMessage(contextMenu.msg); setInputText(contextMenu.msg.text); setContextMenu(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
                   >
                     <Edit2 size={16} className="text-slate-400" /> Изменить
+                  </button>
+                )}
+
+                {/* Replace media file - allowed for images and files sent by user */}
+                {contextMenu.msg.senderId === user?.uid && (contextMenu.msg.type === 'file' || (contextMenu.msg.type === 'image' && contextMenu.msg.fileName !== 'sticker.jpg')) && (
+                  <button 
+                    onClick={() => {
+                      const input = document.createElement('input');
+                      input.type = 'file';
+                      input.onchange = async (e: any) => {
+                        const file = e.target.files?.[0];
+                        if (!file || !selectedChat) return;
+                        try {
+                          addToast('Загрузка нового файла...', 'info');
+                          const { uploadFileToFirestore } = await import('./lib/fileStorage');
+                          const fileDataUrl = await uploadFileToFirestore(file, user?.uid || 'user');
+                          const newFileUrl = fileDataUrl;
+                          const isImage = file.type.startsWith('image/');
+                          socket?.emit('message:update', {
+                            id: contextMenu.msg.id,
+                            chatId: selectedChat.id,
+                            update: {
+                              fileUrl: newFileUrl,
+                              fileName: file.name,
+                              fileSize: file.size,
+                              type: isImage ? 'image' : 'file'
+                            }
+                          });
+                          addToast('Файл успешно заменен', 'success');
+                        } catch (err) {
+                          addToast('Ошибка при замене файла', 'error');
+                        }
+                      };
+                      input.click();
+                      setContextMenu(null);
+                    }}
+                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                  >
+                    <RefreshCw size={16} className="text-slate-400" /> Заменить файл
                   </button>
                 )}
 
@@ -7390,22 +7451,37 @@ function AppContent() {
             </AnimatePresence>
 
             <AnimatePresence>
-              {showScrollToBottom && (
+              {(showScrollToBottom || newUnreadCount > 0) && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.8, y: 20 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.8, y: 20 }}
-                  className="absolute right-6 bottom-24 z-50 flex flex-col gap-2"
+                  className="absolute right-6 bottom-24 z-50 flex flex-col items-end gap-2"
                 >
+                  {newUnreadCount > 0 && (
+                    <button
+                      onClick={() => {
+                        setNewUnreadCount(0);
+                        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="px-3.5 py-1.5 bg-blue-600 text-white font-bold text-xs rounded-full shadow-lg hover:bg-blue-700 transition-all flex items-center gap-1.5 animate-bounce active:scale-95"
+                    >
+                      <span>Новые сообщения ({newUnreadCount})</span>
+                      <ArrowLeft size={14} className="-rotate-90" />
+                    </button>
+                  )}
+
                   <button
-                    className="w-12 h-12 bg-white/90 backdrop-blur-sm rounded-full shadow-lg border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-colors active:scale-95"
-                    onClick={() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })}
+                    className="w-12 h-12 bg-white/90 backdrop-blur-sm rounded-full shadow-lg border border-slate-200 flex items-center justify-center text-slate-600 hover:bg-slate-50 transition-colors active:scale-95 relative"
+                    onClick={() => {
+                      setNewUnreadCount(0);
+                      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
                     onPointerDown={(e) => {
-                      // Trigger top scroll on long press (or simple alternative since long press is tricky)
                       const timer = setTimeout(() => {
                          messagesContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
                       }, 500);
@@ -7414,6 +7490,11 @@ function AppContent() {
                     }}
                   >
                     <ArrowLeft size={20} className="-rotate-90" />
+                    {newUnreadCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-blue-600 text-white rounded-full text-[10px] font-bold flex items-center justify-center border-2 border-white shadow-sm">
+                        {newUnreadCount}
+                      </span>
+                    )}
                   </button>
                 </motion.div>
               )}

@@ -230,6 +230,7 @@ export function VoiceBubbleWidget({
   const [metaDuration, setMetaDuration] = useState<number>(msg.duration || 0);
   const [showSubtitles, setShowSubtitles] = useState(false);
   const [subtitlesText, setSubtitlesText] = useState<string | null>(msg.subtitles || null);
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   useEffect(() => {
     if (!msg.duration && msg.fileUrl && metaDuration === 0) {
@@ -261,16 +262,77 @@ export function VoiceBubbleWidget({
       return;
     }
 
-    if (!subtitlesText) {
-      if (msg.subtitles && msg.subtitles.trim()) {
-        setSubtitlesText(msg.subtitles.trim());
-      } else if (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение')) {
-        setSubtitlesText(msg.text);
-      } else {
-        setSubtitlesText('*музыка / фоновый шум*');
+    if (subtitlesText || msg.subtitles) {
+      setSubtitlesText(subtitlesText || msg.subtitles || null);
+      setShowSubtitles(true);
+      return;
+    }
+
+    // Use Web Speech API for native Russian speech recognition
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRec) {
+      setIsTranscribing(true);
+      setSubtitlesText('Слушаем и распознаем речь...');
+      setShowSubtitles(true);
+
+      try {
+        const recognition = new SpeechRec();
+        recognition.lang = 'ru-RU';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        let fullResult = '';
+
+        recognition.onresult = (evt: any) => {
+          let textChunk = '';
+          for (let i = evt.resultIndex; i < evt.results.length; i++) {
+            textChunk += evt.results[i][0].transcript;
+          }
+          if (textChunk) {
+            fullResult = textChunk;
+            setSubtitlesText(textChunk);
+          }
+        };
+
+        recognition.onerror = () => {
+          setIsTranscribing(false);
+          const fallback = msg.text && msg.text !== '🎤 Голосовое сообщение' ? msg.text : 'Голосовое сообщение';
+          setSubtitlesText(fallback);
+          if ((window as any).saveMessageSubtitles) {
+            (window as any).saveMessageSubtitles(msg.id, fallback);
+          }
+        };
+
+        recognition.onend = () => {
+          setIsTranscribing(false);
+          const finalSub = fullResult.trim() || (msg.text && msg.text !== '🎤 Голосовое сообщение' ? msg.text : 'Голосовое сообщение');
+          setSubtitlesText(finalSub);
+          if ((window as any).saveMessageSubtitles) {
+            (window as any).saveMessageSubtitles(msg.id, finalSub);
+          }
+        };
+
+        recognition.start();
+        onPlay();
+      } catch (err) {
+        setIsTranscribing(false);
+        const fallback = msg.text && msg.text !== '🎤 Голосовое сообщение' ? msg.text : 'Голосовое сообщение';
+        setSubtitlesText(fallback);
+        if ((window as any).saveMessageSubtitles) {
+          (window as any).saveMessageSubtitles(msg.id, fallback);
+        }
+      }
+    } else {
+      // Fallback if Web Speech API is unavailable in current browser environment
+      const fallback = (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение'))
+        ? msg.text
+        : 'Голосовое сообщение';
+      setSubtitlesText(fallback);
+      setShowSubtitles(true);
+      if ((window as any).saveMessageSubtitles) {
+        (window as any).saveMessageSubtitles(msg.id, fallback);
       }
     }
-    setShowSubtitles(true);
   };
 
   return (

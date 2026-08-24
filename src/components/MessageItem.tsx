@@ -90,6 +90,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         longPressTimer.current = null;
       }
     }
+
+    // Drag-to-select support when selection mode is active or triggered
+    if (isSelectionMode || isLongPressTriggered.current) {
+      const elem = document.elementFromPoint(e.clientX, e.clientY);
+      const msgBox = elem?.closest('[data-msg-id]');
+      if (msgBox) {
+        const targetId = msgBox.getAttribute('data-msg-id');
+        if (targetId && !selectedMsgIds.includes(targetId)) {
+          onToggleSelect(targetId);
+        }
+      }
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -146,9 +158,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   return (
     <div
       ref={scope}
+      data-msg-id={msg.id}
       className={cn(
         "relative w-full select-none touch-pan-y flex flex-col my-1 transition-colors duration-200",
-        isMe ? "items-end pr-2" : "items-start pl-2",
+        isMe ? "items-end pr-0" : "items-start pl-0",
         highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
         isSelected ? "bg-blue-500/10 rounded-2xl border border-blue-300/80 p-1" : ""
       )}
