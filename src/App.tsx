@@ -6174,6 +6174,8 @@ function AppContent() {
                     {selectedMsgIds.length === 1 && (() => {
                       const selMsg = messages.find(m => m.id === selectedMsgIds[0]);
                       if (!selMsg || selMsg.senderId !== user?.uid || (selMsg as any).isSystem) return null;
+                      const isMediaOrFile = selMsg.fileUrl || selMsg.type === 'image' || selMsg.type === 'file' || selMsg.type === 'audio' || selMsg.text === '🎤 Голосовое сообщение';
+                      if (isMediaOrFile) return null;
                       return (
                         <button
                           type="button"
@@ -6192,21 +6194,28 @@ function AppContent() {
                       );
                     })()}
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const selectedMsgs = messages.filter(m => selectedMsgIds.includes(m.id));
-                        const combinedText = selectedMsgs.map(m => m.text).filter(Boolean).join('\n---\n');
-                        if (combinedText) {
-                          copyToClipboard(combinedText);
-                          addToast(`Текст (${selectedMsgs.length} сообщ.) скопирован`, 'success');
-                        }
-                      }}
-                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
-                      title="Копировать"
-                    >
-                      <Copy size={14} /> <span className="hidden sm:inline">Копировать</span>
-                    </button>
+                    {/* Copy option - disallowed if any selected message is audio/file/media */}
+                    {(() => {
+                      const selectedMsgs = messages.filter(m => selectedMsgIds.includes(m.id));
+                      const hasMediaOrFile = selectedMsgs.some(m => m.fileUrl || m.type === 'image' || m.type === 'file' || m.type === 'audio' || m.text === '🎤 Голосовое сообщение');
+                      if (hasMediaOrFile || selectedMsgs.length === 0) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const combinedText = selectedMsgs.map(m => m.text).filter(Boolean).join('\n---\n');
+                            if (combinedText) {
+                              copyToClipboard(combinedText);
+                              addToast(`Текст (${selectedMsgs.length} сообщ.) скопирован`, 'success');
+                            }
+                          }}
+                          className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                          title="Копировать"
+                        >
+                          <Copy size={14} /> <span className="hidden sm:inline">Копировать</span>
+                        </button>
+                      );
+                    })()}
 
                     <button
                       type="button"
@@ -6619,6 +6628,19 @@ function AppContent() {
                                 });
                               }}
                               onSingleTap={(e, m) => {
+                                const target = e?.target as HTMLElement;
+                                const isFileOrAudioOrSubClick = 
+                                  target?.closest('button') ||
+                                  target?.closest('[data-voice-player="true"]') ||
+                                  target?.closest('[data-subtitle-btn="true"]') ||
+                                  m.type === 'file' ||
+                                  m.type === 'audio';
+
+                                if (isFileOrAudioOrSubClick) {
+                                  if (contextMenu) setContextMenu(null);
+                                  return;
+                                }
+
                                 if (contextMenu) {
                                   setContextMenu(null);
                                 } else {
