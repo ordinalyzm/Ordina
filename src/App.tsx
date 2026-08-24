@@ -1190,39 +1190,94 @@ function AppContent() {
     });
   };
 
-  const msgTouchTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const msgTouchStartPosRef = useRef<{x: number, y: number} | null>(null);
+  const [floatingHeartMsgId, setFloatingHeartMsgId] = useState<string | null>(null);
+  const msgLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const msgSingleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const msgLastTapRef = useRef<{ msgId: string; time: number }>({ msgId: '', time: 0 });
+  const msgTouchStartPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  const startMsgTouchTimer = (e: React.TouchEvent, msg: Message) => {
-    const touches = [{ 
-      pageX: e.touches[0].pageX, 
-      pageY: e.touches[0].pageY,
-      clientX: e.touches[0].clientX,
-      clientY: e.touches[0].clientY
-    }];
-    msgTouchStartPosRef.current = { x: e.touches[0].pageX, y: e.touches[0].pageY };
-    if (msgTouchTimerRef.current) clearTimeout(msgTouchTimerRef.current);
-    msgTouchTimerRef.current = setTimeout(() => {
-      handleContextMenu({ preventDefault: () => {}, touches } as any, msg);
-      if (typeof window !== 'undefined') window.getSelection()?.removeAllRanges();
-    }, 500);
+  const startMsgTouchTimer = (e: React.TouchEvent | React.PointerEvent, msg: Message) => {
+    const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as React.PointerEvent).clientX || 0;
+    const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as React.PointerEvent).clientY || 0;
+    msgTouchStartPosRef.current = { x: clientX, y: clientY };
+
+    if (msgLongPressTimerRef.current) clearTimeout(msgLongPressTimerRef.current);
+
+    // 1 second (1000ms) long press timer to enter Selection Mode
+    msgLongPressTimerRef.current = setTimeout(() => {
+      msgLongPressTimerRef.current = null;
+      setIsSelectionMode(true);
+      setSelectedMsgIds([msg.id]);
+      triggerHapticFeedback();
+    }, 1000);
   };
-  
-  const handleMsgTouchMove = (e: React.TouchEvent) => {
-    if (!msgTouchStartPosRef.current) return;
-    const dx = Math.abs(e.touches[0].pageX - msgTouchStartPosRef.current.x);
-    const dy = Math.abs(e.touches[0].pageY - msgTouchStartPosRef.current.y);
+
+  const handleMsgTouchMove = (e: React.TouchEvent | React.PointerEvent) => {
+    const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as React.PointerEvent).clientX || 0;
+    const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as React.PointerEvent).clientY || 0;
+    const dx = Math.abs(clientX - msgTouchStartPosRef.current.x);
+    const dy = Math.abs(clientY - msgTouchStartPosRef.current.y);
+
     if (dx > 10 || dy > 10) {
       clearMsgTouchTimer();
     }
   };
 
   const clearMsgTouchTimer = () => {
-    if (msgTouchTimerRef.current) {
-      clearTimeout(msgTouchTimerRef.current);
-      msgTouchTimerRef.current = null;
+    if (msgLongPressTimerRef.current) {
+      clearTimeout(msgLongPressTimerRef.current);
+      msgLongPressTimerRef.current = null;
     }
-    msgTouchStartPosRef.current = null;
+  };
+
+  const handleMsgClickOrTap = (e: React.MouseEvent, msg: Message) => {
+    e.stopPropagation();
+
+    if (msgLongPressTimerRef.current) {
+      clearTimeout(msgLongPressTimerRef.current);
+      msgLongPressTimerRef.current = null;
+    }
+
+    const now = Date.now();
+    const isDoubleTap = (msgLastTapRef.current.msgId === msg.id && (now - msgLastTapRef.current.time) < 320);
+
+    if (isDoubleTap) {
+      // DOUBLE TAP -> LIKE REACTION
+      if (msgSingleTapTimerRef.current) {
+        clearTimeout(msgSingleTapTimerRef.current);
+        msgSingleTapTimerRef.current = null;
+      }
+      msgLastTapRef.current = { msgId: '', time: 0 };
+
+      toggleReaction(msg.id, '❤️');
+      triggerHapticFeedback();
+
+      setFloatingHeartMsgId(msg.id);
+      setTimeout(() => setFloatingHeartMsgId(null), 800);
+    } else {
+      // First tap or single tap
+      msgLastTapRef.current = { msgId: msg.id, time: now };
+      const clickX = e.clientX || msgTouchStartPosRef.current.x;
+      const clickY = e.clientY || msgTouchStartPosRef.current.y;
+
+      msgSingleTapTimerRef.current = setTimeout(() => {
+        msgSingleTapTimerRef.current = null;
+
+        if (isSelectionMode) {
+          if (selectedMsgIds.includes(msg.id)) {
+            const next = selectedMsgIds.filter(id => id !== msg.id);
+            setSelectedMsgIds(next);
+            if (next.length === 0) setIsSelectionMode(false);
+          } else {
+            setSelectedMsgIds(prev => [...prev, msg.id]);
+          }
+        } else {
+          // Open Actions Menu
+          setContextMenu({ msg, x: clickX, y: clickY });
+        }
+      }, 220);
+    }
   };
 
   const handleContextMenu = (e: React.MouseEvent | React.TouchEvent, msg: Message) => {
@@ -1286,7 +1341,6 @@ function AppContent() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [isMultiDragSelecting, setIsMultiDragSelecting] = useState(false);
   const dragSelectingActiveRef = useRef(false);
-  const msgLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const saveMediaToDevice = async (fileUrl?: string, fileName?: string) => {
     if (!fileUrl) return;
@@ -5948,7 +6002,32 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      <div className={cn(
+      <div 
+        onTouchStart={(e) => {
+          const touch = e.touches[0];
+          if (touch && touch.clientX < 45) {
+            edgeSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+          } else {
+            edgeSwipeStartRef.current = null;
+          }
+        }}
+        onTouchMove={(e) => {
+          if (!edgeSwipeStartRef.current) return;
+          const touch = e.touches[0];
+          const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
+          const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
+
+          if (deltaX > 75 && deltaY < 50) {
+            setSelectedChat(null);
+            setMobileView('chats');
+            triggerHapticFeedback();
+            edgeSwipeStartRef.current = null;
+          }
+        }}
+        onTouchEnd={() => {
+          edgeSwipeStartRef.current = null;
+        }}
+        className={cn(
         "flex-1 flex flex-col relative bg-white z-10",
         mobileView !== 'chat' && "hidden lg:flex"
       )}>
@@ -5999,7 +6078,50 @@ function AppContent() {
                     <span className="font-bold text-sm">Выбрано: {selectedMsgIds.length}</span>
                   </div>
 
-                  <div className="flex items-center gap-1.5 sm:gap-2">
+                  <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto custom-scrollbar py-0.5">
+                    {/* Reply option for 1 selected message */}
+                    {selectedMsgIds.length === 1 && (() => {
+                      const selMsg = messages.find(m => m.id === selectedMsgIds[0]);
+                      if (!selMsg) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingMessage(null);
+                            setReplyTo(selMsg);
+                            setSelectedMsgIds([]);
+                            setIsSelectionMode(false);
+                          }}
+                          className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                          title="Ответить"
+                        >
+                          <Reply size={14} /> <span className="hidden sm:inline">Ответить</span>
+                        </button>
+                      );
+                    })()}
+
+                    {/* Edit option for 1 selected message sent by user */}
+                    {selectedMsgIds.length === 1 && (() => {
+                      const selMsg = messages.find(m => m.id === selectedMsgIds[0]);
+                      if (!selMsg || selMsg.senderId !== user?.uid || selMsg.isSystem) return null;
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReplyTo(null);
+                            setEditingMessage(selMsg);
+                            setInputText(selMsg.text || '');
+                            setSelectedMsgIds([]);
+                            setIsSelectionMode(false);
+                          }}
+                          className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                          title="Редактировать"
+                        >
+                          <Edit2 size={14} /> <span className="hidden sm:inline">Редактировать</span>
+                        </button>
+                      );
+                    })()}
+
                     <button
                       type="button"
                       onClick={() => {
@@ -6010,7 +6132,8 @@ function AppContent() {
                           addToast(`Текст (${selectedMsgs.length} сообщ.) скопирован`, 'success');
                         }
                       }}
-                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Копировать"
                     >
                       <Copy size={14} /> <span className="hidden sm:inline">Копировать</span>
                     </button>
@@ -6025,7 +6148,8 @@ function AppContent() {
                           setForwardComment('');
                         }
                       }}
-                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                      className="px-2.5 py-1.5 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Переслать"
                     >
                       <Share size={14} /> <span className="hidden sm:inline">Переслать</span>
                     </button>
@@ -6033,7 +6157,8 @@ function AppContent() {
                     <button
                       type="button"
                       onClick={() => setShowMultiDeleteModal(true)}
-                      className="px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5"
+                      className="px-2.5 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Удалить"
                     >
                       <Trash2 size={14} /> <span className="hidden sm:inline">Удалить</span>
                     </button>
@@ -6404,36 +6529,60 @@ function AppContent() {
                               </motion.div>
                             )}
                             <motion.div 
-                            key={msg.id}
-                            id={`msg-${msg.id}`}
-                            data-msg-id={msg.id}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                            onClick={(e) => {
-                              if (isSelectionMode) {
-                                e.stopPropagation();
-                                if (selectedMsgIds.includes(msg.id)) {
-                                  const next = selectedMsgIds.filter(id => id !== msg.id);
-                                  setSelectedMsgIds(next);
-                                  if (next.length === 0) setIsSelectionMode(false);
-                                } else {
-                                  setSelectedMsgIds(prev => [...prev, msg.id]);
+                              key={msg.id}
+                              id={`msg-${msg.id}`}
+                              data-msg-id={msg.id}
+                              drag="x"
+                              dragConstraints={{ left: -100, right: 0 }}
+                              dragElastic={0.12}
+                              dragSnapToOrigin={true}
+                              onDragEnd={(event, info) => {
+                                if (info.offset.x < -50 || info.velocity.x < -150) {
+                                  setEditingMessage(null);
+                                  setReplyTo(msg);
+                                  triggerHapticFeedback();
                                 }
-                              }
-                            }}
-                            className={cn(
-                              "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y", 
-                              isMe ? "items-end" : "items-start",
-                              highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
-                              selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
-                            )}
-                            onContextMenu={(e) => handleContextMenu(e, msg)}
-                            onTouchStart={(e) => startMsgTouchTimer(e, msg)}
-                            onTouchEnd={clearMsgTouchTimer}
-                            onTouchMove={handleMsgTouchMove}
-                            onTouchCancel={clearMsgTouchTimer}
-                          >
+                              }}
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, transition: { duration: 0.15 } }}
+                              onPointerDown={(e) => startMsgTouchTimer(e, msg)}
+                              onPointerMove={handleMsgTouchMove}
+                              onPointerUp={clearMsgTouchTimer}
+                              onPointerCancel={clearMsgTouchTimer}
+                              onClick={(e) => handleMsgClickOrTap(e, msg)}
+                              onContextMenu={(e) => {
+                                e.preventDefault();
+                                if (!isSelectionMode) {
+                                  handleContextMenu(e, msg);
+                                }
+                              }}
+                              className={cn(
+                                "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y select-none cursor-pointer", 
+                                isMe ? "items-end" : "items-start",
+                                highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
+                                selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
+                              )}
+                            >
+                              {/* Swiping Reply Indicator behind message */}
+                              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center text-blue-500 pointer-events-none opacity-80 z-0">
+                                <Reply size={20} className="animate-pulse" />
+                              </div>
+
+                              {/* Heart Animation on Double Tap */}
+                              <AnimatePresence>
+                                {floatingHeartMsgId === msg.id && (
+                                  <motion.div
+                                    initial={{ opacity: 0, scale: 0.3, y: 0 }}
+                                    animate={{ opacity: 1, scale: 1.4, y: -30 }}
+                                    exit={{ opacity: 0, scale: 0.5, y: -50 }}
+                                    transition={{ duration: 0.7, ease: "easeOut" }}
+                                    className="absolute inset-0 m-auto flex items-center justify-center z-50 pointer-events-none"
+                                  >
+                                    <span className="text-4xl drop-shadow-lg">❤️</span>
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
                             <div className={cn(
                               "max-w-[85%] sm:max-w-[70%] relative flex items-start gap-2",
                               isMe ? "flex-row-reverse" : "flex-row"
