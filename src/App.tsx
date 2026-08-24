@@ -1199,6 +1199,7 @@ function AppContent() {
   const msgLastTapRef = useRef<{ msgId: string; time: number }>({ msgId: '', time: 0 });
   const msgHapticFiredRef = useRef<Record<string, boolean>>({});
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [edgeSwipeDx, setEdgeSwipeDx] = useState(0);
 
   const handleMsgPointerDown = (e: React.PointerEvent, msg: Message) => {
     if (e.button && e.button !== 0) return;
@@ -6027,33 +6028,62 @@ function AppContent() {
       <div 
         onTouchStart={(e) => {
           const touch = e.touches[0];
-          if (touch && touch.clientX < 40) {
+          if (touch && touch.clientX < 45) {
             edgeSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
           } else {
             edgeSwipeStartRef.current = null;
           }
         }}
         onTouchMove={(e) => {
-          // Track touch movement
-        }}
-        onTouchEnd={(e) => {
           if (!edgeSwipeStartRef.current) return;
-          const touch = e.changedTouches[0] || e.touches[0];
+          const touch = e.touches[0];
           if (touch) {
             const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
             const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
 
-            if (deltaX > 50 && deltaY < 40) {
-              setMobileView('list');
-              triggerHapticFeedback();
+            if (deltaX > 0 && deltaX > deltaY) {
+              setEdgeSwipeDx(Math.min(deltaX, 120));
+            }
+          }
+        }}
+        onTouchEnd={(e) => {
+          if (edgeSwipeStartRef.current) {
+            const touch = e.changedTouches[0] || e.touches[0];
+            if (touch) {
+              const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
+              const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
+
+              if (deltaX > 55 && deltaY < 45) {
+                setMobileView('list');
+                triggerHapticFeedback();
+              }
             }
           }
           edgeSwipeStartRef.current = null;
+          setEdgeSwipeDx(0);
+        }}
+        style={{
+          transform: edgeSwipeDx > 0 ? `translateX(${edgeSwipeDx}px)` : undefined,
+          transition: edgeSwipeDx === 0 ? 'transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1)' : 'none',
         }}
         className={cn(
         "flex-1 flex flex-col relative bg-white z-10",
         mobileView !== 'chat' && "hidden lg:flex"
       )}>
+        {/* Edge Swipe Back Indicator */}
+        {edgeSwipeDx > 0 && (
+          <div 
+            className="absolute left-3 top-1/2 -translate-y-1/2 z-50 pointer-events-none flex items-center justify-center transition-opacity"
+            style={{
+              opacity: Math.min(1, edgeSwipeDx / 40),
+              transform: `scale(${Math.min(1.2, 0.6 + edgeSwipeDx / 80)})`,
+            }}
+          >
+            <div className="w-10 h-10 rounded-full bg-blue-500 text-white shadow-lg flex items-center justify-center">
+              <ChevronLeft size={22} />
+            </div>
+          </div>
+        )}
         {selectedChat ? (
           <>
             {/* Chat Header */}

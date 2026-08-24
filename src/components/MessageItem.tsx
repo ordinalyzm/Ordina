@@ -45,6 +45,9 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const lastTapRef = useRef<number>(0);
   const singleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
 
+  const startPosRef = useRef<{ x: number; y: number; time: number }>({ x: 0, y: 0, time: 0 });
+  const isMovedRef = useRef(false);
+
   // Telegram parameters for left swipe
   const SWIPE_THRESHOLD = -60; // Activation threshold in pixels
   const MAX_DRAG = -100;       // Max visual displacement
@@ -55,6 +58,8 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
   const handlePointerDown = (e: React.PointerEvent) => {
     isLongPressTriggered.current = false;
+    isMovedRef.current = false;
+    startPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
 
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
@@ -65,12 +70,28 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
     // Telegram standard 500ms long press
     longPressTimer.current = setTimeout(() => {
-      isLongPressTriggered.current = true;
-      if ('vibrate' in navigator) {
-        navigator.vibrate(15);
+      if (!isMovedRef.current) {
+        isLongPressTriggered.current = true;
+        if ('vibrate' in navigator) {
+          navigator.vibrate(15);
+        }
+        onContextMenu(e, msg);
       }
-      onContextMenu(e, msg);
     }, 500);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!startPosRef.current.time) return;
+    const dx = Math.abs(e.clientX - startPosRef.current.x);
+    const dy = Math.abs(e.clientY - startPosRef.current.y);
+
+    if (dx > 8 || dy > 8) {
+      isMovedRef.current = true;
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+        longPressTimer.current = null;
+      }
+    }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
@@ -79,7 +100,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       longPressTimer.current = null;
     }
 
-    if (!isLongPressTriggered.current) {
+    const pressDuration = Date.now() - startPosRef.current.time;
+
+    // Do NOT open single-tap menu if longpress fired, or if finger moved (swipe/scroll), or if held > 250ms
+    if (!isLongPressTriggered.current && !isMovedRef.current && pressDuration <= 250) {
       if (isSelectionMode) {
         onToggleSelect(msg.id);
       } else {
@@ -126,7 +150,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       ref={scope}
       className={cn(
         "relative w-full select-none touch-pan-y flex flex-col my-1 transition-colors duration-200",
-        isMe ? "items-end" : "items-start",
+        isMe ? "items-end pr-2" : "items-start pl-2",
         highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
         isSelected ? "bg-blue-500/10 rounded-2xl border border-blue-300/80 p-1" : ""
       )}
@@ -165,6 +189,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         dragMomentum={false}
         style={{ x, touchAction: 'pan-y' }}
         onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
         onContextMenu={(e) => {
