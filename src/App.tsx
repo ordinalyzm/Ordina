@@ -2743,33 +2743,7 @@ function AppContent() {
     recordStartPointerXRef.current = startX;
     isRecordingCancelledRef.current = false;
     setRecordingDragX(0);
-
-    // Initialize Web Speech Recognition
     transcribedSpeechRef.current = '';
-    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRec) {
-      try {
-        const rec = new SpeechRec();
-        rec.lang = 'ru-RU';
-        rec.continuous = true;
-        rec.interimResults = true;
-        rec.onresult = (ev: any) => {
-          let fullTranscript = '';
-          for (let i = 0; i < ev.results.length; ++i) {
-            if (ev.results[i] && ev.results[i][0]) {
-              fullTranscript += ev.results[i][0].transcript;
-            }
-          }
-          if (fullTranscript.trim()) {
-            transcribedSpeechRef.current = fullTranscript.trim();
-          }
-        };
-        rec.start();
-        speechRecognitionRef.current = rec;
-      } catch (err) {
-        console.warn('SpeechRec error:', err);
-      }
-    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

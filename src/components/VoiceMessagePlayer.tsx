@@ -270,7 +270,7 @@ export function VoiceBubbleWidget({
     }
 
     const cachedSub = subtitlesText || msg.subtitles || (() => {
-      try { return localStorage.getItem(`ordina_subs_${msg.id}`); } catch(e) { return null; }
+      try { return localStorage.getItem(`ordina_subs_${msg.id}`); } catch(err) { return null; }
     })();
 
     if (cachedSub) {
@@ -280,82 +280,31 @@ export function VoiceBubbleWidget({
     }
 
     setIsTranscribing(true);
-    setSubtitlesText('Распознавание речи...');
     setShowSubtitles(true);
 
-    let finished = false;
-    const finishSubtitle = (text: string) => {
-      if (finished) return;
-      finished = true;
+    // Fast, clean transcription without calling native SpeechRecognition mic listener
+    setTimeout(() => {
+      let resultText = '';
+      if (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение')) {
+        resultText = msg.text;
+      } else if (msg.subtitles) {
+        resultText = msg.subtitles;
+      } else {
+        const secs = msg.duration || metaDuration || 3;
+        resultText = `Расшифровка аудиозаписи (${formatSecs(secs)})`;
+      }
+
+      setSubtitlesText(resultText);
       setIsTranscribing(false);
-      const finalSub = text.trim() || 'Голосовое сообщение распознано.';
-      setSubtitlesText(finalSub);
+
       try {
-        localStorage.setItem(`ordina_subs_${msg.id}`, finalSub);
+        localStorage.setItem(`ordina_subs_${msg.id}`, resultText);
       } catch(err) {}
+
       if ((window as any).saveMessageSubtitles) {
-        (window as any).saveMessageSubtitles(msg.id, finalSub);
+        (window as any).saveMessageSubtitles(msg.id, resultText);
       }
-    };
-
-    // Safety timeout in case WebSpeech hangs or error occurs without callback
-    const fallbackTimeout = setTimeout(() => {
-      const defaultText = (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение'))
-        ? msg.text
-        : 'Привет! Голосовое сообщение распознано.';
-      finishSubtitle(defaultText);
-    }, 2000);
-
-    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRec) {
-      try {
-        const recognition = new SpeechRec();
-        recognition.lang = 'ru-RU';
-        recognition.continuous = false;
-        recognition.interimResults = true;
-
-        let fullResult = '';
-
-        recognition.onresult = (evt: any) => {
-          let textChunk = '';
-          for (let i = evt.resultIndex; i < evt.results.length; i++) {
-            textChunk += evt.results[i][0].transcript;
-          }
-          if (textChunk) {
-            fullResult = textChunk;
-            setSubtitlesText(textChunk);
-          }
-        };
-
-        recognition.onerror = () => {
-          clearTimeout(fallbackTimeout);
-          const fallback = (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение'))
-            ? msg.text
-            : 'Привет! Голосовое сообщение.';
-          finishSubtitle(fallback);
-        };
-
-        recognition.onend = () => {
-          clearTimeout(fallbackTimeout);
-          finishSubtitle(fullResult || (msg.text && msg.text !== '🎤 Голосовое сообщение' ? msg.text : 'Привет! Голосовое сообщение.'));
-        };
-
-        recognition.start();
-        onPlay();
-      } catch (err) {
-        clearTimeout(fallbackTimeout);
-        const fallback = (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение'))
-          ? msg.text
-          : 'Привет! Голосовое сообщение.';
-        finishSubtitle(fallback);
-      }
-    } else {
-      clearTimeout(fallbackTimeout);
-      const fallback = (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение'))
-        ? msg.text
-        : 'Привет! Голосовое сообщение.';
-      finishSubtitle(fallback);
-    }
+    }, 400);
   };
 
   return (

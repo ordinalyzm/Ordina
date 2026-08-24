@@ -175,6 +175,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
     // Drag-to-select support when selection mode is active or triggered
     if (isSelectionMode || isLongPressTriggered.current) {
+      x.set(0);
       processDragSelectionAt(e.clientX, e.clientY);
       checkAndAutoScroll(e.clientY);
     }
@@ -271,7 +272,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
       {/* Message cloud (swipable) */}
       <motion.div
-        drag={isSelectionMode ? false : "x"}
+        drag={(isSelectionMode || isLongPressTriggered.current) ? false : "x"}
         dragDirectionLock
         dragConstraints={{ left: MAX_DRAG, right: 0 }}
         dragElastic={{ left: 0.15, right: 0 }}
