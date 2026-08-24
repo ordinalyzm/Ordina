@@ -1,8 +1,7 @@
 import React, { useRef } from 'react';
-import { motion, useMotionValue, useTransform, AnimatePresence } from 'motion/react';
+import { motion, useMotionValue, useTransform, useAnimate, AnimatePresence } from 'motion/react';
 import { Reply } from 'lucide-react';
 import { Message } from '../types';
-import { triggerHapticFeedback } from '../lib/audio';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -10,18 +9,18 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-interface MessageItemProps {
+export interface MessageItemProps {
   msg: Message;
   isMe: boolean;
   highlightedMsgId: string | null;
   selectedMsgIds: string[];
   isSelectionMode: boolean;
   floatingHeartMsgId: string | null;
-  onPointerDown: (e: React.PointerEvent, msg: Message) => void;
-  onPointerMove: (e: React.PointerEvent) => void;
-  onPointerUp: (e: React.PointerEvent, msg: Message) => void;
-  onContextMenu: (e: React.MouseEvent, msg: Message) => void;
+  onContextMenu: (e: React.MouseEvent | React.TouchEvent | React.PointerEvent, msg: Message) => void;
+  onToggleSelect: (msgId: string) => void;
   onReply: (msg: Message) => void;
+  onDoubleTapReact?: (msg: Message) => void;
+  onSingleTap?: (e: React.PointerEvent | React.MouseEvent, msg: Message) => void;
   children: React.ReactNode;
 }
 
@@ -32,88 +31,117 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   selectedMsgIds,
   isSelectionMode,
   floatingHeartMsgId,
-  onPointerDown,
-  onPointerMove,
-  onPointerUp,
   onContextMenu,
+  onToggleSelect,
   onReply,
-  children
+  onDoubleTapReact,
+  onSingleTap,
+  children,
 }) => {
+  const [scope, animate] = useAnimate();
   const x = useMotionValue(0);
-  const hapticFiredRef = useRef(false);
+  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+  const isLongPressTriggered = useRef(false);
+  const lastTapRef = useRef<number>(0);
+  const singleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Telegram-style Circular Reply Badge transforms
-  const badgeScale = useTransform(x, [-45, -15, 0], [1, 0.3, 0]);
-  const badgeOpacity = useTransform(x, [-35, -10, 0], [1, 0.4, 0]);
-  const badgeRotate = useTransform(x, [-50, 0], [0, -45]);
-  const badgeX = useTransform(x, [-70, 0], [-8, 20]);
+  // Telegram parameters for left swipe
+  const SWIPE_THRESHOLD = -60; // Activation threshold in pixels
+  const MAX_DRAG = -100;       // Max visual displacement
+
+  // Transformations for reply icon (appears and scales up during swipe)
+  const iconScale = useTransform(x, [0, SWIPE_THRESHOLD], [0.5, 1.2]);
+  const iconOpacity = useTransform(x, [0, SWIPE_THRESHOLD / 2], [0, 1]);
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    isLongPressTriggered.current = false;
+
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+
+    if (isSelectionMode) return;
+
+    // Telegram standard 500ms long press
+    longPressTimer.current = setTimeout(() => {
+      isLongPressTriggered.current = true;
+      if ('vibrate' in navigator) {
+        navigator.vibrate(15);
+      }
+      onContextMenu(e, msg);
+    }, 500);
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+
+    if (!isLongPressTriggered.current) {
+      if (isSelectionMode) {
+        onToggleSelect(msg.id);
+      } else {
+        const now = Date.now();
+        const isDoubleTap = now - lastTapRef.current < 300;
+
+        if (isDoubleTap) {
+          if (singleTapTimerRef.current) {
+            clearTimeout(singleTapTimerRef.current);
+            singleTapTimerRef.current = null;
+          }
+          lastTapRef.current = 0;
+          if (onDoubleTapReact) {
+            onDoubleTapReact(msg);
+          }
+        } else {
+          lastTapRef.current = now;
+          singleTapTimerRef.current = setTimeout(() => {
+            singleTapTimerRef.current = null;
+            if (onSingleTap) {
+              onSingleTap(e, msg);
+            }
+          }, 200);
+        }
+      }
+    }
+  };
+
+  const handlePointerCancel = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+    if (singleTapTimerRef.current) {
+      clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+  };
+
+  const isSelected = selectedMsgIds.includes(msg.id);
 
   return (
-    <motion.div
-      key={msg.id}
-      id={`msg-${msg.id}`}
-      data-msg-id={msg.id}
-      style={{ x }}
-      drag="x"
-      dragDirectionLock={true}
-      dragConstraints={{ left: -80, right: 0 }}
-      dragElastic={{ left: 0.35, right: 0 }}
-      dragSnapToOrigin={true}
-      onDrag={(e, info) => {
-        const dx = info.offset.x;
-        // Distance threshold ~45dp/px
-        if (dx <= -45) {
-          if (!hapticFiredRef.current) {
-            hapticFiredRef.current = true;
-            triggerHapticFeedback();
-          }
-        } else if (dx > -25) {
-          hapticFiredRef.current = false;
-        }
-      }}
-      onDragEnd={(e, info) => {
-        const dx = info.offset.x;
-        const vx = info.velocity.x;
-        const speed = Math.abs(vx);
-        hapticFiredRef.current = false;
-
-        // Telegram Activation criteria: dx <= -40 and (speed >= 100 or dx <= -50)
-        if (dx <= -40 && (speed >= 100 || dx <= -50)) {
-          onReply(msg);
-        }
-      }}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, transition: { duration: 0.15 } }}
-      onPointerDown={(e) => onPointerDown(e, msg)}
-      onPointerMove={onPointerMove}
-      onPointerUp={(e) => onPointerUp(e, msg)}
-      onPointerCancel={(e) => onPointerUp(e, msg)}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        onContextMenu(e, msg);
-      }}
+    <div
+      ref={scope}
       className={cn(
-        "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y select-none cursor-pointer",
+        "relative w-full select-none touch-pan-y flex flex-col my-1 transition-colors duration-200",
         isMe ? "items-end" : "items-start",
         highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
-        selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
+        isSelected ? "bg-blue-500/10 rounded-2xl border border-blue-300/80 p-1" : ""
       )}
     >
-      {/* Telegram-style Circular Reply Badge on the right */}
-      <motion.div 
-        style={{ scale: badgeScale, opacity: badgeOpacity, x: badgeX }}
-        className="absolute -right-12 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none z-20"
-      >
-        <motion.div 
-          style={{ rotate: badgeRotate }}
+      {/* Icon reply hidden behind right edge */}
+      <div className="absolute right-4 top-1/2 -translate-y-1/2 z-0 pointer-events-none flex items-center justify-center">
+        <motion.div
+          style={{ scale: iconScale, opacity: iconOpacity }}
           className="w-8 h-8 rounded-full bg-blue-500 text-white shadow-md flex items-center justify-center"
         >
           <Reply size={16} />
         </motion.div>
-      </motion.div>
+      </div>
 
-      {/* Heart Animation on Double Tap */}
+      {/* Floating Heart animation on double tap */}
       <AnimatePresence>
         {floatingHeartMsgId === msg.id && (
           <motion.div
@@ -128,7 +156,33 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         )}
       </AnimatePresence>
 
-      {children}
-    </motion.div>
+      {/* Message cloud (swipable) */}
+      <motion.div
+        drag={isSelectionMode ? false : "x"}
+        dragDirectionLock
+        dragConstraints={{ left: MAX_DRAG, right: 0 }}
+        dragElastic={{ left: 0.15, right: 0 }}
+        dragMomentum={false}
+        style={{ x, touchAction: 'pan-y' }}
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+        onContextMenu={(e) => {
+          e.preventDefault();
+        }}
+        onDragEnd={(_, info) => {
+          if (info.offset.x < SWIPE_THRESHOLD || info.velocity.x < -150) {
+            if ('vibrate' in navigator) {
+              navigator.vibrate(10);
+            }
+            onReply(msg);
+          }
+          animate(x, 0, { type: "spring", stiffness: 400, damping: 30 });
+        }}
+        className="w-full flex flex-col cursor-pointer z-10"
+      >
+        {children}
+      </motion.div>
+    </div>
   );
 };

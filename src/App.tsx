@@ -6559,10 +6559,37 @@ function AppContent() {
                               selectedMsgIds={selectedMsgIds}
                               isSelectionMode={isSelectionMode}
                               floatingHeartMsgId={floatingHeartMsgId}
-                              onPointerDown={handleMsgPointerDown}
-                              onPointerMove={handleMsgPointerMove}
-                              onPointerUp={handleMsgPointerUp}
                               onContextMenu={handleContextMenu}
+                              onToggleSelect={(id) => {
+                                setSelectedMsgIds(prev => {
+                                  if (prev.includes(id)) {
+                                    const next = prev.filter(mId => mId !== id);
+                                    if (next.length === 0) setIsSelectionMode(false);
+                                    return next;
+                                  } else {
+                                    return [...prev, id];
+                                  }
+                                });
+                              }}
+                              onSingleTap={(e, m) => {
+                                if (contextMenu) {
+                                  setContextMenu(null);
+                                } else {
+                                  let clickX = 0;
+                                  let clickY = 0;
+                                  if (e && 'clientX' in e) {
+                                    clickX = e.clientX;
+                                    clickY = e.clientY;
+                                  }
+                                  setContextMenu({ msg: m, x: clickX || window.innerWidth / 2, y: clickY || window.innerHeight / 2 });
+                                }
+                              }}
+                              onDoubleTapReact={(m) => {
+                                toggleReaction(m.id, '❤️');
+                                triggerHapticFeedback();
+                                setFloatingHeartMsgId(m.id);
+                                setTimeout(() => setFloatingHeartMsgId(null), 800);
+                              }}
                               onReply={(m) => {
                                 setEditingMessage(null);
                                 setReplyTo(m);
