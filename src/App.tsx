@@ -1191,92 +1191,113 @@ function AppContent() {
   };
 
   const [floatingHeartMsgId, setFloatingHeartMsgId] = useState<string | null>(null);
+  const msgPressStartRef = useRef<{ msgId: string; time: number; x: number; y: number }>({ msgId: '', time: 0, x: 0, y: 0 });
   const msgLongPressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const msgLongPressTriggeredRef = useRef<boolean>(false);
   const msgSingleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
   const msgLastTapRef = useRef<{ msgId: string; time: number }>({ msgId: '', time: 0 });
-  const msgTouchStartPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const msgHapticFiredRef = useRef<Record<string, boolean>>({});
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
 
-  const startMsgTouchTimer = (e: React.TouchEvent | React.PointerEvent, msg: Message) => {
-    const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as React.PointerEvent).clientX || 0;
-    const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as React.PointerEvent).clientY || 0;
-    msgTouchStartPosRef.current = { x: clientX, y: clientY };
+  const handleMsgPointerDown = (e: React.PointerEvent, msg: Message) => {
+    if (e.button && e.button !== 0) return;
+
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    msgPressStartRef.current = { msgId: msg.id, time: Date.now(), x: clientX, y: clientY };
+    msgLongPressTriggeredRef.current = false;
 
     if (msgLongPressTimerRef.current) clearTimeout(msgLongPressTimerRef.current);
 
-    // 1 second (1000ms) long press timer to enter Selection Mode
+    // 500ms long press timer -> triggers Selection Mode
     msgLongPressTimerRef.current = setTimeout(() => {
       msgLongPressTimerRef.current = null;
+      msgLongPressTriggeredRef.current = true;
+
       setIsSelectionMode(true);
-      setSelectedMsgIds([msg.id]);
-      triggerHapticFeedback();
-    }, 1000);
-  };
-
-  const handleMsgTouchMove = (e: React.TouchEvent | React.PointerEvent) => {
-    const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as React.PointerEvent).clientX || 0;
-    const clientY = 'touches' in e && e.touches[0] ? e.touches[0].clientY : (e as React.PointerEvent).clientY || 0;
-    const dx = Math.abs(clientX - msgTouchStartPosRef.current.x);
-    const dy = Math.abs(clientY - msgTouchStartPosRef.current.y);
-
-    if (dx > 10 || dy > 10) {
-      clearMsgTouchTimer();
-    }
-  };
-
-  const clearMsgTouchTimer = () => {
-    if (msgLongPressTimerRef.current) {
-      clearTimeout(msgLongPressTimerRef.current);
-      msgLongPressTimerRef.current = null;
-    }
-  };
-
-  const handleMsgClickOrTap = (e: React.MouseEvent, msg: Message) => {
-    e.stopPropagation();
-
-    if (msgLongPressTimerRef.current) {
-      clearTimeout(msgLongPressTimerRef.current);
-      msgLongPressTimerRef.current = null;
-    }
-
-    const now = Date.now();
-    const isDoubleTap = (msgLastTapRef.current.msgId === msg.id && (now - msgLastTapRef.current.time) < 320);
-
-    if (isDoubleTap) {
-      // DOUBLE TAP -> LIKE REACTION
-      if (msgSingleTapTimerRef.current) {
-        clearTimeout(msgSingleTapTimerRef.current);
-        msgSingleTapTimerRef.current = null;
-      }
-      msgLastTapRef.current = { msgId: '', time: 0 };
-
-      toggleReaction(msg.id, '❤️');
-      triggerHapticFeedback();
-
-      setFloatingHeartMsgId(msg.id);
-      setTimeout(() => setFloatingHeartMsgId(null), 800);
-    } else {
-      // First tap or single tap
-      msgLastTapRef.current = { msgId: msg.id, time: now };
-      const clickX = e.clientX || msgTouchStartPosRef.current.x;
-      const clickY = e.clientY || msgTouchStartPosRef.current.y;
-
-      msgSingleTapTimerRef.current = setTimeout(() => {
-        msgSingleTapTimerRef.current = null;
-
-        if (isSelectionMode) {
-          if (selectedMsgIds.includes(msg.id)) {
-            const next = selectedMsgIds.filter(id => id !== msg.id);
-            setSelectedMsgIds(next);
-            if (next.length === 0) setIsSelectionMode(false);
-          } else {
-            setSelectedMsgIds(prev => [...prev, msg.id]);
-          }
+      setSelectedMsgIds(prev => {
+        if (prev.includes(msg.id)) {
+          const next = prev.filter(id => id !== msg.id);
+          if (next.length === 0) setIsSelectionMode(false);
+          return next;
         } else {
-          // Open Actions Menu
-          setContextMenu({ msg, x: clickX, y: clickY });
+          return [...prev, msg.id];
         }
-      }, 220);
+      });
+      triggerHapticFeedback();
+    }, 500);
+  };
+
+  const handleMsgPointerMove = (e: React.PointerEvent) => {
+    const dx = Math.abs(e.clientX - msgPressStartRef.current.x);
+    const dy = Math.abs(e.clientY - msgPressStartRef.current.y);
+
+    if (dx > 8 || dy > 8) {
+      if (msgLongPressTimerRef.current) {
+        clearTimeout(msgLongPressTimerRef.current);
+        msgLongPressTimerRef.current = null;
+      }
+    }
+  };
+
+  const handleMsgPointerUp = (e: React.PointerEvent, msg: Message) => {
+    if (msgLongPressTimerRef.current) {
+      clearTimeout(msgLongPressTimerRef.current);
+      msgLongPressTimerRef.current = null;
+    }
+
+    if (msgLongPressTriggeredRef.current) {
+      msgLongPressTriggeredRef.current = false;
+      return;
+    }
+
+    const duration = Date.now() - msgPressStartRef.current.time;
+    const dx = Math.abs(e.clientX - msgPressStartRef.current.x);
+    const dy = Math.abs(e.clientY - msgPressStartRef.current.y);
+
+    if (dx > 10 || dy > 10) return;
+
+    // Tap duration MUST be <= 125ms
+    if (duration <= 125) {
+      const now = Date.now();
+      const isDoubleTap = (msgLastTapRef.current.msgId === msg.id && (now - msgLastTapRef.current.time) < 300);
+
+      if (isDoubleTap) {
+        if (msgSingleTapTimerRef.current) {
+          clearTimeout(msgSingleTapTimerRef.current);
+          msgSingleTapTimerRef.current = null;
+        }
+        msgLastTapRef.current = { msgId: '', time: 0 };
+
+        toggleReaction(msg.id, '❤️');
+        triggerHapticFeedback();
+        setFloatingHeartMsgId(msg.id);
+        setTimeout(() => setFloatingHeartMsgId(null), 800);
+      } else {
+        msgLastTapRef.current = { msgId: msg.id, time: now };
+        const clickX = e.clientX || msgPressStartRef.current.x;
+        const clickY = e.clientY || msgPressStartRef.current.y;
+
+        msgSingleTapTimerRef.current = setTimeout(() => {
+          msgSingleTapTimerRef.current = null;
+
+          if (contextMenu) {
+            setContextMenu(null);
+          } else if (isSelectionMode) {
+            setSelectedMsgIds(prev => {
+              if (prev.includes(msg.id)) {
+                const next = prev.filter(id => id !== msg.id);
+                if (next.length === 0) setIsSelectionMode(false);
+                return next;
+              } else {
+                return [...prev, msg.id];
+              }
+            });
+          } else {
+            setContextMenu({ msg, x: clickX, y: clickY });
+          }
+        }, 180);
+      }
     }
   };
 
@@ -6005,7 +6026,7 @@ function AppContent() {
       <div 
         onTouchStart={(e) => {
           const touch = e.touches[0];
-          if (touch && touch.clientX < 45) {
+          if (touch && touch.clientX < 35) {
             edgeSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
           } else {
             edgeSwipeStartRef.current = null;
@@ -6017,9 +6038,9 @@ function AppContent() {
           const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
           const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
 
-          if (deltaX > 75 && deltaY < 50) {
+          if (deltaX > 50 && deltaY < 40) {
             setSelectedChat(null);
-            setMobileView('chats');
+            setMobileView('list');
             triggerHapticFeedback();
             edgeSwipeStartRef.current = null;
           }
@@ -6533,29 +6554,40 @@ function AppContent() {
                               id={`msg-${msg.id}`}
                               data-msg-id={msg.id}
                               drag="x"
-                              dragConstraints={{ left: -100, right: 0 }}
+                              dragDirectionLock={true}
+                              dragConstraints={{ left: -65, right: 0 }}
                               dragElastic={0.12}
                               dragSnapToOrigin={true}
+                              onDrag={(event, info) => {
+                                if (info.offset.x <= -45) {
+                                  if (!msgHapticFiredRef.current[msg.id]) {
+                                    msgHapticFiredRef.current[msg.id] = true;
+                                    triggerHapticFeedback();
+                                  }
+                                } else {
+                                  msgHapticFiredRef.current[msg.id] = false;
+                                }
+                              }}
                               onDragEnd={(event, info) => {
-                                if (info.offset.x < -50 || info.velocity.x < -150) {
+                                const dx = info.offset.x;
+                                const vx = info.velocity.x;
+                                const speed = Math.abs(vx);
+                                msgHapticFiredRef.current[msg.id] = false;
+
+                                if (dx <= -45 && (speed >= 100 || dx <= -55)) {
                                   setEditingMessage(null);
                                   setReplyTo(msg);
-                                  triggerHapticFeedback();
                                 }
                               }}
                               initial={{ opacity: 0, y: 10 }}
                               animate={{ opacity: 1, y: 0 }}
                               exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                              onPointerDown={(e) => startMsgTouchTimer(e, msg)}
-                              onPointerMove={handleMsgTouchMove}
-                              onPointerUp={clearMsgTouchTimer}
-                              onPointerCancel={clearMsgTouchTimer}
-                              onClick={(e) => handleMsgClickOrTap(e, msg)}
+                              onPointerDown={(e) => handleMsgPointerDown(e, msg)}
+                              onPointerMove={handleMsgPointerMove}
+                              onPointerUp={(e) => handleMsgPointerUp(e, msg)}
+                              onPointerCancel={(e) => handleMsgPointerUp(e, msg)}
                               onContextMenu={(e) => {
                                 e.preventDefault();
-                                if (!isSelectionMode) {
-                                  handleContextMenu(e, msg);
-                                }
                               }}
                               className={cn(
                                 "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y select-none cursor-pointer", 
@@ -6564,9 +6596,11 @@ function AppContent() {
                                 selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
                               )}
                             >
-                              {/* Swiping Reply Indicator behind message */}
-                              <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center text-blue-500 pointer-events-none opacity-80 z-0">
-                                <Reply size={20} className="animate-pulse" />
+                              {/* Telegram-style Circular Reply Badge on the right */}
+                              <div className="absolute -right-11 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none z-10">
+                                <div className="w-8 h-8 rounded-full bg-blue-500 text-white shadow-md flex items-center justify-center transition-all duration-150">
+                                  <Reply size={16} />
+                                </div>
                               </div>
 
                               {/* Heart Animation on Double Tap */}
