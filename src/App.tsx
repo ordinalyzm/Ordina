@@ -58,6 +58,7 @@ import { playIncomingMessageSound, playSentMessageSound, triggerHapticFeedback }
 import { showSystemNotification, openAppSettings } from './lib/notifications';
 import { MeshInspectorModal } from './components/MeshInspectorModal';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal';
+import { MessageItem } from './components/MessageItem';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -6026,26 +6027,27 @@ function AppContent() {
       <div 
         onTouchStart={(e) => {
           const touch = e.touches[0];
-          if (touch && touch.clientX < 35) {
+          if (touch && touch.clientX < 40) {
             edgeSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
           } else {
             edgeSwipeStartRef.current = null;
           }
         }}
         onTouchMove={(e) => {
-          if (!edgeSwipeStartRef.current) return;
-          const touch = e.touches[0];
-          const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
-          const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
-
-          if (deltaX > 50 && deltaY < 40) {
-            setSelectedChat(null);
-            setMobileView('list');
-            triggerHapticFeedback();
-            edgeSwipeStartRef.current = null;
-          }
+          // Track touch movement
         }}
-        onTouchEnd={() => {
+        onTouchEnd={(e) => {
+          if (!edgeSwipeStartRef.current) return;
+          const touch = e.changedTouches[0] || e.touches[0];
+          if (touch) {
+            const deltaX = touch.clientX - edgeSwipeStartRef.current.x;
+            const deltaY = Math.abs(touch.clientY - edgeSwipeStartRef.current.y);
+
+            if (deltaX > 50 && deltaY < 40) {
+              setMobileView('list');
+              triggerHapticFeedback();
+            }
+          }
           edgeSwipeStartRef.current = null;
         }}
         className={cn(
@@ -6549,74 +6551,23 @@ function AppContent() {
                                 </span>
                               </motion.div>
                             )}
-                            <motion.div 
+                            <MessageItem
                               key={msg.id}
-                              id={`msg-${msg.id}`}
-                              data-msg-id={msg.id}
-                              drag="x"
-                              dragDirectionLock={true}
-                              dragConstraints={{ left: -65, right: 0 }}
-                              dragElastic={0.12}
-                              dragSnapToOrigin={true}
-                              onDrag={(event, info) => {
-                                if (info.offset.x <= -45) {
-                                  if (!msgHapticFiredRef.current[msg.id]) {
-                                    msgHapticFiredRef.current[msg.id] = true;
-                                    triggerHapticFeedback();
-                                  }
-                                } else {
-                                  msgHapticFiredRef.current[msg.id] = false;
-                                }
-                              }}
-                              onDragEnd={(event, info) => {
-                                const dx = info.offset.x;
-                                const vx = info.velocity.x;
-                                const speed = Math.abs(vx);
-                                msgHapticFiredRef.current[msg.id] = false;
-
-                                if (dx <= -45 && (speed >= 100 || dx <= -55)) {
-                                  setEditingMessage(null);
-                                  setReplyTo(msg);
-                                }
-                              }}
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                              onPointerDown={(e) => handleMsgPointerDown(e, msg)}
+                              msg={msg}
+                              isMe={isMe}
+                              highlightedMsgId={highlightedMsgId}
+                              selectedMsgIds={selectedMsgIds}
+                              isSelectionMode={isSelectionMode}
+                              floatingHeartMsgId={floatingHeartMsgId}
+                              onPointerDown={handleMsgPointerDown}
                               onPointerMove={handleMsgPointerMove}
-                              onPointerUp={(e) => handleMsgPointerUp(e, msg)}
-                              onPointerCancel={(e) => handleMsgPointerUp(e, msg)}
-                              onContextMenu={(e) => {
-                                e.preventDefault();
+                              onPointerUp={handleMsgPointerUp}
+                              onContextMenu={handleContextMenu}
+                              onReply={(m) => {
+                                setEditingMessage(null);
+                                setReplyTo(m);
                               }}
-                              className={cn(
-                                "flex flex-col transition-all duration-300 w-full relative group min-w-0 touch-pan-y select-none cursor-pointer", 
-                                isMe ? "items-end" : "items-start",
-                                highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
-                                selectedMsgIds.includes(msg.id) ? "bg-blue-50/70 p-1.5 rounded-2xl border border-blue-300/80 shadow-sm" : ""
-                              )}
                             >
-                              {/* Telegram-style Circular Reply Badge on the right */}
-                              <div className="absolute -right-11 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none z-10">
-                                <div className="w-8 h-8 rounded-full bg-blue-500 text-white shadow-md flex items-center justify-center transition-all duration-150">
-                                  <Reply size={16} />
-                                </div>
-                              </div>
-
-                              {/* Heart Animation on Double Tap */}
-                              <AnimatePresence>
-                                {floatingHeartMsgId === msg.id && (
-                                  <motion.div
-                                    initial={{ opacity: 0, scale: 0.3, y: 0 }}
-                                    animate={{ opacity: 1, scale: 1.4, y: -30 }}
-                                    exit={{ opacity: 0, scale: 0.5, y: -50 }}
-                                    transition={{ duration: 0.7, ease: "easeOut" }}
-                                    className="absolute inset-0 m-auto flex items-center justify-center z-50 pointer-events-none"
-                                  >
-                                    <span className="text-4xl drop-shadow-lg">❤️</span>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
                             <div className={cn(
                               "max-w-[85%] sm:max-w-[70%] relative flex items-start gap-2",
                               isMe ? "flex-row-reverse" : "flex-row"
@@ -7162,7 +7113,7 @@ function AppContent() {
                             <Copy size={14} />
                           </button>
                         </div>
-                      </motion.div>
+                      </MessageItem>
                     </React.Fragment>
                 );
               })}
