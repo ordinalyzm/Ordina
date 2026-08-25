@@ -18,6 +18,7 @@ export interface MessageItemProps {
   floatingHeartMsgId: string | null;
   onContextMenu: (e: React.MouseEvent | React.TouchEvent | React.PointerEvent, msg: Message) => void;
   onToggleSelect: (msgId: string) => void;
+  onLongPressSelect?: (msgId: string, startY: number) => void;
   onReply: (msg: Message) => void;
   onDoubleTapReact?: (msg: Message) => void;
   onSingleTap?: (e: React.PointerEvent | React.MouseEvent, msg: Message) => void;
@@ -33,6 +34,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   floatingHeartMsgId,
   onContextMenu,
   onToggleSelect,
+  onLongPressSelect,
   onReply,
   onDoubleTapReact,
   onSingleTap,
@@ -56,102 +58,26 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const iconScale = useTransform(x, [0, SWIPE_THRESHOLD], [0.5, 1.2]);
   const iconOpacity = useTransform(x, [0, SWIPE_THRESHOLD / 2], [0, 1]);
 
-  const dragVisitedRef = useRef<string[]>([]);
-  const autoScrollTimerRef = useRef<number | null>(null);
-  const lastPointerPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-
-  const stopAutoScroll = () => {
-    if (autoScrollTimerRef.current !== null) {
-      cancelAnimationFrame(autoScrollTimerRef.current);
-      autoScrollTimerRef.current = null;
-    }
-  };
-
-  const processDragSelectionAt = (x: number, y: number) => {
-    const elem = document.elementFromPoint(x, y);
-    const msgBox = elem?.closest('[data-msg-id]');
-    if (!msgBox) return;
-
-    const targetId = msgBox.getAttribute('data-msg-id');
-    if (!targetId) return;
-
-    const visited = dragVisitedRef.current;
-    if (visited.length === 0) {
-      visited.push(targetId);
-      if (!selectedMsgIds.includes(targetId)) {
-        onToggleSelect(targetId);
-      }
-      return;
-    }
-
-    const lastVisited = visited[visited.length - 1];
-    const secondLastVisited = visited.length >= 2 ? visited[visited.length - 2] : null;
-
-    if (targetId === secondLastVisited) {
-      // Finger reversed direction! Remove lastVisited from selection
-      visited.pop();
-      if (selectedMsgIds.includes(lastVisited)) {
-        onToggleSelect(lastVisited);
-      }
-    } else if (targetId !== lastVisited && !visited.includes(targetId)) {
-      // Finger moved forward to a new message!
-      visited.push(targetId);
-      if (!selectedMsgIds.includes(targetId)) {
-        onToggleSelect(targetId);
-      }
-    }
-  };
-
-  const checkAndAutoScroll = (y: number) => {
-    const container = scope.current?.closest('.custom-scrollbar') as HTMLElement;
-    if (!container) return;
-
-    const rect = container.getBoundingClientRect();
-    const EDGE = 90;
-    let speed = 0;
-
-    if (y < rect.top + EDGE) {
-      speed = -Math.min(18, Math.max(4, (rect.top + EDGE - y) / 3));
-    } else if (y > rect.bottom - EDGE) {
-      speed = Math.min(18, Math.max(4, (y - (rect.bottom - EDGE)) / 3));
-    }
-
-    if (speed !== 0) {
-      if (autoScrollTimerRef.current === null) {
-        const scrollStep = () => {
-          if (!container) return;
-          container.scrollTop += speed;
-          processDragSelectionAt(lastPointerPosRef.current.x, lastPointerPosRef.current.y);
-          autoScrollTimerRef.current = requestAnimationFrame(scrollStep);
-        };
-        autoScrollTimerRef.current = requestAnimationFrame(scrollStep);
-      }
-    } else {
-      stopAutoScroll();
-    }
-  };
-
   const handlePointerDown = (e: React.PointerEvent) => {
     isLongPressTriggered.current = false;
     isMovedRef.current = false;
     startPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
-    dragVisitedRef.current = [];
-    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
 
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
     }
 
-    // Telegram standard 500ms long press -> Message selection mode
+    // Telegram standard 500ms long press -> Message selection mode trigger
     longPressTimer.current = setTimeout(() => {
       if (!isMovedRef.current) {
         isLongPressTriggered.current = true;
         if ('vibrate' in navigator) {
-          navigator.vibrate(15);
+          try { navigator.vibrate(15); } catch(err) {}
         }
-        dragVisitedRef.current = [msg.id];
-        if (!selectedMsgIds.includes(msg.id)) {
+        if (onLongPressSelect) {
+          onLongPressSelect(msg.id, startPosRef.current.y);
+        } else {
           onToggleSelect(msg.id);
         }
       }
@@ -160,7 +86,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
   const handlePointerMove = (e: React.PointerEvent) => {
     if (!startPosRef.current.time) return;
-    lastPointerPosRef.current = { x: e.clientX, y: e.clientY };
 
     const dx = Math.abs(e.clientX - startPosRef.current.x);
     const dy = Math.abs(e.clientY - startPosRef.current.y);
@@ -173,16 +98,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       }
     }
 
-    // Drag-to-select support when selection mode is active or triggered
     if (isSelectionMode || isLongPressTriggered.current) {
       x.set(0);
-      processDragSelectionAt(e.clientX, e.clientY);
-      checkAndAutoScroll(e.clientY);
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    stopAutoScroll();
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
@@ -221,7 +142,6 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   };
 
   const handlePointerCancel = () => {
-    stopAutoScroll();
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;

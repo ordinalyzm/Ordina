@@ -1375,8 +1375,118 @@ function AppContent() {
 
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [isMultiDragSelecting, setIsMultiDragSelecting] = useState(false);
-  const dragSelectingActiveRef = useRef(false);
+  
+  const isDraggingSelectionRef = useRef(false);
+  const anchorYRef = useRef<number | null>(null);
+  const autoScrollTimerRef = useRef<number | null>(null);
+  const lastPointerYRef = useRef<number | null>(null);
+
+  const stopContainerAutoScroll = () => {
+    if (autoScrollTimerRef.current !== null) {
+      cancelAnimationFrame(autoScrollTimerRef.current);
+      autoScrollTimerRef.current = null;
+    }
+  };
+
+  const handleLongPressSelection = (msgId: string, startY: number) => {
+    setIsSelectionMode(true);
+    setSelectedMsgIds([msgId]);
+    anchorYRef.current = startY;
+    isDraggingSelectionRef.current = true;
+  };
+
+  const handleContainerPointerMove = (e: React.PointerEvent) => {
+    if (!isDraggingSelectionRef.current || anchorYRef.current === null || !messagesContainerRef.current) return;
+
+    const currentY = e.clientY;
+    lastPointerYRef.current = currentY;
+    const startY = anchorYRef.current;
+
+    const topBound = Math.min(startY, currentY);
+    const bottomBound = Math.max(startY, currentY);
+
+    const newSelected = new Set<string>();
+
+    const children = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
+    children.forEach((child) => {
+      const rect = child.getBoundingClientRect();
+      const msgId = child.getAttribute('data-msg-id');
+      if (!msgId) return;
+
+      const isIntersecting = rect.top < bottomBound && rect.bottom > topBound;
+      if (isIntersecting) {
+        newSelected.add(msgId);
+      }
+    });
+
+    setSelectedMsgIds(Array.from(newSelected));
+
+    // Auto-scroll logic when finger reaches top/bottom thresholds
+    const containerRect = messagesContainerRef.current.getBoundingClientRect();
+    const threshold = 80;
+
+    if (currentY < containerRect.top + threshold) {
+      if (autoScrollTimerRef.current === null) {
+        const scrollUpStep = () => {
+          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || anchorYRef.current === null) {
+            stopContainerAutoScroll();
+            return;
+          }
+          messagesContainerRef.current.scrollBy({ top: -12, behavior: 'auto' });
+
+          const y = lastPointerYRef.current ?? currentY;
+          const curTopBound = Math.min(anchorYRef.current, y);
+          const curBottomBound = Math.max(anchorYRef.current, y);
+          const selSet = new Set<string>();
+          const kids = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
+          kids.forEach((k) => {
+            const r = k.getBoundingClientRect();
+            const id = k.getAttribute('data-msg-id');
+            if (id && r.top < curBottomBound && r.bottom > curTopBound) {
+              selSet.add(id);
+            }
+          });
+          setSelectedMsgIds(Array.from(selSet));
+          autoScrollTimerRef.current = requestAnimationFrame(scrollUpStep);
+        };
+        autoScrollTimerRef.current = requestAnimationFrame(scrollUpStep);
+      }
+    } else if (currentY > containerRect.bottom - threshold) {
+      if (autoScrollTimerRef.current === null) {
+        const scrollDownStep = () => {
+          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || anchorYRef.current === null) {
+            stopContainerAutoScroll();
+            return;
+          }
+          messagesContainerRef.current.scrollBy({ top: 12, behavior: 'auto' });
+
+          const y = lastPointerYRef.current ?? currentY;
+          const curTopBound = Math.min(anchorYRef.current, y);
+          const curBottomBound = Math.max(anchorYRef.current, y);
+          const selSet = new Set<string>();
+          const kids = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
+          kids.forEach((k) => {
+            const r = k.getBoundingClientRect();
+            const id = k.getAttribute('data-msg-id');
+            if (id && r.top < curBottomBound && r.bottom > curTopBound) {
+              selSet.add(id);
+            }
+          });
+          setSelectedMsgIds(Array.from(selSet));
+          autoScrollTimerRef.current = requestAnimationFrame(scrollDownStep);
+        };
+        autoScrollTimerRef.current = requestAnimationFrame(scrollDownStep);
+      }
+    } else {
+      stopContainerAutoScroll();
+    }
+  };
+
+  const handleContainerPointerUp = () => {
+    isDraggingSelectionRef.current = false;
+    anchorYRef.current = null;
+    stopContainerAutoScroll();
+  };
 
   const saveMediaToDevice = async (fileUrl?: string, fileName?: string) => {
     if (!fileUrl) return;
@@ -6457,7 +6567,11 @@ function AppContent() {
             <div 
               ref={messagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full"
+              onPointerMove={handleContainerPointerMove}
+              onPointerUp={handleContainerPointerUp}
+              onPointerCancel={handleContainerPointerUp}
+              className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full select-none"
+              style={{ touchAction: isSelectionMode ? 'none' : 'pan-y' }}
             >
               {isLoadingMessages ? (
                 <div className="flex flex-col items-center justify-center h-full gap-4">
@@ -6601,6 +6715,7 @@ function AppContent() {
                                   }
                                 });
                               }}
+                              onLongPressSelect={(id, startY) => handleLongPressSelection(id, startY)}
                               onSingleTap={(e, m) => {
                                 const target = e?.target as HTMLElement;
                                 const isFileOrAudioOrSubClick = 

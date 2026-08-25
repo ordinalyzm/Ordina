@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, X, Volume2, Mic, Zap, Subtitles } from 'lucide-react';
+import { Play, Pause, X, Volume2, Mic, Zap } from 'lucide-react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
@@ -214,7 +214,7 @@ export function VoiceBubbleWidget({
   onSeek,
   isAccelerated,
 }: {
-  msg: { id: string; fileUrl?: string; createdAt: string; text?: string; duration?: number; subtitles?: string };
+  msg: { id: string; fileUrl?: string; createdAt: string; text?: string; duration?: number };
   isMe: boolean;
   activeVoice: ActiveVoiceState | null;
   onPlay: () => void;
@@ -228,16 +228,6 @@ export function VoiceBubbleWidget({
   const playbackRate = isThisActive ? (activeVoice.playbackRate || 1) : 1;
 
   const [metaDuration, setMetaDuration] = useState<number>(msg.duration || 0);
-  const [showSubtitles, setShowSubtitles] = useState(false);
-  const [subtitlesText, setSubtitlesText] = useState<string | null>(() => {
-    if (msg.subtitles) return msg.subtitles;
-    try {
-      const cached = localStorage.getItem(`ordina_subs_${msg.id}`);
-      if (cached) return cached;
-    } catch(e) {}
-    return null;
-  });
-  const [isTranscribing, setIsTranscribing] = useState(false);
 
   useEffect(() => {
     if (!msg.duration && msg.fileUrl && metaDuration === 0) {
@@ -261,51 +251,6 @@ export function VoiceBubbleWidget({
   };
 
   const progressPercent = displayDuration > 0 ? (currentTime / displayDuration) * 100 : 0;
-
-  const handleToggleSubtitles = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (showSubtitles) {
-      setShowSubtitles(false);
-      return;
-    }
-
-    const cachedSub = subtitlesText || msg.subtitles || (() => {
-      try { return localStorage.getItem(`ordina_subs_${msg.id}`); } catch(err) { return null; }
-    })();
-
-    if (cachedSub) {
-      setSubtitlesText(cachedSub);
-      setShowSubtitles(true);
-      return;
-    }
-
-    setIsTranscribing(true);
-    setShowSubtitles(true);
-
-    // Fast, clean transcription without calling native SpeechRecognition mic listener
-    setTimeout(() => {
-      let resultText = '';
-      if (msg.text && msg.text !== '🎤 Голосовое сообщение' && !msg.text.includes('Голосовое сообщение')) {
-        resultText = msg.text;
-      } else if (msg.subtitles) {
-        resultText = msg.subtitles;
-      } else {
-        const secs = msg.duration || metaDuration || 3;
-        resultText = `Расшифровка аудиозаписи (${formatSecs(secs)})`;
-      }
-
-      setSubtitlesText(resultText);
-      setIsTranscribing(false);
-
-      try {
-        localStorage.setItem(`ordina_subs_${msg.id}`, resultText);
-      } catch(err) {}
-
-      if ((window as any).saveMessageSubtitles) {
-        (window as any).saveMessageSubtitles(msg.id, resultText);
-      }
-    }, 400);
-  };
 
   return (
     <div className="flex flex-col min-w-[220px] max-w-full my-1 select-none">
@@ -367,46 +312,18 @@ export function VoiceBubbleWidget({
             />
           </div>
 
-          {/* Time and Speed indicator & Subtitles button */}
+          {/* Time and Speed indicator */}
           <div className="flex items-center justify-between text-[11px] font-medium opacity-80 mt-1">
             <span>{formatSecs(currentTime)} / {displayDuration > 0 ? formatSecs(displayDuration) : '0:00'}</span>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleToggleSubtitles}
-                className={`flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-lg transition-all ${
-                  showSubtitles
-                    ? isMe ? 'bg-white/20 text-white' : 'bg-blue-100 text-blue-700'
-                    : isMe ? 'hover:bg-blue-600/50 text-blue-100' : 'hover:bg-slate-200 text-slate-600'
-                }`}
-                title="Субтитры (Распознавание речи)"
-              >
-                <Subtitles size={12} />
-                {showSubtitles ? 'Скрыть' : 'Субтитры'}
-              </button>
-
-              {(playbackRate > 1 || isAccelerated) && (
-                <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
-                  <Zap size={10} className="fill-current" /> 2X
-                </span>
-              )}
-            </div>
+            {(playbackRate > 1 || isAccelerated) && (
+              <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
+                <Zap size={10} className="fill-current" /> 2X
+              </span>
+            )}
           </div>
         </div>
       </div>
-
-      {showSubtitles && (
-        <div className={`mt-1.5 p-2.5 rounded-xl text-xs flex items-start gap-2 shadow-sm border animate-fade-in ${
-          isMe ? 'bg-blue-900/40 border-blue-400/30 text-blue-100' : 'bg-slate-200/90 border-slate-300 text-slate-800'
-        }`}>
-          <Subtitles size={14} className="shrink-0 mt-0.5 opacity-80" />
-          <div className="flex-1 leading-relaxed">
-            <span className="font-bold text-[9px] uppercase tracking-wider block opacity-70 mb-0.5">Субтитры (Расшифровка)</span>
-            <p className="font-medium whitespace-pre-wrap">{subtitlesText || '*музыка*'}</p>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
