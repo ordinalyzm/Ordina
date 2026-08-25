@@ -356,7 +356,7 @@ export function GlobalVoiceBanner({
   return (
     <div
       data-voice-player="true"
-      className="fixed top-2 left-1/2 -translate-x-1/2 z-[9000] w-[92%] max-w-md bg-slate-900/95 backdrop-blur-md text-white rounded-2xl p-3 shadow-2xl border border-slate-700/60 transition-all select-none animate-slide-down"
+      className="fixed top-[68px] sm:top-[72px] left-1/2 -translate-x-1/2 z-[9000] w-[92%] max-w-md bg-slate-900/95 backdrop-blur-md text-white rounded-2xl p-3 shadow-2xl border border-slate-700/60 transition-all select-none animate-slide-down"
     >
       <div className="flex items-center gap-3">
         {/* Avatar / Voice icon */}

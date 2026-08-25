@@ -5,8 +5,16 @@ export async function uploadFileToFirestore(file: File, uploaderId: string, onPr
   return new Promise((resolve, reject) => {
     if (!file.type.startsWith('image/')) {
       const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
+      reader.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      reader.onload = () => {
+        if (onProgress) onProgress(100);
+        resolve(reader.result as string);
+      };
+      reader.onerror = (err) => reject(err);
       reader.readAsDataURL(file);
       return;
     }

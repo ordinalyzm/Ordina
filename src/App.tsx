@@ -1372,6 +1372,7 @@ function AppContent() {
   const transcribedSpeechRef = useRef<string>('');
   const audioChunksRef = useRef<BlobPart[]>([]);
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const recordStartTimeRef = useRef<number | null>(null);
 
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
@@ -1688,13 +1689,22 @@ function AppContent() {
     // legacy, using useEffect instead
   }, []);
 
+  const lastMessagesLengthRef = useRef<number>(messages.length);
+  const lastMsgIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     const isNewChat = lastChatIdRef.current !== (selectedChat?.id || null);
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+    const isNewMessageAdded = messages.length > lastMessagesLengthRef.current && lastMsg?.id !== lastMsgIdRef.current;
+    
+    lastMessagesLengthRef.current = messages.length;
+    lastMsgIdRef.current = lastMsg?.id || null;
+
     if (isNewChat) {
       lastChatIdRef.current = selectedChat?.id || null;
       setNewUnreadCount(0);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }), 50);
-    } else {
+    } else if (isNewMessageAdded) {
       const container = messagesContainerRef.current;
       if (container) {
         const { scrollTop, scrollHeight, clientHeight } = container;
@@ -2822,7 +2832,7 @@ function AppContent() {
     }
   };
 
-  const cancelRecording = () => {
+  const cancelRecording = (showToast = true) => {
     if (isRecordingCancelledRef.current) return;
     isRecordingCancelledRef.current = true;
     if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
@@ -2839,8 +2849,11 @@ function AppContent() {
     setIsRecording(false);
     setRecordingDragX(0);
     recordStartPointerXRef.current = null;
+    recordStartTimeRef.current = null;
     triggerHapticFeedback();
-    addToast('Запись отменена', 'info');
+    if (showToast) {
+      addToast('Запись отменена', 'info');
+    }
   };
 
   const startRecording = async (e?: React.PointerEvent | React.TouchEvent) => {
@@ -2851,6 +2864,7 @@ function AppContent() {
 
     const startX = e && 'clientX' in e ? e.clientX : (e && 'touches' in e && e.touches[0] ? e.touches[0].clientX : null);
     recordStartPointerXRef.current = startX;
+    recordStartTimeRef.current = Date.now();
     isRecordingCancelledRef.current = false;
     setRecordingDragX(0);
     transcribedSpeechRef.current = '';
@@ -2917,6 +2931,15 @@ function AppContent() {
 
   const stopRecording = () => {
     if (isRecordingCancelledRef.current) return;
+    const elapsed = Date.now() - (recordStartTimeRef.current || Date.now());
+
+    // If hold duration is less than 2 seconds, cancel recording silently and prompt user
+    if (elapsed < 2000) {
+      cancelRecording(false);
+      addToast('Удерживайте кнопку для записи голосового сообщения', 'info');
+      return;
+    }
+
     if (speechRecognitionRef.current) {
       try { speechRecognitionRef.current.stop(); } catch(e) {}
       speechRecognitionRef.current = null;
@@ -2927,6 +2950,7 @@ function AppContent() {
       setIsRecording(false);
       setRecordingDragX(0);
       recordStartPointerXRef.current = null;
+      recordStartTimeRef.current = null;
     }
   };
 
@@ -3088,6 +3112,8 @@ function AppContent() {
     setEditingMessage(null);
     
     setIsSending(true);
+    let fileName = currentPendingFile.file.name;
+    addToast(`Ваш файл "${fileName}" отправляется...`, 'info');
 
     try {
       let finalFile = currentPendingFile.file;
@@ -3153,11 +3179,13 @@ function AppContent() {
           type: currentPendingFile.type,
           fileUrl: url,
           fileName: finalFile.name,
+          fileSize: finalFile.size,
           updatedAt: new Date().toISOString(),
           isEdited: true
         });
         
         socket?.emit('message:update', { id: currentEditingMessage.id, chatId: currentChat.id, update: updateData });
+        addToast(`Файл "${fileName}" обновлен`, 'success');
       } else {
         const newMessage: any = {
           senderId: currentUser.uid,
@@ -3165,6 +3193,7 @@ function AppContent() {
           type: currentPendingFile.type,
           fileUrl: url,
           fileName: finalFile.name,
+          fileSize: finalFile.size,
           createdAt: new Date().toISOString(),
           asChannel: currentChat.type === 'channel' && !postAsMe
         };
@@ -3175,10 +3204,17 @@ function AppContent() {
 
         const cleanedMessage = cleanObject(newMessage);
       
-      if (socket && !socket.connected) {
-        socket.connect();
-      }
+        if (socket && !socket.connected) {
+          socket.connect();
+        }
+
+        const serialized = JSON.stringify(cleanedMessage);
+        if (serialized.length > 15 * 1024 * 1024) {
+          throw new Error('Файл слишком большой. Максимальный размер 15 МБ.');
+        }
+
         socket?.emit('message:new', { chatId: currentChat.id, message: cleanedMessage });
+        addToast(`Файл "${fileName}" успешно отправлен`, 'success');
         
         if (currentChat.type === 'user' && currentProfile && !(currentProfile.activeChats || []).includes(currentChat.id)) {
           const newActive = [...(currentProfile.activeChats || []), currentChat.id];
@@ -3186,8 +3222,9 @@ function AppContent() {
         }
       }
 
-    } catch (error) {
-      addToast('Ошибка при отправке файла', 'error');
+    } catch (error: any) {
+      const errText = error?.message || 'ошибка сети';
+      addToast(`Ошибка отправки файла "${fileName}": ${errText}`, 'error');
       handleDatabaseError(error, 'create:messages');
     } finally {
       setIsSending(false);
@@ -4722,7 +4759,11 @@ function AppContent() {
                   <div className="flex flex-col items-center text-slate-500">
                     <FileIcon size={64} className="mb-4 text-blue-500" />
                     <p className="font-bold">{pendingFile.file.name}</p>
-                    <p className="text-sm">{(pendingFile.file.size / 1024 / 1024).toFixed(2)} MB</p>
+                    <p className="text-sm font-semibold text-slate-500">
+                      {pendingFile.file.size >= 1024 * 1024 
+                        ? `${(pendingFile.file.size / (1024 * 1024)).toFixed(2)} МБ` 
+                        : `${(pendingFile.file.size / 1024).toFixed(1)} КБ`}
+                    </p>
                   </div>
                 )}
                 
@@ -6718,14 +6759,13 @@ function AppContent() {
                               onLongPressSelect={(id, startY) => handleLongPressSelection(id, startY)}
                               onSingleTap={(e, m) => {
                                 const target = e?.target as HTMLElement;
-                                const isFileOrAudioOrSubClick = 
+                                const isInteractiveControl = 
                                   target?.closest('button') ||
-                                  target?.closest('[data-voice-player="true"]') ||
-                                  target?.closest('[data-subtitle-btn="true"]') ||
-                                  m.type === 'file' ||
-                                  m.type === 'audio';
+                                  target?.closest('input[type="range"]') ||
+                                  target?.closest('a') ||
+                                  target?.closest('[data-subtitle-btn="true"]');
 
-                                if (isFileOrAudioOrSubClick) {
+                                if (isInteractiveControl) {
                                   if (contextMenu) setContextMenu(null);
                                   return;
                                 }
@@ -6978,11 +7018,20 @@ function AppContent() {
                                 }
                               }
                             }}
-                            className="flex items-center gap-2 p-2 bg-black/5 hover:bg-black/10 transition-colors rounded-lg w-full text-left"
+                            className="flex items-center gap-2.5 p-2.5 bg-black/5 hover:bg-black/10 transition-colors rounded-lg w-full text-left"
                           >
-                            <FileIcon size={20} className="shrink-0" />
-                            <span className="text-xs truncate max-w-[150px] flex-1">{msg.fileName || 'Файл'}</span>
-                            <Download size={16} className="shrink-0" />
+                            <FileIcon size={20} className="shrink-0 text-blue-600" />
+                            <div className="flex flex-col min-w-0 flex-1">
+                              <span className="text-xs font-semibold truncate max-w-[150px]">{msg.fileName || 'Файл'}</span>
+                              {msg.fileSize && (
+                                <span className="text-[10px] opacity-70">
+                                  {msg.fileSize >= 1024 * 1024 
+                                    ? `${(msg.fileSize / (1024 * 1024)).toFixed(1)} МБ` 
+                                    : `${(msg.fileSize / 1024).toFixed(1)} КБ`}
+                                </span>
+                              )}
+                            </div>
+                            <Download size={16} className="shrink-0 opacity-70" />
                           </button>
                         )}
 

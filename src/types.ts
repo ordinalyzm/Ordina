@@ -100,6 +100,7 @@ export interface Message {
   type: 'text' | 'image' | 'video' | 'file' | 'poll' | 'game' | 'sticker' | 'audio';
   fileUrl?: string;
   fileName?: string;
+  fileSize?: number;
   createdAt: string;
   updatedAt?: string;
   inlineButtons?: { text: string; callbackData?: string; url?: string }[][];
