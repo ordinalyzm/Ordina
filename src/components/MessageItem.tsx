@@ -214,7 +214,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           }
           animate(x, 0, { type: "spring", stiffness: 400, damping: 30 });
         }}
-        className="w-full flex flex-col cursor-pointer z-10"
+        className={cn("w-full flex flex-col cursor-pointer z-10", isMe ? "items-end" : "items-start")}
       >
         {children}
       </motion.div>

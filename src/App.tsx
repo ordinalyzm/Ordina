@@ -6755,7 +6755,7 @@ function AppContent() {
                             >
                             <div className={cn(
                               "max-w-[85%] sm:max-w-[70%] relative flex items-start gap-2",
-                              isMe ? "flex-row-reverse" : "flex-row"
+                              isMe ? "flex-row-reverse ml-auto" : "flex-row mr-auto"
                             )}>
                               {isSelectionMode && (
                                 <div className="self-center shrink-0 p-1 cursor-pointer">
