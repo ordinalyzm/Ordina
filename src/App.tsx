@@ -1394,7 +1394,8 @@ function AppContent() {
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   
   const isDraggingSelectionRef = useRef(false);
-  const anchorYRef = useRef<number | null>(null);
+  const anchorMsgIdRef = useRef<string | null>(null);
+  const initialSelectedRef = useRef<Set<string>>(new Set());
   const autoScrollTimerRef = useRef<number | null>(null);
   const lastPointerYRef = useRef<number | null>(null);
 
@@ -1405,38 +1406,100 @@ function AppContent() {
     }
   };
 
-  const handleLongPressSelection = (msgId: string, startY: number) => {
+  const getDisplayedMessages = useCallback(() => {
+    let list = activeThread 
+      ? messages.filter(m => (m.threadId === activeThread.id || m.id === activeThread.id) && !(profile?.hiddenMessages || []).includes(m.id))
+      : messages.filter(m => !m.threadId && !(profile?.hiddenMessages || []).includes(m.id));
+
+    if (showChatSearch && (chatSearchQuery.trim() || chatSearchFilterUser)) {
+      list = list.filter(m => {
+        const lowerQuery = chatSearchQuery.trim().toLowerCase();
+        const matchText = lowerQuery ? (m.text || '').toLowerCase().includes(lowerQuery) : true;
+        const matchUser = chatSearchFilterUser ? m.senderId === chatSearchFilterUser : true;
+        return matchText && matchUser;
+      });
+    }
+    return list;
+  }, [activeThread, messages, profile?.hiddenMessages, showChatSearch, chatSearchQuery, chatSearchFilterUser]);
+
+  const findTargetMsgId = (pointerY: number, displayed: Message[]): string | null => {
+    if (!messagesContainerRef.current || displayed.length === 0) return null;
+    const containerRect = messagesContainerRef.current.getBoundingClientRect();
+    
+    if (pointerY <= containerRect.top) {
+      return displayed[0]?.id || null;
+    }
+    if (pointerY >= containerRect.bottom) {
+      return displayed[displayed.length - 1]?.id || null;
+    }
+
+    const children = Array.from(messagesContainerRef.current.querySelectorAll('[data-msg-id]'));
+    let closestId: string | null = null;
+    let minDistance = Infinity;
+
+    for (const child of children) {
+      const rect = child.getBoundingClientRect();
+      const id = child.getAttribute('data-msg-id');
+      if (!id) continue;
+
+      if (pointerY >= rect.top && pointerY <= rect.bottom) {
+        return id;
+      }
+
+      const mid = (rect.top + rect.bottom) / 2;
+      const dist = Math.abs(pointerY - mid);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestId = id;
+      }
+    }
+
+    return closestId;
+  };
+
+  const updateSelectionRange = useCallback((pointerY: number) => {
+    if (!anchorMsgIdRef.current) return;
+    const displayed = getDisplayedMessages();
+    if (displayed.length === 0) return;
+
+    const anchorIdx = displayed.findIndex(m => m.id === anchorMsgIdRef.current);
+    if (anchorIdx === -1) return;
+
+    const targetId = findTargetMsgId(pointerY, displayed);
+    let targetIdx = targetId ? displayed.findIndex(m => m.id === targetId) : -1;
+    if (targetIdx === -1) {
+      targetIdx = anchorIdx;
+    }
+
+    const startIdx = Math.min(anchorIdx, targetIdx);
+    const endIdx = Math.max(anchorIdx, targetIdx);
+
+    const rangeMsgIds = displayed.slice(startIdx, endIdx + 1).map(m => m.id);
+    const resultSet = new Set([...initialSelectedRef.current, ...rangeMsgIds]);
+
+    setSelectedMsgIds(Array.from(resultSet));
+  }, [getDisplayedMessages]);
+
+  const handleLongPressSelection = (msgId: string, _startY: number) => {
     setIsSelectionMode(true);
-    setSelectedMsgIds([msgId]);
-    anchorYRef.current = startY;
+    anchorMsgIdRef.current = msgId;
     isDraggingSelectionRef.current = true;
+
+    setSelectedMsgIds(prev => {
+      const currentSet = new Set(prev);
+      currentSet.add(msgId);
+      initialSelectedRef.current = currentSet;
+      return Array.from(currentSet);
+    });
   };
 
   const handleContainerPointerMove = (e: React.PointerEvent) => {
-    if (!isDraggingSelectionRef.current || anchorYRef.current === null || !messagesContainerRef.current) return;
+    if (!isDraggingSelectionRef.current || !anchorMsgIdRef.current || !messagesContainerRef.current) return;
 
     const currentY = e.clientY;
     lastPointerYRef.current = currentY;
-    const startY = anchorYRef.current;
 
-    const topBound = Math.min(startY, currentY);
-    const bottomBound = Math.max(startY, currentY);
-
-    const newSelected = new Set<string>();
-
-    const children = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
-    children.forEach((child) => {
-      const rect = child.getBoundingClientRect();
-      const msgId = child.getAttribute('data-msg-id');
-      if (!msgId) return;
-
-      const isIntersecting = rect.top < bottomBound && rect.bottom > topBound;
-      if (isIntersecting) {
-        newSelected.add(msgId);
-      }
-    });
-
-    setSelectedMsgIds(Array.from(newSelected));
+    updateSelectionRange(currentY);
 
     // Auto-scroll logic when finger reaches top/bottom thresholds
     const containerRect = messagesContainerRef.current.getBoundingClientRect();
@@ -1445,25 +1508,15 @@ function AppContent() {
     if (currentY < containerRect.top + threshold) {
       if (autoScrollTimerRef.current === null) {
         const scrollUpStep = () => {
-          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || anchorYRef.current === null) {
+          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || !anchorMsgIdRef.current) {
             stopContainerAutoScroll();
             return;
           }
-          messagesContainerRef.current.scrollBy({ top: -12, behavior: 'auto' });
+          messagesContainerRef.current.scrollBy({ top: -14, behavior: 'auto' });
 
           const y = lastPointerYRef.current ?? currentY;
-          const curTopBound = Math.min(anchorYRef.current, y);
-          const curBottomBound = Math.max(anchorYRef.current, y);
-          const selSet = new Set<string>();
-          const kids = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
-          kids.forEach((k) => {
-            const r = k.getBoundingClientRect();
-            const id = k.getAttribute('data-msg-id');
-            if (id && r.top < curBottomBound && r.bottom > curTopBound) {
-              selSet.add(id);
-            }
-          });
-          setSelectedMsgIds(Array.from(selSet));
+          updateSelectionRange(y);
+
           autoScrollTimerRef.current = requestAnimationFrame(scrollUpStep);
         };
         autoScrollTimerRef.current = requestAnimationFrame(scrollUpStep);
@@ -1471,25 +1524,15 @@ function AppContent() {
     } else if (currentY > containerRect.bottom - threshold) {
       if (autoScrollTimerRef.current === null) {
         const scrollDownStep = () => {
-          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || anchorYRef.current === null) {
+          if (!messagesContainerRef.current || !isDraggingSelectionRef.current || !anchorMsgIdRef.current) {
             stopContainerAutoScroll();
             return;
           }
-          messagesContainerRef.current.scrollBy({ top: 12, behavior: 'auto' });
+          messagesContainerRef.current.scrollBy({ top: 14, behavior: 'auto' });
 
           const y = lastPointerYRef.current ?? currentY;
-          const curTopBound = Math.min(anchorYRef.current, y);
-          const curBottomBound = Math.max(anchorYRef.current, y);
-          const selSet = new Set<string>();
-          const kids = messagesContainerRef.current.querySelectorAll('[data-msg-id]');
-          kids.forEach((k) => {
-            const r = k.getBoundingClientRect();
-            const id = k.getAttribute('data-msg-id');
-            if (id && r.top < curBottomBound && r.bottom > curTopBound) {
-              selSet.add(id);
-            }
-          });
-          setSelectedMsgIds(Array.from(selSet));
+          updateSelectionRange(y);
+
           autoScrollTimerRef.current = requestAnimationFrame(scrollDownStep);
         };
         autoScrollTimerRef.current = requestAnimationFrame(scrollDownStep);
@@ -1501,7 +1544,7 @@ function AppContent() {
 
   const handleContainerPointerUp = () => {
     isDraggingSelectionRef.current = false;
-    anchorYRef.current = null;
+    anchorMsgIdRef.current = null;
     stopContainerAutoScroll();
   };
 
@@ -4546,11 +4589,18 @@ function AppContent() {
                           className="w-full p-2 border border-slate-200 rounded-xl text-sm h-20"
                         />
                         <div className="space-y-2">
-                          <p className="text-xs font-bold text-slate-400 uppercase">Статус</p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-xs font-bold text-slate-400 uppercase">Статус</p>
+                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-[10px] font-semibold text-slate-600 border border-slate-200/80">
+                              <div className={cn("w-2 h-2 rounded-full", isUserOnline(profile) ? "bg-emerald-500 animate-pulse" : "bg-slate-400")} />
+                              <span>Реальное состояние: {isUserOnline(profile) ? 'В сети' : formatLastSeen(profile)}</span>
+                            </div>
+                          </div>
                           <div className="flex flex-wrap gap-2">
                             {(['online', 'away', 'busy', 'dnd'] as const).map(s => (
                               <button
                                 key={s}
+                                type="button"
                                 onClick={() => setUserStatus(s)}
                                 className={cn(
                                   "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all",
@@ -4669,39 +4719,14 @@ function AppContent() {
                           </div>
                         )}
 
-                        <div className="mt-4 space-y-2">
-                          <div className="flex items-center gap-2">
-                            <div className={cn(
-                              "w-2 h-2 rounded-full",
-                              isUserOnline(viewedProfile || profile) ? "bg-emerald-500" : "bg-slate-300"
-                            )} />
-                            <span className="text-xs font-medium text-slate-600">
-                              {(viewedProfile || profile)?.customStatus || formatLastSeen(viewedProfile || profile)}
-                            </span>
-                          </div>
-
-                          <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3 text-left">
-                            <div className="flex flex-col">
-                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                Системный (ваше реальное состояние)
-                              </span>
-                              <span className="text-xs font-bold text-slate-800 mt-0.5">
-                                {isUserOnline(viewedProfile || profile) ? 'В сети' : formatLastSeen(viewedProfile || profile)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-full bg-white border border-slate-200 shadow-xs">
-                              <div className={cn(
-                                "w-2.5 h-2.5 rounded-full shrink-0",
-                                isUserOnline(viewedProfile || profile) ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
-                              )} />
-                              <span className={cn(
-                                "text-[10px] font-bold uppercase tracking-wider",
-                                isUserOnline(viewedProfile || profile) ? "text-emerald-600" : "text-slate-500"
-                              )}>
-                                {isUserOnline(viewedProfile || profile) ? 'Online' : 'Offline'}
-                              </span>
-                            </div>
-                          </div>
+                        <div className="mt-4 flex items-center gap-2">
+                          <div className={cn(
+                            "w-2 h-2 rounded-full",
+                            isUserOnline(viewedProfile || profile) ? "bg-emerald-500" : "bg-slate-300"
+                          )} />
+                          <span className="text-xs font-medium text-slate-600">
+                            {(viewedProfile || profile)?.customStatus || formatLastSeen(viewedProfile || profile)}
+                          </span>
                         </div>
                       </>
                     )}
@@ -6946,10 +6971,10 @@ function AppContent() {
                               <motion.div 
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
-                                className="flex justify-center my-4 sticky top-4 z-10"
+                                className="flex justify-center my-4 sticky top-4 z-40 pointer-events-none"
                                 key={'date-'+msgDate}
                               >
-                                <span className="px-3 py-1 bg-slate-100/90 text-slate-500 rounded-full text-xs font-bold shadow-sm backdrop-blur-sm border border-slate-200/50">
+                                <span className="px-3 py-1 bg-slate-100/95 text-slate-600 rounded-full text-xs font-bold shadow-md backdrop-blur-md border border-slate-200/80 pointer-events-auto select-none">
                                   {dateLabel}
                                 </span>
                               </motion.div>
