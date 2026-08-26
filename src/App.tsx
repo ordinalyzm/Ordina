@@ -27,7 +27,7 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw, RefreshCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -59,6 +59,7 @@ import { showSystemNotification, openAppSettings } from './lib/notifications';
 import { MeshInspectorModal } from './components/MeshInspectorModal';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 import { MessageItem } from './components/MessageItem';
+import { OnboardingModal } from './components/OnboardingModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -1468,7 +1469,14 @@ function AppContent() {
     const targetId = findTargetMsgId(pointerY, displayed);
     let targetIdx = targetId ? displayed.findIndex(m => m.id === targetId) : -1;
     if (targetIdx === -1) {
-      targetIdx = anchorIdx;
+      if (messagesContainerRef.current) {
+        const containerRect = messagesContainerRef.current.getBoundingClientRect();
+        if (pointerY <= containerRect.top) targetIdx = 0;
+        else if (pointerY >= containerRect.bottom) targetIdx = displayed.length - 1;
+        else targetIdx = anchorIdx;
+      } else {
+        targetIdx = anchorIdx;
+      }
     }
 
     const startIdx = Math.min(anchorIdx, targetIdx);
@@ -1596,6 +1604,8 @@ function AppContent() {
   const [showTitleManager, setShowTitleManager] = useState(false);
   const [showNotificationSettingsModal, setShowNotificationSettingsModal] = useState(false);
   const [showMeshInspectorModal, setShowMeshInspectorModal] = useState(false);
+  const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [showDemoRelays, setShowDemoRelays] = useState(false);
   const [viewedStickerPack, setViewedStickerPack] = useState<any>(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState<{ url: string, name: string } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ file: File, type: 'image' | 'video' | 'file', previewUrl: string } | null>(null);
@@ -1746,6 +1756,10 @@ function AppContent() {
       setShowStickersModal(false);
       return true;
     }
+    if (showOnboardingModal) {
+      setShowOnboardingModal(false);
+      return true;
+    }
     if (showDevicesModal) {
       setShowDevicesModal(false);
       return true;
@@ -1789,6 +1803,7 @@ function AppContent() {
     }
     if (showRadar) {
       setShowRadar(false);
+      setMobileView('list');
       return true;
     }
     if (showAttachmentMenu) {
@@ -1801,6 +1816,7 @@ function AppContent() {
     }
     if (selectedChat) {
       setSelectedChat(null);
+      setMobileView('list');
       return true;
     }
     return false;
@@ -1809,7 +1825,7 @@ function AppContent() {
     showMultiDeleteModal, showScheduleModal, showPollModal, showBotsModal, showStickersModal,
     showDevicesModal, showPrivacyPolicy, showCreateChatModal, showGroupSettings, showGroupInfo,
     showInviteModal, showDeleteModal, showProfile, showSettings, showChatSearch, showRadar,
-    showAttachmentMenu, showChatMenu, selectedChat
+    showAttachmentMenu, showChatMenu, selectedChat, showOnboardingModal
   ]);
 
   // Push state to browser history when overlays open
@@ -2042,38 +2058,40 @@ function AppContent() {
       });
     });
 
-    // Add static Mesh Relays if list is small to ensure rich active topology
-    const staticRelays = [
-      { id: 'relay_alpha', name: 'Ретранслятор Ordina Alpha-01', dist: 75, angle: 0.9, rssi: -42, ping: 14, hops: 1 },
-      { id: 'relay_beta', name: 'P2P Магистральный Узел #02', dist: 150, angle: 2.6, rssi: -58, ping: 26, hops: 1 },
-      { id: 'relay_gamma', name: 'Автономный Mesh-Повторитель #03', dist: 230, angle: 4.8, rssi: -72, ping: 42, hops: 2 }
-    ];
+    // Add static Mesh Relays only if demo mode is toggled on
+    if (showDemoRelays) {
+      const staticRelays = [
+        { id: 'relay_alpha', name: 'Ретранслятор Ordina Alpha-01', dist: 75, angle: 0.9, rssi: -42, ping: 14, hops: 1 },
+        { id: 'relay_beta', name: 'P2P Магистральный Узел #02', dist: 150, angle: 2.6, rssi: -58, ping: 26, hops: 1 },
+        { id: 'relay_gamma', name: 'Автономный Mesh-Повторитель #03', dist: 230, angle: 4.8, rssi: -72, ping: 42, hops: 2 }
+      ];
 
-    staticRelays.forEach((r) => {
-      if (!list.some(n => n.id === r.id)) {
-        const posX = Math.max(30, Math.min(370, centerPos.x + Math.cos(r.angle) * r.dist));
-        const posY = Math.max(30, Math.min(370, centerPos.y + Math.sin(r.angle) * r.dist));
-        const latOffset = Math.sin(r.angle) * r.dist * 0.00001;
-        const lngOffset = Math.cos(r.angle) * r.dist * 0.000015;
+      staticRelays.forEach((r) => {
+        if (!list.some(n => n.id === r.id)) {
+          const posX = Math.max(30, Math.min(370, centerPos.x + Math.cos(r.angle) * r.dist));
+          const posY = Math.max(30, Math.min(370, centerPos.y + Math.sin(r.angle) * r.dist));
+          const latOffset = Math.sin(r.angle) * r.dist * 0.00001;
+          const lngOffset = Math.cos(r.angle) * r.dist * 0.000015;
 
-        list.push({
-          id: r.id,
-          displayName: r.name,
-          x: posX,
-          y: posY,
-          lat: centerPos.lat + latOffset,
-          lng: centerPos.lng + lngOffset,
-          isOnline: true,
-          rssi: r.rssi,
-          ping: r.ping,
-          hops: r.hops,
-          nodeType: 'relay'
-        });
-      }
-    });
+          list.push({
+            id: r.id,
+            displayName: r.name,
+            x: posX,
+            y: posY,
+            lat: centerPos.lat + latOffset,
+            lng: centerPos.lng + lngOffset,
+            isOnline: true,
+            rssi: r.rssi,
+            ping: r.ping,
+            hops: r.hops,
+            nodeType: 'relay'
+          });
+        }
+      });
+    }
 
     return list;
-  }, [users, user, profile, isUserOnline]);
+  }, [users, user, profile, isUserOnline, showDemoRelays]);
 
   const handleDatabaseError = (error: any, operationType: string) => {
     console.error(`Database error during ${operationType}:`, error);
@@ -5112,25 +5130,22 @@ function AppContent() {
                 </button>
               </div>
               <div className="p-6 overflow-y-auto text-sm text-slate-600 space-y-4">
-                <p><strong>1. Сбор данных и Идеология Ординализма</strong></p>
-                <p>Ордина: Мессенджер Свободы собирает минимально необходимое количество данных для обеспечения вашей приватной связи: имя пользователя, адрес электронной почты и аватар.</p>
+                <p><strong>1. Сбор данных и Идеология Свободной Связи</strong></p>
+                <p>Ордина: Мессенджер Свободы собирает минимально необходимое количество данных для обеспечения вашей приватной связи. Ваша анонимность и безопасность — наш высший приоритет.</p>
                 
                 <p><strong>2. Использование данных</strong></p>
-                <p>Ваши данные используются исключительно для идентификации в приложении, обеспечения связи с другими пользователями. Мы не передаем ваши данные третьим лицам.</p>
+                <p>Ваши данные используются исключительно для идентификации в приложении и обеспечения связи с собеседниками. Мы не передаем ваши данные третьим лицам.</p>
                 
-                <p><strong>3. Хранение, Безопасность и Медиа</strong></p>
-                <p>Все сообщения и медиафайлы хранятся на современных и безопасных серверах с использованием PostgreSQL для надежного хранения. Приложение поддерживает сквозное шифрование (XOR) для приватных сообщений. Мы также внедрили систему цитирования и пересылки сообщений для удобства общения.</p>
+                <p><strong>3. Децентрализованная Mesh P2P Сеть и Режим Почтальона</strong></p>
+                <p>При отсутствии интернет-соединения ваши сообщения передаются напрямую между устройствами по защищенной Mesh P2P сети (Bluetooth LE & WebRTC). Если адресат находится вне зоны прямого радиосигнала, зашифрованный пакет передается через промежуточные узлы ("Почтальоны"), которые сохраняют его исключительно до момента сближения с адресатом без доступа к содержимому.</p>
+
+                <p><strong>4. Локальная Сохранность Данных</strong></p>
+                <p>История сообщений, профили и ключи шифрования дублируются в надежном локальном хранилище вашего устройства (LocalStorage & IndexedDB), что защищает ваши данные от сброса при обновлениях или перезапусках.</p>
                 
-                <p><strong>4. Права и Ограничения</strong></p>
-                <p>Пользователи могут управлять своими правами в группах и каналах. Мы ограничиваем возможность отправки медиа и ссылок от неизвестных собеседников до тех пор, пока вы им не ответите, чтобы защитить вас от спама.</p>
+                <p><strong>5. Права и Ограничения</strong></p>
+                <p>Пользователи могут управлять своими правами в группах и каналах. Мы ограничиваем возможность отправки спам-сообщений и медиа от незнакомых отправителей для вашей защиты.</p>
 
-                <p><strong>5. Защита архитектуры</strong></p>
-                <p>Мы полностью перешли на выделенную инфраструктуру и отказались от лимитированных сервисов и квот. Вся обработка происходит мгновенно в реальном времени благодаря Socket.IO.</p>
-
-                <p><strong>6. Платформа пользовательских ботов</strong></p>
-                <p>Пользователи могут создавать собственных ботов («Конструктор ботов»). Боты могут обрабатывать команды и сохранять локальные сессионные переменные о пользователях (например, текущий выбранный шаг) для обеспечения сложных диалогов. Эти данные хранятся на сервере и не передаются третьим лицам.</p>
-
-                <p><strong>7. Изменения в политике</strong></p>
+                <p><strong>6. Изменения в политике</strong></p>
                 <p>Мы оставляем за собой право вносить изменения в данную политику конфиденциальности. Актуальная версия всегда доступна в этом разделе.</p>
               </div>
               <div className="p-4 bg-slate-50 flex justify-end shrink-0">
@@ -5547,6 +5562,26 @@ function AppContent() {
                 <button 
                   onClick={() => {
                     setShowSettings(false);
+                    setShowOnboardingModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-amber-50/60 rounded-2xl transition-all border border-amber-200/60 bg-amber-50/20"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                    <Sparkles size={20} />
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                      Для новичков <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-500 text-white rounded-full">ГАЙД</span>
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Анимированный мастер-класс: что где как и зачем
+                    </p>
+                  </div>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
                     setShowPrivacyPolicy(true);
                   }}
                   className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
@@ -5613,6 +5648,12 @@ function AppContent() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      <OnboardingModal 
+        isOpen={showOnboardingModal} 
+        onClose={() => setShowOnboardingModal(false)} 
+        onOpenRadar={() => setShowRadar(true)} 
+      />
 
 
 
