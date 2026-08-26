@@ -346,10 +346,38 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
           </div>
         </div>
 
-        {/* Top-Right Hardware Spec Status Badge */}
-        <div className="absolute top-3 right-3 bg-black/70 border border-slate-700/80 p-2 rounded-xl backdrop-blur-md z-20 text-[10px] text-slate-300 font-mono hidden sm:flex items-center gap-2">
-          <Cpu className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-          <span>{hwSpecs.hardwareModelLabel}</span>
+        {/* Top-Right Hardware Spec Status Badge with Calibration Button */}
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 z-20">
+          <button 
+            type="button"
+            onClick={() => {
+              const current = localStorage.getItem('ordina_custom_ble_range') || 'auto';
+              const next = current === 'auto' ? '55' : (current === '55' ? '110' : (current === '110' ? '220' : (current === '220' ? '380' : 'auto')));
+              if (next === 'auto') {
+                localStorage.removeItem('ordina_custom_ble_range');
+                localStorage.removeItem('ordina_custom_ble_label');
+              } else if (next === '55') {
+                localStorage.setItem('ordina_custom_ble_range', '55');
+                localStorage.setItem('ordina_custom_ble_label', 'Legacy BLE 4.0 (55m)');
+              } else if (next === '110') {
+                localStorage.setItem('ordina_custom_ble_range', '110');
+                localStorage.setItem('ordina_custom_ble_label', 'Mobile BLE 4.2 / 5.0 (110m)');
+              } else if (next === '220') {
+                localStorage.setItem('ordina_custom_ble_range', '220');
+                localStorage.setItem('ordina_custom_ble_label', 'Bluetooth 5.0 LE (220m)');
+              } else if (next === '380') {
+                localStorage.setItem('ordina_custom_ble_range', '380');
+                localStorage.setItem('ordina_custom_ble_label', 'Bluetooth 5.4 Long Range (380m)');
+              }
+              window.location.reload();
+            }}
+            className="bg-black/80 hover:bg-slate-900 border border-slate-700/80 px-2.5 py-1.5 rounded-xl backdrop-blur-md text-[10px] text-slate-300 font-mono flex items-center gap-2 shadow-lg transition active:scale-95"
+            title="Калибровка дальности BLE модема для вашего смартфона"
+          >
+            <Cpu className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+            <span>{hwSpecs.hardwareModelLabel}</span>
+            <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-sans font-bold">КАЛИБРОВКА</span>
+          </button>
         </div>
 
         {/* Echo Ping Toast */}
@@ -362,7 +390,10 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
       </div>
 
       {/* Discovered Mesh Peers Drawer / List */}
-      <div className="bg-slate-900 border-t border-slate-800 p-3 sm:p-4 max-h-[220px] overflow-y-auto space-y-2 shrink-0">
+      <div 
+        className="bg-slate-900 border-t border-slate-800 p-3 sm:p-4 max-h-[260px] min-h-[140px] overflow-y-auto space-y-2 shrink-0 touch-pan-y"
+        style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}
+      >
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
             <Radio size={14} className="text-blue-400 animate-pulse" />

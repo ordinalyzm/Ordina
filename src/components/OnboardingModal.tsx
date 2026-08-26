@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Radio, ShieldCheck, Zap, MessageSquare, Cpu, Sparkles, ChevronRight, ChevronLeft, CheckCircle2, X, Smartphone, Server } from 'lucide-react';
+import { Radio, ShieldCheck, Zap, MessageSquare, Cpu, Sparkles, ChevronRight, ChevronLeft, CheckCircle2, X, Settings, Lock, Search, Heart, CornerUpLeft } from 'lucide-react';
 
 interface OnboardingModalProps {
   isOpen: boolean;
@@ -11,8 +11,8 @@ interface OnboardingModalProps {
 const SLIDES = [
   {
     id: 'intro',
-    title: 'Добро пожаловать в Ordina自由',
-    subtitle: 'Мессенджер Свободного Общения и Децентрализации',
+    title: 'Добро пожаловать в Ordina',
+    subtitle: 'Мессенджер свободного общения и децентрализованной связи',
     icon: Sparkles,
     color: 'from-blue-600 to-indigo-600',
     accentColor: 'text-blue-500',
@@ -20,15 +20,15 @@ const SLIDES = [
     content: (
       <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
         <p>
-          Ordina объединяет традиционную быструю связь через интернет и **автономную P2P Mesh-сеть** для передачи сообщений без интернета и сотовой связи.
+          Ordina объединяет быструю связь через интернет и децентрализованную автономную P2P Mesh-сеть для передачи сообщений без интернета и сотовой связи.
         </p>
         <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-2xl space-y-2">
           <div className="flex items-center gap-2 font-bold text-slate-800 text-xs uppercase tracking-wide">
-            <Zap className="w-4 h-4 text-blue-500" /> Два ключевых режима:
+            <Zap className="w-4 h-4 text-blue-500" /> Два основных режима связи:
           </div>
           <ul className="text-xs space-y-1.5 text-slate-600 list-disc pl-4">
-            <li><strong>Онлайн Режим:</strong> Мгновенные чаты, группы, каналы, гифки, стикеры и звонки.</li>
-            <li><strong>Оффлайн Mesh P2P:</strong> Передача сообщений по цепочке устройств через Bluetooth LE & WebRTC.</li>
+            <li><strong>Онлайн Режим:</strong> Мгновенные чаты, группы, каналы, медиафайлы, гифки, стикеры и звонки через интернет.</li>
+            <li><strong>Оффлайн Mesh P2P:</strong> Прямая передача сообщений по радиоцепочке устройств через Bluetooth LE & WebRTC.</li>
           </ul>
         </div>
       </div>
@@ -36,89 +36,143 @@ const SLIDES = [
   },
   {
     id: 'mesh_radar',
-    title: 'Радар и Радио-связь',
-    subtitle: 'Как работает обнаружение узлов и ретрансляция',
+    title: 'Где находится Радар и Mesh-сеть',
+    subtitle: 'Поиск ближайших устройств и эхо-маршрутизация',
     icon: Radio,
     color: 'from-emerald-600 to-teal-600',
     accentColor: 'text-emerald-500',
     bgBadge: 'bg-emerald-500/10 text-emerald-600',
     content: (
       <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
-        <p>
-          В меню чатов вы найдете иконку <strong>Радара</strong>. На нем отображаются находящиеся рядом устройства и уровень сигнала (dBm).
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-          <div className="p-3 bg-emerald-50/60 border border-emerald-200/60 rounded-xl">
-            <span className="font-bold text-emerald-800 flex items-center gap-1.5 mb-1">
-              <Cpu className="w-3.5 h-3.5 text-emerald-600" /> Эхо-Маршрутизация
-            </span>
-            Сообщения сами ищут кратчайший путь от одного смартфона к другому (Hops).
+        <div className="p-3 bg-emerald-50/80 border border-emerald-200/80 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-md shadow-emerald-500/20">
+            <Radio size={20} />
           </div>
-          <div className="p-3 bg-amber-50/60 border border-amber-200/60 rounded-xl">
-            <span className="font-bold text-amber-800 flex items-center gap-1.5 mb-1">
-              <Server className="w-3.5 h-3.5 text-amber-600" /> Режим Почтальона
+          <div className="text-xs text-emerald-950">
+            <strong className="block text-slate-900 font-bold">Расположение: Верхняя панель списка чатов</strong>
+            Иконка радиоволн/радара расположена рядом со строкой поиска в самом верху меню.
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-600">
+          Нажмите на <strong>Радар</strong>, чтобы активировать сканирование эфира. Вы увидите круговую карту узлов с расстоянием в метрах и уровнем сигнала (dBm).
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+            <span className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
+              <Cpu className="w-3.5 h-3.5 text-emerald-600" /> Эхо-Маршруты
             </span>
-            Если адресат далеко, близлежащее устройство временно сохраняет пакет до встречи.
+            Сообщения передаются по цепочке промежуточных смартфонов (Hops).
+          </div>
+          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+            <span className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
+              <Zap className="w-3.5 h-3.5 text-amber-600" /> Режим Почтальона
+            </span>
+            Зашифрованный пакет хранится до физического сближения с адресатом.
           </div>
         </div>
       </div>
     )
   },
   {
-    id: 'security',
-    title: 'Безопасность & Шифрование',
-    subtitle: 'Секретные чаты и защита от прослушивания',
-    icon: ShieldCheck,
+    id: 'settings_menu',
+    title: 'Меню Настройки и Калибровка',
+    subtitle: 'Где настраивать профиль и параметры модема',
+    icon: Settings,
+    color: 'from-slate-700 to-slate-900',
+    accentColor: 'text-slate-600',
+    bgBadge: 'bg-slate-500/10 text-slate-700',
+    content: (
+      <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
+        <div className="p-3 bg-slate-100 border border-slate-200 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-slate-800 text-white flex items-center justify-center shrink-0">
+            <Settings size={20} />
+          </div>
+          <div className="text-xs text-slate-800">
+            <strong className="block text-slate-900 font-bold">Расположение: Боковая панель или Иконка ⚙️ в шапке</strong>
+            В меню Настройки можно изменить ваш профиль, имя, аватар и тему оформления.
+          </div>
+        </div>
+
+        <div className="space-y-1.5 text-xs text-slate-600">
+          <p>• <strong>Калибровка BLE модема:</strong> В окне Радара вы можете вручную указать поколение вашего устройства (от BLE 4.0 55m до Bluetooth 5.4 380m).</p>
+          <p>• <strong>Раздел «Для новичков»:</strong> В любой момент вы можете снова запустить этот анимированный гайд из Настроек.</p>
+        </div>
+      </div>
+    )
+  },
+  {
+    id: 'secret_chats',
+    title: 'Секретные чаты и Группы',
+    subtitle: 'Шифрование от устройства к устройству (E2EE)',
+    icon: Lock,
     color: 'from-purple-600 to-indigo-600',
     accentColor: 'text-purple-500',
     bgBadge: 'bg-purple-500/10 text-purple-600',
     content: (
       <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
-        <p>
-          Все личные чаты и секретные сообщения шифруются прямо на вашем устройстве.
-        </p>
-        <div className="p-3.5 bg-purple-50/70 border border-purple-200/60 rounded-2xl space-y-2 text-xs">
-          <div className="font-bold text-purple-900 flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-purple-600" /> Свойства защиты:
+        <div className="p-3 bg-purple-50/80 border border-purple-200/80 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-purple-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-purple-600/20">
+            <Lock size={20} />
           </div>
-          <p className="text-slate-700">
-            • <strong>Анти-DDoS Шторм:</strong> Повторные эхо-пакеты автоматически отсекаются.<br/>
-            • <strong>Локальное Хранение:</strong> Ваши ключи и диалоги сохраняются в зашифрованном виде на вашем устройстве.
+          <div className="text-xs text-purple-950">
+            <strong className="block text-purple-900 font-bold">Расположение: Кнопка «Создать чат» 📝 внизу списка</strong>
+            При создании диалога включите переключатель 🔒 Секретный чат для сквозного шифрования.
+          </div>
+        </div>
+
+        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs">
+          <div className="font-bold text-slate-800 flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-purple-600" /> Защита и удаление:
+          </div>
+          <p className="text-slate-600">
+            При удалении чата вся история и медиафайлы гарантированно очищаются из вашей локальной памяти и базы данных.
           </p>
         </div>
       </div>
     )
   },
   {
-    id: 'features',
-    title: 'Полезные Жесты и Выделение',
-    subtitle: 'Как быстро управлять сообщениями',
+    id: 'gestures',
+    title: 'Жесты и Быстрые Действия',
+    subtitle: 'Удобное управление в окне переписки',
     icon: MessageSquare,
     color: 'from-amber-600 to-orange-600',
     accentColor: 'text-amber-500',
     bgBadge: 'bg-amber-500/10 text-amber-600',
     content: (
-      <div className="space-y-3 text-sm text-slate-600 leading-relaxed">
-        <div className="space-y-2 text-xs">
-          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-            <span className="font-bold text-slate-700">Свайп влево по сообщению</span>
-            <span className="text-slate-500">Быстрый ответ</span>
-          </div>
-          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-            <span className="font-bold text-slate-700">Долгое нажатие</span>
-            <span className="text-slate-500">Режим выделения сообщений</span>
-          </div>
-          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
-            <span className="font-bold text-slate-700">Двойной тап</span>
-            <span className="text-slate-500">Быстрая реакция ❤️</span>
-          </div>
+      <div className="space-y-2.5 text-xs text-slate-600">
+        <div className="p-2.5 bg-amber-50/60 border border-amber-200/60 rounded-xl flex items-center justify-between">
+          <span className="font-bold text-amber-900 flex items-center gap-1.5">
+            <CornerUpLeft size={14} className="text-amber-600" /> Свайп влево по сообщению
+          </span>
+          <span className="text-amber-800 font-medium">Быстрый ответ (Цитирование)</span>
+        </div>
+        <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+          <span className="font-bold text-slate-800 flex items-center gap-1.5">
+            <CheckCircle2 size={14} className="text-blue-600" /> Долгое нажатие
+          </span>
+          <span className="text-slate-600 font-medium">Режим выделения сообщений</span>
+        </div>
+        <div className="p-2.5 bg-rose-50/60 border border-rose-200/60 rounded-xl flex items-center justify-between">
+          <span className="font-bold text-rose-900 flex items-center gap-1.5">
+            <Heart size={14} className="text-rose-600 fill-rose-600" /> Двойной тап по облачку
+          </span>
+          <span className="text-rose-800 font-medium">Быстрая реакция ❤️</span>
+        </div>
+        <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+          <span className="font-bold text-slate-800 flex items-center gap-1.5">
+            <Search size={14} className="text-slate-600" /> Лупа в шапке чата
+          </span>
+          <span className="text-slate-600 font-medium">Поиск по истории переписки</span>
         </div>
       </div>
     )
   },
   {
     id: 'finish',
-    title: 'Вы готовы к работе!',
+    title: 'Вы готовы к автономному общению!',
     subtitle: 'Начните прямо сейчас в онлайн или оффлайн режиме',
     icon: CheckCircle2,
     color: 'from-blue-600 to-emerald-600',
@@ -127,10 +181,10 @@ const SLIDES = [
     content: (
       <div className="space-y-4 text-center py-2">
         <p className="text-sm text-slate-600">
-          Вы всегда можете снова открыть этот гайд через меню <strong>Настройки ➔ Мастер-класс для новичков</strong>.
+          Вы всегда можете снова открыть этот гайд через меню <strong>Настройки ➔ Для новичков (ГАЙД)</strong>.
         </p>
-        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-800 font-medium">
-          Приятного использования Ordina自由! Все ваши данные надежно защищены.
+        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs text-emerald-900 font-medium">
+          Приятного использования Ordina Messenger! Ваши сообщения и конфиденциальность всегда под надежной защитой.
         </div>
       </div>
     )
@@ -157,7 +211,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
         onClick={e => e.stopPropagation()}
       >
         {/* Header strip */}
-        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-400 font-mono">
               УРОК {currentSlideIndex + 1} ИЗ {SLIDES.length}
@@ -167,6 +221,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
             </span>
           </div>
           <button 
+            type="button"
             onClick={onClose} 
             className="p-2 hover:bg-slate-200/60 rounded-xl text-slate-400 hover:text-slate-700 transition"
           >
@@ -212,6 +267,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
             {SLIDES.map((_, idx) => (
               <button
                 key={idx}
+                type="button"
                 onClick={() => setCurrentSlideIndex(idx)}
                 className={`h-2 rounded-full transition-all ${
                   idx === currentSlideIndex 
@@ -236,10 +292,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({ isOpen, onClos
             {isLast ? (
               <button
                 type="button"
-                onClick={onClose}
+                onClick={() => {
+                  onClose();
+                  if (onOpenRadar) onOpenRadar();
+                }}
                 className="px-5 py-2.5 rounded-xl bg-blue-600 text-white font-bold text-xs hover:bg-blue-700 shadow-md shadow-blue-600/30 transition flex items-center gap-1"
               >
-                Понятно, начать! <CheckCircle2 size={16} />
+                Понятно, открыть! <CheckCircle2 size={16} />
               </button>
             ) : (
               <button

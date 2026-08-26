@@ -40,6 +40,7 @@ import {
   loadMessagesFromLocalCache, 
   clearChatLocalCache 
 } from './utils/localCache';
+import { initializeVersionAndSyncState } from './utils/versionManager';
 import { Radar } from './components/Radar';
 import { getRelayPath, findNextHop, deduplicationEngine, addMailmanCarrierPacket, getMailmanCarrierPackets, removeMailmanCarrierPacket, detectDeviceHardwareSpecs } from './lib/mesh';
 import { FirestoreMedia } from './lib/FirestoreMedia';
@@ -3605,18 +3606,34 @@ function AppContent() {
     }
   };
 
+  const purgeChatDataLocally = (chatId: string) => {
+    clearChatLocalCache(chatId);
+    setMessages(prev => prev.filter(m => 
+      m.groupId !== chatId && 
+      !( (m.senderId === user?.uid && m.receiverId === chatId) || (m.senderId === chatId && m.receiverId === user?.uid) )
+    ));
+    setRecentPreviews(prev => {
+      const next = { ...prev };
+      delete next[chatId];
+      return next;
+    });
+  };
+
   const deleteChatForMe = async () => {
     if (!user || !selectedChat) return;
+    const chatId = selectedChat.id;
     
+    purgeChatDataLocally(chatId);
+
     if (selectedChat.type !== 'user') {
-      const group = groups.find(g => g.id === selectedChat.id);
+      const group = groups.find(g => g.id === chatId);
       if (group) {
         const members = (group.members || []).filter((uid: string) => uid !== user.uid);
         const memberRoles = { ...(group.memberRoles || {}) };
         delete memberRoles[user.uid];
         
         socket?.emit('group:update', {
-          id: selectedChat.id,
+          id: chatId,
           update: { members, memberRoles }
         });
       }
@@ -3624,7 +3641,7 @@ function AppContent() {
       setMobileView('list');
       setShowDeleteModal(false);
     } else {
-      const hiddenChats = [...(profile?.hiddenChats || []), selectedChat.id];
+      const hiddenChats = [...(profile?.hiddenChats || []), chatId];
       socket?.emit('profile:update', {
         uid: user.uid,
         profile: { hiddenChats }
@@ -3637,6 +3654,7 @@ function AppContent() {
 
   const deleteChatForEveryoneById = async (chatId: string, type: string) => {
     if (!user) return;
+    purgeChatDataLocally(chatId);
     if (type !== 'user') {
       const group = groups.find(g => g.id === chatId);
       if (group?.ownerId === user.uid || isGlobalAdmin) {
@@ -3653,6 +3671,7 @@ function AppContent() {
 
   const deleteChatForMeById = async (chatId: string, type: string) => {
     if (!user) return;
+    purgeChatDataLocally(chatId);
     if (type !== 'user') {
         socket?.emit('group:leave', { id: chatId, uid: user.uid });
         if (selectedChat?.id === chatId) { setSelectedChat(null); setMobileView('list'); }
@@ -3722,11 +3741,13 @@ function AppContent() {
 
   const deleteChatForEveryone = async () => {
     if (!user || !selectedChat) return;
+    const chatId = selectedChat.id;
+    purgeChatDataLocally(chatId);
     
     if (selectedChat.type !== 'user') {
-      const group = groups.find(g => g.id === selectedChat.id);
+      const group = groups.find(g => g.id === chatId);
       if (group?.ownerId === user.uid || isGlobalAdmin) {
-        socket?.emit('group:delete', { id: selectedChat.id });
+        socket?.emit('group:delete', { id: chatId });
         setSelectedChat(null);
         setMobileView('list');
         setShowDeleteModal(false);
@@ -3736,7 +3757,7 @@ function AppContent() {
     } else {
       socket?.emit('chat:delete_everyone', { 
         user1: user.uid, 
-        user2: selectedChat.id 
+        user2: chatId 
       });
       setSelectedChat(null);
       setMobileView('list');
@@ -4185,7 +4206,10 @@ function AppContent() {
               </AnimatePresence>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-2 space-y-1">
+            <div 
+              className="flex-1 overflow-y-auto px-2 space-y-1 touch-pan-y"
+              style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}
+            >
               <div className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Чаты</div>
               
               {user && (
@@ -8381,8 +8405,8 @@ function AppContent() {
             color: 'white' 
           }}
           className={cn(
-            "pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)]",
-            window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[400px] border-l border-slate-800 shadow-2xl pt-0 pb-0"
+            "pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)] flex flex-col h-full w-full",
+            window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[620px] max-w-[95vw] border-l border-slate-800 shadow-2xl pt-0 pb-0"
           )}
         >
           <div className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-slate-900 text-white shrink-0">

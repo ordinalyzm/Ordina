@@ -196,7 +196,10 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="p-5 overflow-y-auto flex-1 space-y-4">
+        <div 
+          className="p-5 overflow-y-auto flex-1 space-y-4 touch-pan-y"
+          style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}
+        >
           {activeTab === 'topology' && (
             <div className="space-y-4">
               <div className="flex items-center justify-between bg-indigo-950/30 p-4 rounded-xl border border-indigo-500/20">

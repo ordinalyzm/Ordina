@@ -34,19 +34,38 @@ export function detectDeviceHardwareSpecs(): DeviceHardwareSpecs {
       hasWebRTC: false,
       connectionType: 'unknown',
       isMobile: false,
-      estimatedBluetoothModemRange: 150,
-      hardwareModelLabel: 'Стандартный BLE Модем'
+      estimatedBluetoothModemRange: 120,
+      hardwareModelLabel: 'Стандартный BLE 4.2 Модем'
+    };
+  }
+
+  // Check manual user calibration override first
+  const customRange = localStorage.getItem('ordina_custom_ble_range');
+  const customLabel = localStorage.getItem('ordina_custom_ble_label');
+  if (customRange && customLabel) {
+    return {
+      ramGB: undefined,
+      cores: undefined,
+      hasWebBluetooth: !!(navigator as any).bluetooth,
+      hasWebRTC: typeof RTCPeerConnection !== 'undefined',
+      connectionType: (navigator as any).onLine ? 'online' : 'offline',
+      isMobile: true,
+      estimatedBluetoothModemRange: parseInt(customRange, 10) || 120,
+      hardwareModelLabel: customLabel
     };
   }
 
   const nav = navigator as any;
-  const ramGB = nav.deviceMemory || 4;
-  const cores = nav.hardwareConcurrency || 4;
+  const rawRam = nav.deviceMemory;
+  const cores = nav.hardwareConcurrency || 2;
   const hasWebBluetooth = !!nav.bluetooth;
   const hasWebRTC = typeof RTCPeerConnection !== 'undefined';
   const ua = nav.userAgent || '';
   const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
   
+  // Real RAM fallback logic: if deviceMemory is missing (iOS/Safari/Old WebViews), don't default to 4GB!
+  const ramGB = rawRam !== undefined ? rawRam : (isMobile ? 2 : 4);
+
   let connectionType = 'online';
   if (nav.connection) {
     connectionType = nav.connection.effectiveType || nav.connection.type || '4g';
@@ -54,19 +73,35 @@ export function detectDeviceHardwareSpecs(): DeviceHardwareSpecs {
     connectionType = 'offline';
   }
 
-  // Calculate estimated BLE Modem Range based on hardware capability
-  let range = 120;
-  let modelLabel = 'BLE 4.2 Standard (50-120m)';
+  // Parse OS Version for accurate Bluetooth PHY hardware generation
+  const androidMatch = ua.match(/Android\s([0-9\.]+)/i);
+  const androidVer = androidMatch ? parseFloat(androidMatch[1]) : null;
+  
+  const iosMatch = ua.match(/OS\s([0-9_]+)\slike\sMac/i);
+  const iosVer = iosMatch ? parseInt(iosMatch[1].replace('_', '.'), 10) : null;
 
-  if (hasWebBluetooth && (ramGB >= 8 || cores >= 8)) {
-    range = 400;
-    modelLabel = 'Bluetooth 5.4 Long Range PHY (400m)';
-  } else if (hasWebBluetooth || ramGB >= 4) {
+  const maxTouchPoints = nav.maxTouchPoints || 0;
+  const isOldHardware = (androidVer !== null && androidVer < 9.0) || 
+                        (iosVer !== null && iosVer < 13) || 
+                        (ramGB <= 2 && cores <= 4) ||
+                        (isMobile && maxTouchPoints <= 3);
+
+  // Calculate estimated BLE Modem Range based on realistic hardware capability
+  let range = 120;
+  let modelLabel = 'BLE 4.2 Standard (120m)';
+
+  if (isOldHardware) {
+    range = 55;
+    modelLabel = 'Legacy BLE 4.0 / 4.1 (Устаревший модуль, 55m)';
+  } else if (hasWebBluetooth && ramGB >= 6 && cores >= 8 && (androidVer === null || androidVer >= 11)) {
+    range = 380;
+    modelLabel = 'Bluetooth 5.4 Long Range PHY (380m)';
+  } else if (ramGB >= 4 && cores >= 6) {
     range = 220;
     modelLabel = 'Bluetooth 5.0 LE (220m)';
   } else if (isMobile) {
-    range = 100;
-    modelLabel = 'Mobile BLE (100m)';
+    range = 110;
+    modelLabel = 'Мобильный BLE 4.2 / 5.0 (110m)';
   }
 
   return {
