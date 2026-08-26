@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { MeshNode, UserProfile } from '../types';
 import { calculateSignalQuality, estimateMeshPing, getQueuedMeshPackets, dequeueMeshPacket, QueuedMeshPacket } from '../lib/meshQueue';
-import { getRelayPath } from '../lib/mesh';
+import { getRelayPath, detectDeviceHardwareSpecs, deduplicationEngine, getMailmanCarrierPackets } from '../lib/mesh';
 import { playMeshNodeConnectSound } from '../lib/audio';
-import { Activity, Wifi, Radio, Cpu, Send, RefreshCw, Trash2, CheckCircle2, ShieldAlert, ArrowRight, Zap, MapPin } from 'lucide-react';
+import { Activity, Wifi, Radio, Cpu, Send, RefreshCw, Trash2, CheckCircle2, ShieldAlert, ArrowRight, Zap, MapPin, Server, Smartphone, HardDrive, ShieldCheck, Mail } from 'lucide-react';
 
 interface MeshInspectorModalProps {
   isOpen: boolean;
@@ -30,9 +30,11 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
   const [queuedPackets, setQueuedPackets] = useState<QueuedMeshPacket[]>([]);
   const [pings, setPings] = useState<Record<string, PingResult>>({});
   const [isTesting, setIsTesting] = useState(false);
-  const [activeTab, setActiveTab] = useState<'topology' | 'nodes' | 'queue'>('topology');
+  const [activeTab, setActiveTab] = useState<'topology' | 'nodes' | 'bridges' | 'queue'>('topology');
 
   const currentUserNode = nodes.find(n => n.id === currentUser.uid);
+  const hwSpecs = detectDeviceHardwareSpecs();
+  const mailmanPackets = getMailmanCarrierPackets();
 
   useEffect(() => {
     if (isOpen) {
@@ -62,7 +64,6 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
       const path = getRelayPath(nodes, currentUser.uid, node.id);
       const hops = path ? path.length : 1;
 
-      // Distance estimation
       let dist = 100;
       if (currentUserNode && currentUserNode.lat !== undefined && node.lat !== undefined) {
         const dx = (node.lng! - currentUserNode.lng!) * Math.cos((currentUserNode.lat! + node.lat!) / 2 * Math.PI / 180) * 111320;
@@ -105,10 +106,10 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
             </div>
             <div>
               <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                Mesh Network Diagnostics & Inspector
+                Mesh Network Architecture & Inspector
               </h2>
               <p className="text-xs text-slate-400">
-                Децентрализованная Mesh-сеть • Топология P2P и маршрутизация
+                Мосты, Почтальоны (Store & Forward), Эхо-маршрутизатор и Анти-DDoS
               </p>
             </div>
           </div>
@@ -136,35 +137,45 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
           </div>
           <div className="p-3 bg-slate-800/40 rounded-xl border border-slate-700/50">
             <div className="text-slate-400 mb-1 flex items-center gap-1.5 font-medium">
-              <Zap className="w-3.5 h-3.5 text-amber-400" /> В очереди (Mesh)
+              <Server className="w-3.5 h-3.5 text-indigo-400" /> Дальность модема
             </div>
-            <div className="text-lg font-bold text-amber-400">{queuedPackets.length}</div>
+            <div className="text-sm font-bold text-indigo-300">{hwSpecs.estimatedBluetoothModemRange} м</div>
           </div>
           <div className="p-3 bg-slate-800/40 rounded-xl border border-slate-700/50">
             <div className="text-slate-400 mb-1 flex items-center gap-1.5 font-medium">
-              <Cpu className="w-3.5 h-3.5 text-purple-400" /> Ваш Mesh ID
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Защита (DDoS)
             </div>
-            <div className="text-xs font-mono font-bold text-indigo-300 truncate">
-              {currentUser.meshKey ? currentUser.meshKey.substring(0, 10) + '...' : currentUser.uid.substring(0, 8)}
+            <div className="text-sm font-bold text-emerald-300">
+              Заблокировано: {deduplicationEngine.getSuppressedCount()}
             </div>
           </div>
         </div>
 
         {/* Navigation Tabs */}
-        <div className="flex border-b border-slate-800 bg-slate-950 px-4 gap-2">
+        <div className="flex border-b border-slate-800 bg-slate-950 px-4 gap-2 overflow-x-auto">
           <button
             onClick={() => setActiveTab('topology')}
-            className={`px-4 py-3 text-xs font-bold transition border-b-2 ${
+            className={`px-4 py-3 text-xs font-bold transition border-b-2 whitespace-nowrap ${
               activeTab === 'topology'
                 ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
             }`}
           >
-            Топология & Диагностика
+            Эхо-Маршрутизация
+          </button>
+          <button
+            onClick={() => setActiveTab('bridges')}
+            className={`px-4 py-3 text-xs font-bold transition border-b-2 whitespace-nowrap ${
+              activeTab === 'bridges'
+                ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5'
+                : 'border-transparent text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Мосты & Почтальоны
           </button>
           <button
             onClick={() => setActiveTab('nodes')}
-            className={`px-4 py-3 text-xs font-bold transition border-b-2 ${
+            className={`px-4 py-3 text-xs font-bold transition border-b-2 whitespace-nowrap ${
               activeTab === 'nodes'
                 ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -174,7 +185,7 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('queue')}
-            className={`px-4 py-3 text-xs font-bold transition border-b-2 ${
+            className={`px-4 py-3 text-xs font-bold transition border-b-2 whitespace-nowrap ${
               activeTab === 'queue'
                 ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5'
                 : 'border-transparent text-slate-400 hover:text-slate-200'
@@ -190,9 +201,9 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
             <div className="space-y-4">
               <div className="flex items-center justify-between bg-indigo-950/30 p-4 rounded-xl border border-indigo-500/20">
                 <div>
-                  <h3 className="text-sm font-bold text-indigo-200">Тестирование пинга и маршрутизации</h3>
+                  <h3 className="text-sm font-bold text-indigo-200">Эхо-Диагностика и Оптимальные Задержки</h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Проверить скорость задержки (Ping) и доступные скачки (Hops) до каждого узла сети.
+                    Устройства отправляют эхо-пакеты для поиска кратчайшего пути без кольцевого дублирования.
                   </p>
                 </div>
                 <button
@@ -201,7 +212,7 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-xl font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-600/30 transition"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
-                  {isTesting ? 'Тестирование...' : 'Запустить Пинг'}
+                  {isTesting ? 'Сканирование...' : 'Запустить Пинг'}
                 </button>
               </div>
 
@@ -245,11 +256,52 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
 
               <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800 space-y-2 text-xs">
                 <h4 className="font-bold text-slate-300 flex items-center gap-2">
-                  <ShieldAlert className="w-4 h-4 text-amber-400" /> Принцип работы Mesh в Ordina
+                  <ShieldAlert className="w-4 h-4 text-emerald-400" /> Защита от Зацикливания & DDoS
                 </h4>
                 <p className="text-slate-400 leading-relaxed">
-                  Когда сервер недоступен, устройства обмениваются сообщениями напрямую по локальной сети или через промежуточные узлы (Store & Forward). Каждое сообщение шифруется ключом получателя и пересылается дальше.
+                  При обработке Mesh-эха хэш каждого пакета заносится в дедупликатор. Если узел уже видел этот идентификатор, пакет отбрасывается, исключая бесконечное дублирование и нагрузку на эфир.
                 </p>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'bridges' && (
+            <div className="space-y-4">
+              <div className="bg-slate-800/40 p-4 rounded-xl border border-slate-700/60 space-y-3">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Server className="w-4 h-4 text-indigo-400" /> Аппаратный BLE Модем и Мосты
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-300 font-mono">
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-400">Модель Модема:</span>
+                    <p className="font-bold text-indigo-300 mt-1">{hwSpecs.hardwareModelLabel}</p>
+                  </div>
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-400">Оценка дальности BLE:</span>
+                    <p className="font-bold text-emerald-400 mt-1">до {hwSpecs.estimatedBluetoothModemRange} метров</p>
+                  </div>
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-400">Поддержка Web Bluetooth:</span>
+                    <p className="font-bold text-slate-200 mt-1">{hwSpecs.hasWebBluetooth ? 'Доступно (Chrome/Opera/Android)' : 'Не поддерживается в браузере'}</p>
+                  </div>
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-slate-400">Поддержка WebRTC P2P:</span>
+                    <p className="font-bold text-slate-200 mt-1">{hwSpecs.hasWebRTC ? 'Активна (Прямой P2P DataChannel)' : 'Выключено'}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-800/40 p-4 rounded-xl border border-slate-700/60 space-y-3">
+                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-amber-400" /> Режим Почтальона (Offline Physical Carrier)
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Если адресат или мост недоступны, узел сохраняет зашифрованное сообщение в памяти. При физическом перемещении и появлении рядом получателя или Интернет-моста, почтальон автоматически передаёт пакет.
+                </p>
+                <div className="flex items-center justify-between bg-slate-900 p-3 rounded-xl border border-slate-800 text-xs">
+                  <span className="text-slate-300 font-medium">Пакетов в памяти Почтальона:</span>
+                  <span className="font-mono font-bold text-amber-400 text-sm">{mailmanPackets.length} шт.</span>
+                </div>
               </div>
             </div>
           )}

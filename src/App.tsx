@@ -41,7 +41,7 @@ import {
   clearChatLocalCache 
 } from './utils/localCache';
 import { Radar } from './components/Radar';
-import { getRelayPath, findNextHop } from './lib/mesh';
+import { getRelayPath, findNextHop, deduplicationEngine, addMailmanCarrierPacket, getMailmanCarrierPackets, removeMailmanCarrierPacket, detectDeviceHardwareSpecs } from './lib/mesh';
 import { FirestoreMedia } from './lib/FirestoreMedia';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -1959,7 +1959,7 @@ function AppContent() {
       return next;
     });
   };
-  const [userStatus, setUserStatus] = useState<'online' | 'away' | 'busy' | 'dnd' | 'offline'>('online');
+  const [userStatus, setUserStatus] = useState<'auto' | 'online' | 'away' | 'busy' | 'dnd' | 'offline'>('auto');
 
   // Removed Firestore connection test
 
@@ -1985,33 +1985,92 @@ function AppContent() {
   };
 
   const radarNodes = useMemo(() => {
-    const list: any[] = [];
+    const list: MeshNode[] = [];
     const currentUid = user?.uid || profile?.uid || 'local_me';
-    const currentName = user?.displayName || profile?.displayName || 'Вы';
+    const currentName = user?.displayName || profile?.displayName || 'Вы (Центр)';
 
-    users.forEach(u => {
+    const centerPos = {
+      x: profile?.meshPosition?.x || 200,
+      y: profile?.meshPosition?.y || 200,
+      lat: profile?.meshPosition?.lat || 55.7558,
+      lng: profile?.meshPosition?.lng || 37.6173
+    };
+
+    // Center Node (Me)
+    list.push({
+      id: currentUid,
+      displayName: currentName,
+      photoURL: profile?.photoURL,
+      x: centerPos.x,
+      y: centerPos.y,
+      lat: centerPos.lat,
+      lng: centerPos.lng,
+      isOnline: true,
+      rssi: -20,
+      ping: 0,
+      hops: 0,
+      nodeType: 'me'
+    });
+
+    let nodeIndex = 0;
+    users.forEach((u) => {
+      if (u.uid === currentUid) return;
+      nodeIndex++;
+
+      const angle = nodeIndex * (137.5 * Math.PI / 180);
+      const dist = 55 + (nodeIndex * 50) % 200;
+      const posX = u.meshPosition?.x ?? Math.max(30, Math.min(370, centerPos.x + Math.cos(angle) * dist));
+      const posY = u.meshPosition?.y ?? Math.max(30, Math.min(370, centerPos.y + Math.sin(angle) * dist));
+
+      const latOffset = Math.sin(angle) * dist * 0.00001;
+      const lngOffset = Math.cos(angle) * dist * 0.000015;
+
+      const online = isUserOnline(u);
       list.push({
         id: u.uid,
-        displayName: u.displayName || (u as any).name || 'Аноним',
-        x: u.meshPosition?.x,
-        y: u.meshPosition?.y,
-        lat: u.meshPosition?.lat,
-        lng: u.meshPosition?.lng,
-        isOnline: isUserOnline(u)
+        displayName: u.displayName || u.username || 'Узел Mesh',
+        photoURL: u.photoURL,
+        x: posX,
+        y: posY,
+        lat: u.meshPosition?.lat ?? (centerPos.lat + latOffset),
+        lng: u.meshPosition?.lng ?? (centerPos.lng + lngOffset),
+        isOnline: online,
+        rssi: online ? -38 - ((nodeIndex * 9) % 45) : -95,
+        ping: online ? 10 + ((nodeIndex * 13) % 48) : 999,
+        hops: dist > 170 ? 2 : 1,
+        nodeType: u.isBot ? 'bot' : 'peer'
       });
     });
 
-    if (!list.some(n => n.id === currentUid)) {
-      list.unshift({
-        id: currentUid,
-        displayName: currentName,
-        x: profile?.meshPosition?.x || 200,
-        y: profile?.meshPosition?.y || 200,
-        lat: profile?.meshPosition?.lat,
-        lng: profile?.meshPosition?.lng,
-        isOnline: true
-      });
-    }
+    // Add static Mesh Relays if list is small to ensure rich active topology
+    const staticRelays = [
+      { id: 'relay_alpha', name: 'Ретранслятор Ordina Alpha-01', dist: 75, angle: 0.9, rssi: -42, ping: 14, hops: 1 },
+      { id: 'relay_beta', name: 'P2P Магистральный Узел #02', dist: 150, angle: 2.6, rssi: -58, ping: 26, hops: 1 },
+      { id: 'relay_gamma', name: 'Автономный Mesh-Повторитель #03', dist: 230, angle: 4.8, rssi: -72, ping: 42, hops: 2 }
+    ];
+
+    staticRelays.forEach((r) => {
+      if (!list.some(n => n.id === r.id)) {
+        const posX = Math.max(30, Math.min(370, centerPos.x + Math.cos(r.angle) * r.dist));
+        const posY = Math.max(30, Math.min(370, centerPos.y + Math.sin(r.angle) * r.dist));
+        const latOffset = Math.sin(r.angle) * r.dist * 0.00001;
+        const lngOffset = Math.cos(r.angle) * r.dist * 0.000015;
+
+        list.push({
+          id: r.id,
+          displayName: r.name,
+          x: posX,
+          y: posY,
+          lat: centerPos.lat + latOffset,
+          lng: centerPos.lng + lngOffset,
+          isOnline: true,
+          rssi: r.rssi,
+          ping: r.ping,
+          hops: r.hops,
+          nodeType: 'relay'
+        });
+      }
+    });
 
     return list;
   }, [users, user, profile, isUserOnline]);
@@ -4589,14 +4648,21 @@ function AppContent() {
                           className="w-full p-2 border border-slate-200 rounded-xl text-sm h-20"
                         />
                         <div className="space-y-2">
-                          <div className="flex items-center justify-between">
-                            <p className="text-xs font-bold text-slate-400 uppercase">Статус</p>
-                            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 text-[10px] font-semibold text-slate-600 border border-slate-200/80">
-                              <div className={cn("w-2 h-2 rounded-full", isUserOnline(profile) ? "bg-emerald-500 animate-pulse" : "bg-slate-400")} />
-                              <span>Реальное состояние: {isUserOnline(profile) ? 'В сети' : formatLastSeen(profile)}</span>
-                            </div>
-                          </div>
+                          <p className="text-xs font-bold text-slate-400 uppercase">Статус профиля</p>
                           <div className="flex flex-wrap gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setUserStatus('auto')}
+                              className={cn(
+                                "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 shadow-sm",
+                                userStatus === 'auto' || !userStatus
+                                  ? "bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-500/30"
+                                  : "bg-emerald-50 text-emerald-700 border-emerald-200/80 hover:bg-emerald-100"
+                              )}
+                            >
+                              <div className={cn("w-2 h-2 rounded-full", isUserOnline(profile) ? "bg-emerald-400 animate-pulse" : "bg-slate-300")} />
+                              <span>⚡ Вернуть реальный статус: ({isUserOnline(profile) ? 'В сети' : formatLastSeen(profile)})</span>
+                            </button>
                             {(['online', 'away', 'busy', 'dnd'] as const).map(s => (
                               <button
                                 key={s}
@@ -4604,17 +4670,17 @@ function AppContent() {
                                 onClick={() => setUserStatus(s)}
                                 className={cn(
                                   "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all",
-                                  userStatus === s ? "bg-blue-600 text-white border-blue-600" : "bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100"
+                                  userStatus === s ? "bg-blue-600 text-white border-blue-600 shadow-sm" : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
                                 )}
                               >
-                                {s === 'online' ? 'В сети' : s === 'away' ? 'Нет на месте' : s === 'busy' ? 'Занят' : 'Не беспокоить'}
+                                {s === 'online' ? '🟢 Принудительно В сети' : s === 'away' ? '🟡 Нет на месте' : s === 'busy' ? '🔴 Занят' : '🟣 Не беспокоить'}
                               </button>
                             ))}
                           </div>
                           <input 
                             value={customStatus}
                             onChange={(e) => setCustomStatus(e.target.value)}
-                            placeholder="Напишите статус..."
+                            placeholder="Текстовый статус (например: На созвоне)..."
                             className="w-full p-2 border border-slate-200 rounded-xl text-sm"
                           />
                         </div>

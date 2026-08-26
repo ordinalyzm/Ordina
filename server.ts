@@ -470,7 +470,7 @@ const seedGlobalChannel = async () => {
       description: 'Главный канал мессенджера Ордина. Общайтесь, задавайте вопросы и делитесь идеями!',
       ownerId: 'le6qifgHZsV99qTBzSe3VZpYVlE2',
       createdAt: new Date().toISOString(),
-      photoURL: 'https://img.freepik.com/free-vector/bird-colorful-logo-gradient-vector_343694-1365.jpg',
+      photoURL: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=80',
       type: 'channel',
       isPublic: true,
       isGlobal: true,
@@ -484,7 +484,7 @@ const seedGlobalChannel = async () => {
       console.log('Global channel seeded.');
     } else {
       const current = JSON.parse(existing.data);
-      if (!current.photoURL || current.photoURL.includes('unsplash') || !current.description) {
+      if (!current.photoURL || current.photoURL.includes('unsplash') || current.photoURL.includes('freepik') || current.photoURL.includes('bird') || !current.description) {
         const updated = { ...current, ...globalData, members: current.members || globalData.members, memberRoles: current.memberRoles || globalData.memberRoles };
         await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(updated), globalId]);
         console.log('Global channel data refreshed.');

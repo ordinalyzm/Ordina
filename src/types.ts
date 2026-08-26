@@ -42,7 +42,7 @@ export interface UserProfile {
   photoURL?: string;
   profileBackgroundURL?: string; // Background image for profile
   email?: string;
-  status: 'online' | 'offline' | 'away' | 'busy' | 'dnd';
+  status: 'auto' | 'online' | 'offline' | 'away' | 'busy' | 'dnd';
   customStatus?: string;
   mutedChats?: { [chatId: string]: number };
   lastSeen: string;
@@ -169,9 +169,19 @@ export interface Group {
 export interface MeshNode {
   id: string;
   displayName: string;
+  photoURL?: string;
   x?: number;
   y?: number;
   lat?: number;
   lng?: number;
   isOnline: boolean;
+  rssi?: number;
+  ping?: number;
+  hops?: number;
+  nodeType?: 'peer' | 'relay' | 'bot' | 'me';
+  transportType?: 'ble' | 'webrtc' | 'websocket' | 'broadcast_channel' | 'hybrid_bridge';
+  estimatedModemRangeMeters?: number;
+  isBridge?: boolean;
+  carriedPacketCount?: number;
+  hardwareModel?: string;
 }
