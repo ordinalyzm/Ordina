@@ -536,6 +536,44 @@ async function startServer() {
     res.send('pong');
   });
 
+  // REST endpoints for persisted data & stats
+  app.get('/api/stats', async (req, res) => {
+    try {
+      const { rows: uRows } = await pool.query('SELECT data FROM users');
+      const { rows: gRows } = await pool.query('SELECT data FROM groups');
+      const { rows: mRows } = await pool.query('SELECT count(*) as count FROM messages');
+      res.json({
+        usersCount: uRows.length,
+        channelsCount: gRows.length,
+        messagesCount: parseInt(mRows[0]?.count || '0', 10),
+        onlineUsersCount: onlineUsers.size,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/users', async (req, res) => {
+    try {
+      const { rows } = await pool.query('SELECT data FROM users');
+      const users = rows.map((r: any) => JSON.parse(r.data));
+      res.json({ total: users.length, users });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/channels', async (req, res) => {
+    try {
+      const { rows } = await pool.query('SELECT data FROM groups');
+      const channels = rows.map((r: any) => JSON.parse(r.data));
+      res.json({ total: channels.length, channels });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   app.post('/api/bot-ai', async (req, res) => {
     try {
       const { prompt, currentBot } = req.body;
@@ -2006,11 +2044,34 @@ io.on('connection', (socket) => {
           userProfile.devices = (userProfile.devices || []).filter((d: any) => d.id !== data.deviceId);
           await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(userProfile), data.uid]);
           
+          io.to(`user:${data.uid}`).emit('device:terminated', { deviceId: data.deviceId });
           socket.emit('auth:synced', userProfile);
           io.emit('user:updated', userProfile);
         }
       } catch (err) {
         console.error('Error in device:delete:', err);
+      }
+    });
+
+    socket.on('device:terminate_all_others', async (data: { currentDeviceId: string, uid: string }) => {
+      try {
+        const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [data.uid]);
+        const row = rows[0];
+        if (row) {
+          const userProfile = JSON.parse(row.data);
+          const otherDevices = (userProfile.devices || []).filter((d: any) => d.id !== data.currentDeviceId);
+          userProfile.devices = (userProfile.devices || []).filter((d: any) => d.id === data.currentDeviceId);
+          await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(userProfile), data.uid]);
+          
+          otherDevices.forEach((d: any) => {
+            io.to(`user:${data.uid}`).emit('device:terminated', { deviceId: d.id });
+          });
+
+          socket.emit('auth:synced', userProfile);
+          io.emit('user:updated', userProfile);
+        }
+      } catch (err) {
+        console.error('Error in device:terminate_all_others:', err);
       }
     });
 

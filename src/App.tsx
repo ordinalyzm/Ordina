@@ -361,35 +361,42 @@ function AppContent() {
 
   const isUserOnline = (u: UserProfile | null | undefined): boolean => {
     if (!u) return false;
-    if (u.uid === user?.uid) return true;
     if (socketPresences?.some(p => p.uid === u.uid)) return true;
     if ((u as any).isOnline === true) return true;
-    if (u.status === 'online') {
-      if (!u.lastSeen) return true;
-      return (new Date().getTime() - new Date(u.lastSeen).getTime()) < 5 * 60 * 1000;
+    if (u.status === 'online' && socketPresences?.some(p => p.uid === u.uid)) {
+      return true;
     }
     if (u.lastSeen) {
-      return (new Date().getTime() - new Date(u.lastSeen).getTime()) < 5 * 60 * 1000;
+      const diffMs = new Date().getTime() - new Date(u.lastSeen).getTime();
+      return diffMs >= 0 && diffMs < 2 * 60 * 1000;
     }
     return false;
   };
 
   const formatLastSeen = (u: UserProfile | null | undefined): string => {
-    if (!u) return 'Оффлайн';
-    if (isUserOnline(u)) return 'В сети';
-    if (!u.lastSeen) return 'Оффлайн';
+    if (!u) return 'оффлайн';
+    if (isUserOnline(u)) return 'в сети';
+    if (!u.lastSeen) return 'оффлайн';
     const d = new Date(u.lastSeen);
-    if (isNaN(d.getTime())) return 'Оффлайн';
+    if (isNaN(d.getTime())) return 'оффлайн';
 
     const now = new Date();
     const isToday = d.toDateString() === now.toDateString();
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+
     const hours = d.getHours().toString().padStart(2, '0');
     const minutes = d.getMinutes().toString().padStart(2, '0');
 
     if (isToday) {
-      return `был(а) сегодня в ${hours}:${minutes}`;
+      return `был(а) в ${hours}:${minutes}`;
     }
-    return `был(а) ${d.toLocaleDateString('ru-RU')} в ${hours}:${minutes}`;
+    if (isYesterday) {
+      return `был(а) вчера в ${hours}:${minutes}`;
+    }
+    return `был(а) ${d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} в ${hours}:${minutes}`;
   };
   const [inputText, setInputText] = useState('');
   const [mutedChats, setMutedChats] = useState<string[]>(() => {
@@ -459,6 +466,8 @@ function AppContent() {
       } catch (e) {}
     }
   }, [profile]);
+
+
   const [isConnecting, setIsConnecting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -956,6 +965,13 @@ function AppContent() {
           lastSeen: new Date().toISOString(),
           activeChats: ['global_channel']
         } as UserProfile);
+      }
+    });
+
+    newSocket.on('device:terminated', (data: { deviceId: string }) => {
+      if (data.deviceId === deviceId) {
+        addToast('Ваш сеанс на этом устройстве был завершен', 'info');
+        handleLogout();
       }
     });
 
@@ -1644,6 +1660,163 @@ function AppContent() {
   const [editBackgroundURL, setEditBackgroundURL] = useState('');
 
   const [mobileView, setMobileView] = useState<'list' | 'chat' | 'radar'>('list');
+
+  // Global back action handling for phone back button & browser popstate
+  const handleGlobalBackAction = useCallback(() => {
+    if (contextMenu) {
+      setContextMenu(null);
+      return true;
+    }
+    if (chatContextMenu) {
+      setChatContextMenu(null);
+      return true;
+    }
+    if (selectedMediaIndex !== null) {
+      setSelectedMediaIndex(null);
+      return true;
+    }
+    if (showFullAvatar) {
+      setShowFullAvatar(null);
+      return true;
+    }
+    if (cropModalInfo) {
+      setCropModalInfo(null);
+      return true;
+    }
+    if (showMultiDeleteModal) {
+      setShowMultiDeleteModal(false);
+      return true;
+    }
+    if (showScheduleModal) {
+      setShowScheduleModal(false);
+      return true;
+    }
+    if (showPollModal) {
+      setShowPollModal(false);
+      return true;
+    }
+    if (showBotsModal) {
+      setShowBotsModal(false);
+      return true;
+    }
+    if (showStickersModal) {
+      setShowStickersModal(false);
+      return true;
+    }
+    if (showDevicesModal) {
+      setShowDevicesModal(false);
+      return true;
+    }
+    if (showPrivacyPolicy) {
+      setShowPrivacyPolicy(false);
+      return true;
+    }
+    if (showCreateChatModal) {
+      setShowCreateChatModal(false);
+      return true;
+    }
+    if (showGroupSettings) {
+      setShowGroupSettings(false);
+      return true;
+    }
+    if (showGroupInfo) {
+      setShowGroupInfo(false);
+      return true;
+    }
+    if (showInviteModal) {
+      setShowInviteModal(false);
+      return true;
+    }
+    if (showDeleteModal) {
+      setShowDeleteModal(false);
+      return true;
+    }
+    if (showProfile) {
+      setShowProfile(false);
+      setViewedProfile(null);
+      return true;
+    }
+    if (showSettings) {
+      setShowSettings(false);
+      return true;
+    }
+    if (showChatSearch) {
+      setShowChatSearch(false);
+      return true;
+    }
+    if (showRadar) {
+      setShowRadar(false);
+      return true;
+    }
+    if (showAttachmentMenu) {
+      setShowAttachmentMenu(false);
+      return true;
+    }
+    if (showChatMenu) {
+      setShowChatMenu(false);
+      return true;
+    }
+    if (selectedChat) {
+      setSelectedChat(null);
+      return true;
+    }
+    return false;
+  }, [
+    contextMenu, chatContextMenu, selectedMediaIndex, showFullAvatar, cropModalInfo,
+    showMultiDeleteModal, showScheduleModal, showPollModal, showBotsModal, showStickersModal,
+    showDevicesModal, showPrivacyPolicy, showCreateChatModal, showGroupSettings, showGroupInfo,
+    showInviteModal, showDeleteModal, showProfile, showSettings, showChatSearch, showRadar,
+    showAttachmentMenu, showChatMenu, selectedChat
+  ]);
+
+  // Push state to browser history when overlays open
+  useEffect(() => {
+    const isOverlayOpen = !!(
+      contextMenu || chatContextMenu || selectedMediaIndex !== null || showFullAvatar ||
+      cropModalInfo || showMultiDeleteModal || showScheduleModal || showPollModal ||
+      showBotsModal || showStickersModal || showDevicesModal || showPrivacyPolicy ||
+      showCreateChatModal || showGroupSettings || showGroupInfo || showInviteModal ||
+      showDeleteModal || showProfile || showSettings || showChatSearch || showRadar ||
+      showAttachmentMenu || showChatMenu || selectedChat
+    );
+
+    if (isOverlayOpen) {
+      try { window.history.pushState({ ordinaLayer: true }, ''); } catch (e) {}
+    }
+  }, [
+    contextMenu, chatContextMenu, selectedMediaIndex, showFullAvatar, cropModalInfo,
+    showMultiDeleteModal, showScheduleModal, showPollModal, showBotsModal, showStickersModal,
+    showDevicesModal, showPrivacyPolicy, showCreateChatModal, showGroupSettings, showGroupInfo,
+    showInviteModal, showDeleteModal, showProfile, showSettings, showChatSearch, showRadar,
+    showAttachmentMenu, showChatMenu, selectedChat
+  ]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      handleGlobalBackAction();
+    };
+
+    window.addEventListener('popstate', onPopState);
+
+    let capSub: any = null;
+    try {
+      capSub = CapApp.addListener('backButton', () => {
+        const handled = handleGlobalBackAction();
+        if (!handled) {
+          try { CapApp.minimizeApp(); } catch (e) {}
+        }
+      });
+    } catch (e) {}
+
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      if (capSub && typeof capSub.then === 'function') {
+        capSub.then((s: any) => s.remove());
+      } else if (capSub && typeof capSub.remove === 'function') {
+        capSub.remove();
+      }
+    };
+  }, [handleGlobalBackAction]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -4496,14 +4669,39 @@ function AppContent() {
                           </div>
                         )}
 
-                        <div className="mt-4 flex items-center gap-2">
-                          <div className={cn(
-                            "w-2 h-2 rounded-full",
-                            (viewedProfile || profile)?.status === 'online' ? "bg-emerald-500" : "bg-slate-300"
-                          )} />
-                          <span className="text-xs font-medium text-slate-600">
-                            {(viewedProfile || profile)?.customStatus || ((viewedProfile || profile)?.status === 'online' ? 'В сети' : formatLastSeen(viewedProfile || profile))}
-                          </span>
+                        <div className="mt-4 space-y-2">
+                          <div className="flex items-center gap-2">
+                            <div className={cn(
+                              "w-2 h-2 rounded-full",
+                              isUserOnline(viewedProfile || profile) ? "bg-emerald-500" : "bg-slate-300"
+                            )} />
+                            <span className="text-xs font-medium text-slate-600">
+                              {(viewedProfile || profile)?.customStatus || formatLastSeen(viewedProfile || profile)}
+                            </span>
+                          </div>
+
+                          <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3 text-left">
+                            <div className="flex flex-col">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                Системный (ваше реальное состояние)
+                              </span>
+                              <span className="text-xs font-bold text-slate-800 mt-0.5">
+                                {isUserOnline(viewedProfile || profile) ? 'В сети' : formatLastSeen(viewedProfile || profile)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0 px-2.5 py-1 rounded-full bg-white border border-slate-200 shadow-xs">
+                              <div className={cn(
+                                "w-2.5 h-2.5 rounded-full shrink-0",
+                                isUserOnline(viewedProfile || profile) ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+                              )} />
+                              <span className={cn(
+                                "text-[10px] font-bold uppercase tracking-wider",
+                                isUserOnline(viewedProfile || profile) ? "text-emerald-600" : "text-slate-500"
+                              )}>
+                                {isUserOnline(viewedProfile || profile) ? 'Online' : 'Offline'}
+                              </span>
+                            </div>
+                          </div>
                         </div>
                       </>
                     )}
@@ -4860,7 +5058,7 @@ function AppContent() {
       {/* Devices Modal */}
       <AnimatePresence>
         {showDevicesModal && (
-          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowDevicesModal(false)}>
+          <div className="fixed inset-0 z-[5000] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowDevicesModal(false)}>
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -4869,15 +5067,34 @@ function AppContent() {
               onClick={e => e.stopPropagation()}
             >
               <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
-                <h3 className="text-xl font-bold text-slate-900">Устройства</h3>
+                <h3 className="text-xl font-bold text-slate-900">Устройства и сеансы</h3>
                 <button onClick={() => setShowDevicesModal(false)} className="p-2 hover:bg-slate-100 rounded-xl">
                   <X size={20} />
                 </button>
               </div>
               <div className="p-6 overflow-y-auto space-y-4">
                 <p className="text-xs text-slate-500 mb-2">
-                  Список сеансов и устройств, с которых вы вошли в ваш аккаунт. Вы можете завершить любой сеанс, кроме текущего.
+                  Список сеансов и устройств, с которых вы вошли в ваш аккаунт. Вы можете завершить любой сеанс или все остальные сеансы сразу.
                 </p>
+
+                {(profile?.devices || []).filter((d: UserDevice) => d.id !== deviceId).length > 0 && (
+                  <button
+                    onClick={() => {
+                      confirm(
+                        'Завершить все остальные сеансы',
+                        'Вы уверены, что хотите завершить сеанс на всех остальных устройствах?',
+                        () => {
+                          socket?.emit('device:terminate_all_others', { currentDeviceId: deviceId, uid: profile.uid });
+                          addToast('Все остальные сеансы успешно завершены', 'success');
+                        }
+                      );
+                    }}
+                    className="w-full py-2.5 px-4 bg-red-50 hover:bg-red-100 text-red-600 rounded-2xl font-bold text-xs transition-colors flex items-center justify-center gap-2 border border-red-200"
+                  >
+                    <Trash2 size={16} />
+                    Завершить все остальные сеансы
+                  </button>
+                )}
 
                 <div className="space-y-3">
                   {/* Current Device first */}
@@ -4892,7 +5109,7 @@ function AppContent() {
                       </div>
                       <p className="text-xs text-slate-400 mt-1">ID сеанса: {deviceId.substring(0, 12)}...</p>
                       <p className="text-xs text-slate-500 font-medium mt-1">Расположение: Локально (текущее подключение)</p>
-                      <p className="text-xs text-green-600 font-semibold mt-1">● В сети (активно)</p>
+                      <p className="text-xs text-emerald-600 font-semibold mt-1">● В сети (активно)</p>
                     </div>
                   </div>
 
@@ -4918,10 +5135,11 @@ function AppContent() {
                                   }
                                 );
                               }}
-                              className="p-1.5 hover:bg-red-50 text-red-500 hover:text-red-600 rounded-lg transition-colors"
+                              className="p-1.5 hover:bg-red-50 text-red-500 hover:text-red-600 rounded-lg transition-colors flex items-center gap-1 text-xs font-semibold"
                               title="Завершить сеанс"
                             >
                               <Trash2 size={16} />
+                              <span>Завершить</span>
                             </button>
                           </div>
                           <p className="text-xs text-slate-400 mt-1">ID сеанса: {d.id.substring(0, 12)}...</p>
