@@ -2099,7 +2099,8 @@ io.on('connection', (socket) => {
     socket.on('chat:delete_everyone', async (data: { user1: string, user2: string }) => {
       try {
         const historyId = data.user1 === data.user2 ? data.user1 : [data.user1, data.user2].sort().join('_');
-        await pool.query('DELETE FROM messages WHERE "chatId" = $1', [historyId]);
+        await pool.query('DELETE FROM messages WHERE "chatId" = $1 OR ("chatId" = $2 AND "groupId" IS NULL)', [historyId, data.user1]);
+        await pool.query('DELETE FROM messages WHERE ("senderId" = $1 AND "receiverId" = $2) OR ("senderId" = $2 AND "receiverId" = $1)', [data.user1, data.user2]);
         
         for (const [u1, u2] of [[data.user1, data.user2], [data.user2, data.user1]]) {
            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [u1]);
@@ -2107,12 +2108,14 @@ io.on('connection', (socket) => {
              let uData = JSON.parse(rows[0].data);
              uData.activeChats = (uData.activeChats || []).filter((id: any) => id !== u2);
              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(uData), u1]);
+             io.to(`user:${u1}`).emit('auth:synced', uData);
              io.emit('user:updated', uData);
            }
         }
 
         io.to(`user:${data.user1}`).emit('chat:deleted_everyone', data.user2);
         io.to(`user:${data.user2}`).emit('chat:deleted_everyone', data.user1);
+        io.emit('chat:purged', { user1: data.user1, user2: data.user2 });
       } catch (e) {
         console.error(e);
       }

@@ -360,19 +360,19 @@ function AppContent() {
 
   const [socket, setSocket] = useState<Socket | null>(null);
   const [socketPresences, setSocketPresences] = useState<Array<{uid: string, status: string, customStatus?: string}>>([]);
+  const [, setPresenceTicker] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setPresenceTicker(t => t + 1);
+    }, 15000);
+    return () => clearInterval(timer);
+  }, []);
 
   const isUserOnline = (u: UserProfile | null | undefined): boolean => {
     if (!u) return false;
-    if (socketPresences?.some(p => p.uid === u.uid)) return true;
-    if ((u as any).isOnline === true) return true;
-    if (u.status === 'online' && socketPresences?.some(p => p.uid === u.uid)) {
-      return true;
-    }
-    if (u.lastSeen) {
-      const diffMs = new Date().getTime() - new Date(u.lastSeen).getTime();
-      return diffMs >= 0 && diffMs < 2 * 60 * 1000;
-    }
-    return false;
+    if (user && u.uid === user.uid) return socketConnected;
+    return socketPresences?.some(p => p.uid === u.uid && (p.status === 'online' || !p.status)) || false;
   };
 
   const formatLastSeen = (u: UserProfile | null | undefined): string => {
@@ -383,8 +383,17 @@ function AppContent() {
     if (isNaN(d.getTime())) return 'оффлайн';
 
     const now = new Date();
-    const isToday = d.toDateString() === now.toDateString();
+    const diffMs = now.getTime() - d.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
 
+    if (diffMinutes < 1) {
+      return 'был(а) только что';
+    }
+    if (diffMinutes < 60) {
+      return `был(а) ${diffMinutes} мин. назад`;
+    }
+
+    const isToday = d.toDateString() === now.toDateString();
     const yesterday = new Date(now);
     yesterday.setDate(now.getDate() - 1);
     const isYesterday = d.toDateString() === yesterday.toDateString();
@@ -393,7 +402,7 @@ function AppContent() {
     const minutes = d.getMinutes().toString().padStart(2, '0');
 
     if (isToday) {
-      return `был(а) в ${hours}:${minutes}`;
+      return `был(а) сегодня в ${hours}:${minutes}`;
     }
     if (isYesterday) {
       return `был(а) вчера в ${hours}:${minutes}`;
@@ -987,21 +996,43 @@ function AppContent() {
     });
 
     newSocket.on('chat:deleted_everyone', (otherUserId: string) => {
-      setMessages(prev => prev.filter(m => !(m.senderId === otherUserId && m.receiverId === user.uid) && !(m.senderId === user.uid && m.receiverId === otherUserId)));
+      clearChatLocalCache(otherUserId);
+      if (user?.uid) {
+        clearChatLocalCache([user.uid, otherUserId].sort().join('_'));
+      }
+      setMessages(prev => prev.filter(m => !(m.senderId === otherUserId && m.receiverId === user?.uid) && !(m.senderId === user?.uid && m.receiverId === otherUserId)));
       setRecentPreviews(prev => {
         const next = { ...prev };
         delete next[otherUserId];
         return next;
       });
       setProfile(prev => prev ? { ...prev, activeChats: prev.activeChats?.filter(id => id !== otherUserId) } : prev);
-      // Try to clear it from selected chat if it is the deleted one
       if (selectedChatRef.current?.id === otherUserId) {
         setSelectedChat(null);
         setMobileView('list');
       }
     });
 
+    newSocket.on('chat:purged', (data: { user1: string, user2: string }) => {
+      if (user?.uid === data.user1 || user?.uid === data.user2) {
+        const otherId = user.uid === data.user1 ? data.user2 : data.user1;
+        clearChatLocalCache(otherId);
+        clearChatLocalCache([data.user1, data.user2].sort().join('_'));
+        setMessages(prev => prev.filter(m => !(m.senderId === otherId && m.receiverId === user.uid) && !(m.senderId === user.uid && m.receiverId === otherId)));
+        setRecentPreviews(prev => {
+          const next = { ...prev };
+          delete next[otherId];
+          return next;
+        });
+        if (selectedChatRef.current?.id === otherId) {
+          setSelectedChat(null);
+          setMobileView('list');
+        }
+      }
+    });
+
     newSocket.on('group:deleted', (groupId: string) => {
+      clearChatLocalCache(groupId);
       setGroups(prev => prev.filter(g => g.id !== groupId));
       setMessages(prev => prev.filter(m => m.groupId !== groupId));
       setRecentPreviews(prev => {
@@ -3641,11 +3672,7 @@ function AppContent() {
       setMobileView('list');
       setShowDeleteModal(false);
     } else {
-      const hiddenChats = [...(profile?.hiddenChats || []), chatId];
-      socket?.emit('profile:update', {
-        uid: user.uid,
-        profile: { hiddenChats }
-      });
+      socket?.emit('chat:delete_everyone', { user1: user.uid, user2: chatId });
       setSelectedChat(null);
       setMobileView('list');
       setShowDeleteModal(false);
@@ -3676,12 +3703,7 @@ function AppContent() {
         socket?.emit('group:leave', { id: chatId, uid: user.uid });
         if (selectedChat?.id === chatId) { setSelectedChat(null); setMobileView('list'); }
     } else {
-      const hiddenChats = [...(profile?.hiddenChats || []), chatId];
-      if (profile) setProfile({...profile, hiddenChats});
-      socket?.emit('profile:update', {
-        uid: user.uid,
-        profile: { hiddenChats }
-      });
+      socket?.emit('chat:delete_everyone', { user1: user.uid, user2: chatId });
       if (selectedChat?.id === chatId) { setSelectedChat(null); setMobileView('list'); }
     }
   };

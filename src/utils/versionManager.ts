@@ -105,14 +105,42 @@ export async function initializeVersionAndSyncState(): Promise<{ isNewVersion: b
     }
     const savedOAuth = await getPersistentBackup<any>('ordina_oauth_user');
     if (savedOAuth && !localStorage.getItem('ordina_oauth_user')) {
-      localStorage.setItem('ordina_oauth_user', JSON.stringify(savedOAuth));
+      localStorage.setItem('ordina_oauth_user', typeof savedOAuth === 'string' ? savedOAuth : JSON.stringify(savedOAuth));
+    }
+    const savedUsers = await getPersistentBackup<any>('ordina_cached_users');
+    if (savedUsers && !localStorage.getItem('ordina_cached_users')) {
+      localStorage.setItem('ordina_cached_users', typeof savedUsers === 'string' ? savedUsers : JSON.stringify(savedUsers));
+    }
+    const savedBleRange = await getPersistentBackup<string>('ordina_custom_ble_range');
+    if (savedBleRange && !localStorage.getItem('ordina_custom_ble_range')) {
+      localStorage.setItem('ordina_custom_ble_range', savedBleRange);
+    }
+    const savedBleLabel = await getPersistentBackup<string>('ordina_custom_ble_label');
+    if (savedBleLabel && !localStorage.getItem('ordina_custom_ble_label')) {
+      localStorage.setItem('ordina_custom_ble_label', savedBleLabel);
     }
   }
 
-  // Backup active guest ID if available
+  // Backup active state to IndexedDB for continuous safety
   const currentGuest = localStorage.getItem('ordina_guest_id');
   if (currentGuest) {
     await setPersistentBackup('ordina_guest_id', currentGuest);
+  }
+  const currentOAuth = localStorage.getItem('ordina_oauth_user');
+  if (currentOAuth) {
+    await setPersistentBackup('ordina_oauth_user', currentOAuth);
+  }
+  const currentUsers = localStorage.getItem('ordina_cached_users');
+  if (currentUsers) {
+    await setPersistentBackup('ordina_cached_users', currentUsers);
+  }
+  const currentBleRange = localStorage.getItem('ordina_custom_ble_range');
+  if (currentBleRange) {
+    await setPersistentBackup('ordina_custom_ble_range', currentBleRange);
+  }
+  const currentBleLabel = localStorage.getItem('ordina_custom_ble_label');
+  if (currentBleLabel) {
+    await setPersistentBackup('ordina_custom_ble_label', currentBleLabel);
   }
 
   return { isNewVersion, version: APP_VERSION };

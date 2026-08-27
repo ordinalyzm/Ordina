@@ -18,7 +18,7 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
   const [activeEchoRoute, setActiveEchoRoute] = useState<EchoRouteResult | null>(null);
   const [pingToast, setPingToast] = useState<{ msg: string; type: 'success' | 'info' } | null>(null);
 
-  const hwSpecs = detectDeviceHardwareSpecs();
+  const [hwSpecs, setHwSpecs] = useState(() => detectDeviceHardwareSpecs());
 
   const triggerEchoPing = (node: MeshNode) => {
     setEchoPingTarget(node.id);
@@ -369,7 +369,7 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
                 localStorage.setItem('ordina_custom_ble_range', '380');
                 localStorage.setItem('ordina_custom_ble_label', 'Bluetooth 5.4 Long Range (380m)');
               }
-              window.location.reload();
+              setHwSpecs(detectDeviceHardwareSpecs());
             }}
             className="bg-black/80 hover:bg-slate-900 border border-slate-700/80 px-2.5 py-1.5 rounded-xl backdrop-blur-md text-[10px] text-slate-300 font-mono flex items-center gap-2 shadow-lg transition active:scale-95"
             title="Калибровка дальности BLE модема для вашего смартфона"
