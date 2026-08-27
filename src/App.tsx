@@ -672,6 +672,19 @@ function AppContent() {
       if (current && user) {
         newSocket.emit('chat:join', { ...current, limit: messageLimit, _uid: user?.uid });
       }
+
+      // Flush offline Mailman carrier packets when socket connects
+      try {
+        const packets = getMailmanCarrierPackets();
+        if (packets.length > 0) {
+          packets.forEach(p => {
+            newSocket.emit('message:new', { chatId: p.targetId, message: cleanObject(p.message) });
+            removeMailmanCarrierPacket(p.id);
+          });
+        }
+      } catch (e) {
+        console.error('Error flushing mailman carrier packets:', e);
+      }
     };
 
     if (newSocket.connected) {
@@ -698,8 +711,13 @@ function AppContent() {
       const existingMsgIndex = cachedList.findIndex(m => m.id === msg.id);
       const isNewMessage = existingMsgIndex === -1;
 
+      // Clear from offline mailman queue as server has acknowledged it
+      removeMailmanCarrierPacket(msg.id);
+
+      const confirmedMsg = { ...msg, status: msg.status || 'sent' };
+
       // Save to local weekly persistent database
-      saveMessageToLocalCache(chatId, msg);
+      saveMessageToLocalCache(chatId, confirmedMsg);
 
       // Send delivery confirmation ONLY if we are the recipient AND our deviceId is NOT already registered as delivered
       if (msg.senderId !== user?.uid && !msg.deliveredDevices?.[deviceId]) {
@@ -708,7 +726,7 @@ function AppContent() {
 
       setRecentPreviews(prev => ({
         ...prev,
-        [chatId]: msg
+        [chatId]: confirmedMsg
       }));
 
       const isCurrentChat = (currentChat?.type !== 'user' && msg.groupId === currentChat?.id) ||
@@ -724,9 +742,9 @@ function AppContent() {
           let newMsgs;
           if (index !== -1) {
             newMsgs = [...prev];
-            newMsgs[index] = msg;
+            newMsgs[index] = confirmedMsg;
           } else {
-            newMsgs = [...prev, msg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+            newMsgs = [...prev, confirmedMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
           }
           // Update memory cache
           messageCacheRef.current[chatId] = newMsgs;
@@ -1697,7 +1715,9 @@ function AppContent() {
     }
 
     try {
-      socket?.emit('message:new', { chatId: selectedChat?.id, message: newMessage });
+      if (selectedChat?.id) {
+        dispatchOutgoingMessage(selectedChat.id, cleanObject(newMessage) as Message);
+      }
       setShowPollModal(false);
       setPollQuestion('');
       setPollOptions(['', '']);
@@ -2916,7 +2936,9 @@ function AppContent() {
         newMessage.receiverId = selectedChat.id;
       }
 
-      socket?.emit('message:new', { chatId: selectedChat?.id, message: newMessage });
+      if (selectedChat?.id) {
+        dispatchOutgoingMessage(selectedChat.id, cleanObject(newMessage) as Message);
+      }
     } catch (error) {
       console.error("Error sending game:", error);
       addToast('Ошибка при создании игры', 'error');
@@ -3020,13 +3042,9 @@ function AppContent() {
         }
       }
 
-      socket?.emit('message:new', { chatId: selectedChat?.id, message: cleanedMessage });
-      
-      if (selectedChat.type === 'user' && profile && !(profile.activeChats || []).includes(selectedChat.id)) {
-        const newActiveChats = [...(profile.activeChats || []), selectedChat.id];
-        socket?.emit('profile:update', { uid: user.uid, profile: { activeChats: newActiveChats } });
+      if (selectedChat?.id) {
+        dispatchOutgoingMessage(selectedChat.id, cleanedMessage);
       }
-
       setReplyTo(null);
     } catch (error) {
       addToast('Ошибка при отправке стикера', 'error');
@@ -3034,6 +3052,95 @@ function AppContent() {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const dispatchOutgoingMessage = (chatId: string, msg: Message) => {
+    if (!chatId || !user) return;
+
+    const isOnline = socketConnected && (navigator as any).onLine !== false;
+    const initialStatus: 'pending' | 'sent' = isOnline ? 'sent' : 'pending';
+
+    const finalMsg: Message = {
+      ...msg,
+      senderId: msg.senderId || user.uid,
+      createdAt: msg.createdAt || new Date().toISOString(),
+      status: msg.status || initialStatus
+    };
+
+    // 1. Immediately save to local persistent cache
+    saveMessageToLocalCache(chatId, finalMsg);
+
+    // 2. Immediately update messages state so it renders in current chat (like Telegram)
+    setMessages(prev => {
+      const idx = prev.findIndex(m => m.id === finalMsg.id);
+      if (idx !== -1) {
+        const next = [...prev];
+        next[idx] = finalMsg;
+        return next;
+      }
+      return [...prev, finalMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    });
+
+    // 3. Update preview in chat list
+    setRecentPreviews(prev => ({
+      ...prev,
+      [chatId]: finalMsg
+    }));
+
+    // 4. Save to Mailman Carrier Engine for offline/Mesh storage
+    addMailmanCarrierPacket({
+      id: finalMsg.id,
+      message: finalMsg,
+      targetId: chatId,
+      carrierId: user.uid,
+      carriedAt: Date.now()
+    });
+
+    // 5. Check Mesh Relay next hop
+    const isReceiverOnline = socketPresences.some(p => p.uid === chatId && p.status === 'online');
+    if (!isReceiverOnline && isRelayEnabled) {
+      const nextHop = findNextHop(users as any, user.uid, chatId);
+      if (nextHop && nextHop !== user.uid) {
+        finalMsg.relayTo = nextHop;
+        finalMsg.relayPath = [user.uid];
+      }
+    }
+
+    // 6. Try to send via active socket or WebRTC mesh
+    if (socketConnected && socket) {
+      socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
+      playSentMessageSound();
+    } else {
+      // Offline notification
+      playSentMessageSound();
+      if (isRelayEnabled) {
+        addToast('Сообщение сохранено в оффлайн Mesh и передается узлам', 'info');
+      } else {
+        addToast('Сообщение сохранено локально. Доставится при появлении сети', 'info');
+      }
+    }
+
+    // 7. Update activeChats list if new chat
+    if (selectedChat?.type === 'user' && profile && !(profile.activeChats || []).includes(chatId)) {
+      const newActive = [...(profile.activeChats || []), chatId];
+      setProfile(p => p ? { ...p, activeChats: newActive } : null);
+      if (socketConnected && socket) {
+        socket.emit('profile:update', { uid: user.uid, profile: { activeChats: newActive } });
+      }
+    }
+  };
+
+  const retrySendMessage = (msg: Message) => {
+    const chatId = msg.groupId || (msg.senderId === user?.uid ? msg.receiverId : msg.senderId) || selectedChat?.id;
+    if (!chatId) return;
+
+    const isOnline = socketConnected && (navigator as any).onLine !== false;
+    const retryMsg: Message = {
+      ...msg,
+      status: isOnline ? 'sent' : 'pending'
+    };
+
+    dispatchOutgoingMessage(chatId, retryMsg);
   };
 
   const handleSendMessage = async (e?: React.FormEvent, scheduleAt?: string) => {
@@ -3126,26 +3233,7 @@ function AppContent() {
         socket?.emit('message:schedule', { chatId: selectedChat.id, message: cleanedMessage, sendAt: scheduleAt });
         addToast(`Запланировано на ${new Date(scheduleAt).toLocaleString()}`, 'success');
       } else {
-        // MESH RELAY: Check if recipient is online
-        const receiverId = selectedChat.id;
-        const isReceiverOnline = socketPresences.some(p => p.uid === receiverId && p.status === 'online');
-        
-        if (!isReceiverOnline && selectedChat.type === 'user' && isRelayEnabled) {
-           const nextHop = findNextHop(users as any, user.uid, receiverId);
-           if (nextHop && nextHop !== user.uid) {
-              cleanedMessage.relayTo = nextHop;
-              cleanedMessage.relayPath = [user.uid];
-              addToast('Отправлено через Mesh-узел', 'info');
-           }
-        }
-
-        socket?.emit('message:new', { chatId: selectedChat.id, message: cleanedMessage });
-        
-        if (selectedChat.type === 'user' && profile && !(profile.activeChats || []).includes(selectedChat.id)) {
-          const newActive = [...(profile.activeChats || []), selectedChat.id];
-          setProfile(prev => prev ? { ...prev, activeChats: newActive } : null);
-          socket?.emit('profile:update', { uid: user.uid, profile: { activeChats: newActive } });
-        }
+        dispatchOutgoingMessage(selectedChat.id, cleanedMessage);
       }
 
       setInputText('');
@@ -3306,7 +3394,7 @@ function AppContent() {
       if (selectedChat.type !== 'user') newMessage.groupId = selectedChat.id;
       else newMessage.receiverId = selectedChat.id;
 
-      socket?.emit('message:new', { chatId: selectedChat.id, message: cleanObject(newMessage) });
+      dispatchOutgoingMessage(selectedChat.id, cleanObject(newMessage) as Message);
       setReplyTo(null);
     } catch (e) {
       console.error(e);
@@ -3538,7 +3626,7 @@ function AppContent() {
           throw new Error('Файл слишком большой. Максимальный размер 15 МБ.');
         }
 
-        socket?.emit('message:new', { chatId: currentChat.id, message: cleanedMessage });
+        dispatchOutgoingMessage(currentChat.id, cleanedMessage);
         addToast(`Файл "${fileName}" успешно отправлен`, 'success');
         
         if (currentChat.type === 'user' && currentProfile && !(currentProfile.activeChats || []).includes(currentChat.id)) {
@@ -4331,7 +4419,11 @@ function AppContent() {
                     <div className="flex items-center gap-1">
                       {lastMessages[u.uid]?.senderId === user?.uid && (
                         <div className="flex shrink-0">
-                          {lastMessages[u.uid]?.readBy?.length ? (
+                          {lastMessages[u.uid]?.status === 'failed' ? (
+                            <AlertTriangle size={12} className="text-amber-400" />
+                          ) : (lastMessages[u.uid]?.status === 'pending' || (!socketConnected && lastMessages[u.uid]?.status !== 'sent' && lastMessages[u.uid]?.status !== 'delivered' && lastMessages[u.uid]?.status !== 'read')) ? (
+                            <Clock size={11} className={cn(selectedChat?.id === u.uid ? "text-blue-100 opacity-80" : "text-amber-500 opacity-80")} />
+                          ) : (lastMessages[u.uid]?.readBy?.length || lastMessages[u.uid]?.status === 'read') ? (
                             <CheckCheck size={12} className={cn(selectedChat?.id === u.uid ? "text-blue-100" : "text-blue-500")} />
                           ) : (
                             <Check size={12} className={cn(selectedChat?.id === u.uid ? "text-blue-200" : "text-slate-400")} />
@@ -5814,7 +5906,7 @@ function AppContent() {
                         } else {
                           quoteMsg.receiverId = chatId;
                         }
-                        socket?.emit('message:new', { chatId: selectedChat?.id, message: quoteMsg });
+                        dispatchOutgoingMessage(chatId, quoteMsg);
                       } else if (forwardingMessage) {
                         // Send comment if exists
                         if (forwardComment.trim()) {
@@ -5832,7 +5924,7 @@ function AppContent() {
                           } else {
                             fwdCmt.receiverId = chatId;
                           }
-                          socket?.emit('message:new', { chatId, message: cleanObject(fwdCmt) });
+                          dispatchOutgoingMessage(chatId, cleanObject(fwdCmt));
                         }
                         
                         // Send forwarded message
@@ -5855,7 +5947,7 @@ function AppContent() {
                         }
                         
                         const cleanedFwd = cleanObject(forwardedMsg);
-                        socket?.emit('message:new', { chatId, message: cleanedFwd });
+                        dispatchOutgoingMessage(chatId, cleanedFwd);
                       }
                     }
                     
@@ -7657,7 +7749,26 @@ function AppContent() {
                         )}>
                           <span className="text-[9px]">{format(new Date(msg.createdAt), 'HH:mm')}</span>
                           {msg.isEdited && <span className="text-[9px] ml-1 opacity-70">ред.</span>}
-                          {isMe && (isRead ? <CheckCheck size={12} /> : <Check size={12} />)}
+                          {isMe && (
+                            msg.status === 'failed' ? (
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  retrySendMessage(msg);
+                                }}
+                                title="Ошибка отправки. Нажмите для повтора"
+                                className="text-red-400 hover:text-red-300 transition-colors flex items-center justify-center p-0.5 rounded"
+                              >
+                                <AlertTriangle size={12} className="text-amber-300 animate-pulse" />
+                              </button>
+                            ) : (msg.status === 'pending' || (!socketConnected && !isRead && msg.status !== 'read' && msg.status !== 'delivered')) ? (
+                              <span title="Отправляется..."><Clock size={11} className="opacity-80" /></span>
+                            ) : (isRead || msg.status === 'read' || msg.status === 'delivered') ? (
+                              <CheckCheck size={12} />
+                            ) : (
+                              <Check size={12} />
+                            )
+                          )}
                         </div>
 
                         {/* Comments Button (for channels) */}

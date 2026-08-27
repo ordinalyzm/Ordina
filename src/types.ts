@@ -113,7 +113,7 @@ export interface Message {
   relayTo?: string; // The next node targeted by the relay
   isEncrypted?: boolean;
   encryptionMethod?: 'simple-xor' | 'aes-256'; // For future expansion
-  status?: 'sent' | 'delivered' | 'read';
+  status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
   readBy?: string[]; // List of UIDs who have read the message
   deliveredDevices?: Record<string, boolean>; // Maps deviceId to delivered (true/false)
   asChannel?: boolean; // Whether the user posted this message as the channel
