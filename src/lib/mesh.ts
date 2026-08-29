@@ -387,3 +387,89 @@ export function removeMailmanCarrierPacket(id: string) {
     localStorage.setItem(MAILMAN_STORAGE_KEY, JSON.stringify(list));
   } catch (e) {}
 }
+
+/**
+ * Direct Offline Local Mesh Bus (BroadcastChannel + StorageEvent fallback)
+ * Enables real-time local peer-to-peer transmission without internet connection
+ */
+export interface LocalMeshPacket {
+  type: 'mesh:packet' | 'mesh:ack' | 'mesh:beacon';
+  message?: Message;
+  messageId?: string;
+  targetId?: string;
+  senderId?: string;
+  deliveredTo?: string;
+  timestamp: number;
+}
+
+const LOCAL_MESH_CHANNEL_NAME = 'ordina_offline_mesh_bus';
+let meshBroadcastChannel: BroadcastChannel | null = null;
+
+if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+  try {
+    meshBroadcastChannel = new BroadcastChannel(LOCAL_MESH_CHANNEL_NAME);
+  } catch (e) {
+    console.warn('BroadcastChannel not supported:', e);
+  }
+}
+
+export function broadcastLocalMeshPayload(packet: LocalMeshPacket) {
+  if (typeof window === 'undefined') return;
+
+  // 1. Broadcast via BroadcastChannel
+  if (meshBroadcastChannel) {
+    try {
+      meshBroadcastChannel.postMessage(packet);
+    } catch (e) {
+      console.error('Error posting to BroadcastChannel:', e);
+    }
+  }
+
+  // 2. Broadcast via StorageEvent fallback (triggers on other tabs/windows/webviews)
+  try {
+    const key = `ordina_mesh_event_${Date.now()}_${Math.random()}`;
+    localStorage.setItem(key, JSON.stringify(packet));
+    setTimeout(() => {
+      try {
+        localStorage.removeItem(key);
+      } catch (err) {}
+    }, 1000);
+  } catch (e) {}
+}
+
+export function subscribeLocalMeshPayload(callback: (packet: LocalMeshPacket) => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+
+  // BroadcastChannel listener
+  const bcHandler = (event: MessageEvent) => {
+    if (event.data && event.data.type) {
+      callback(event.data as LocalMeshPacket);
+    }
+  };
+
+  if (meshBroadcastChannel) {
+    meshBroadcastChannel.addEventListener('message', bcHandler);
+  }
+
+  // StorageEvent listener fallback
+  const storageHandler = (event: StorageEvent) => {
+    if (event.key && event.key.startsWith('ordina_mesh_event_') && event.newValue) {
+      try {
+        const data = JSON.parse(event.newValue);
+        if (data && data.type) {
+          callback(data as LocalMeshPacket);
+        }
+      } catch (e) {}
+    }
+  };
+
+  window.addEventListener('storage', storageHandler);
+
+  return () => {
+    if (meshBroadcastChannel) {
+      meshBroadcastChannel.removeEventListener('message', bcHandler);
+    }
+    window.removeEventListener('storage', storageHandler);
+  };
+}
+

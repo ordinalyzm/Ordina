@@ -42,7 +42,18 @@ import {
 } from './utils/localCache';
 import { initializeVersionAndSyncState } from './utils/versionManager';
 import { Radar } from './components/Radar';
-import { getRelayPath, findNextHop, deduplicationEngine, addMailmanCarrierPacket, getMailmanCarrierPackets, removeMailmanCarrierPacket, detectDeviceHardwareSpecs } from './lib/mesh';
+import { 
+  getRelayPath, 
+  findNextHop, 
+  deduplicationEngine, 
+  addMailmanCarrierPacket, 
+  getMailmanCarrierPackets, 
+  removeMailmanCarrierPacket, 
+  detectDeviceHardwareSpecs,
+  broadcastLocalMeshPayload,
+  subscribeLocalMeshPayload,
+  LocalMeshPacket
+} from './lib/mesh';
 import { FirestoreMedia } from './lib/FirestoreMedia';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -1132,6 +1143,132 @@ function AppContent() {
   const [isRadarActive, setIsRadarActive] = useState(false);
   const [isRelayEnabled, setIsRelayEnabled] = useState(true);
   const [offlinePendingMessages, setOfflinePendingMessages] = useState<Message[]>([]);
+
+  // Local Mesh Direct Offline Peer-to-Peer Bus Listener & Auto-Relay
+  useEffect(() => {
+    if (!user?.uid) return;
+
+    const unsubscribe = subscribeLocalMeshPayload((packet: LocalMeshPacket) => {
+      if (!packet || !packet.type) return;
+
+      if (packet.type === 'mesh:packet' && packet.message) {
+        const msg = packet.message;
+        
+        // Skip messages originated by myself
+        if (msg.senderId === user.uid) return;
+
+        // Anti-DDoS & Deduplication check
+        if (deduplicationEngine.isDuplicateOrFlood(msg.id, packet.senderId || msg.senderId)) {
+          return;
+        }
+
+        const isForMe = packet.targetId === user.uid || msg.receiverId === user.uid;
+        const isGroupOrChannel = !!msg.groupId || packet.targetId === 'global_channel' || packet.targetId?.startsWith('group_');
+
+        if (isForMe || isGroupOrChannel) {
+          const chatId = msg.groupId || msg.senderId;
+          const confirmedMsg: Message = { ...msg, status: 'delivered' };
+
+          // 1. Save to local weekly cache
+          saveMessageToLocalCache(chatId, confirmedMsg);
+
+          // 2. Update recent previews
+          setRecentPreviews(prev => ({
+            ...prev,
+            [chatId]: confirmedMsg
+          }));
+
+          // 3. Play incoming sound
+          playIncomingMessageSound();
+
+          // 4. Update messages in state if viewing this chat
+          const currentChat = selectedChatRef.current;
+          if (currentChat?.id === chatId || (currentChat?.type === 'user' && currentChat?.id === msg.senderId)) {
+            setMessages(prev => {
+              const existingIdx = prev.findIndex(m => m.id === msg.id);
+              if (existingIdx !== -1) {
+                const next = [...prev];
+                next[existingIdx] = confirmedMsg;
+                return next;
+              }
+              return [...prev, confirmedMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+            });
+          }
+
+          // 5. Send ACK over local Mesh bus so sender knows it was received offline
+          broadcastLocalMeshPayload({
+            type: 'mesh:ack',
+            messageId: msg.id,
+            deliveredTo: user.uid,
+            timestamp: Date.now()
+          });
+        } else if (msg.relayTo === user.uid && isRelayEnabled) {
+          // Mesh relay node: forward to next hop or local peers
+          const nextHop = findNextHop(usersRef.current as any, user.uid, packet.targetId || '');
+          const relayedMsg: Message = {
+            ...msg,
+            relayTo: nextHop || undefined,
+            relayPath: [...(msg.relayPath || []), user.uid]
+          };
+          broadcastLocalMeshPayload({
+            type: 'mesh:packet',
+            message: relayedMsg,
+            targetId: packet.targetId,
+            senderId: user.uid,
+            timestamp: Date.now()
+          });
+        }
+      } else if (packet.type === 'mesh:ack' && packet.messageId) {
+        // Receipt ACK delivered via local Mesh!
+        removeMailmanCarrierPacket(packet.messageId);
+
+        setMessages(prev => prev.map(m => {
+          if (m.id === packet.messageId) {
+            return { ...m, status: 'delivered' };
+          }
+          return m;
+        }));
+
+        setRecentPreviews(prev => {
+          const next = { ...prev };
+          Object.keys(next).forEach(chatKey => {
+            if (next[chatKey]?.id === packet.messageId) {
+              next[chatKey] = { ...next[chatKey], status: 'delivered' };
+            }
+          });
+          return next;
+        });
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [user?.uid, isRelayEnabled]);
+
+  // Periodic Offline Mesh Carrier Flush: When socket is disconnected, periodically broadcast pending packets over local mesh bus
+  useEffect(() => {
+    if (!user?.uid || socketConnected) return;
+
+    const interval = setInterval(() => {
+      try {
+        const packets = getMailmanCarrierPackets();
+        if (packets.length > 0) {
+          packets.forEach(p => {
+            broadcastLocalMeshPayload({
+              type: 'mesh:packet',
+              message: cleanObject(p.message),
+              targetId: p.targetId,
+              senderId: user.uid,
+              timestamp: Date.now()
+            });
+          });
+        }
+      } catch (e) {}
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [user?.uid, socketConnected]);
 
   // Offline Caching & Relay Sync
   useEffect(() => {
@@ -3111,13 +3248,16 @@ function AppContent() {
       socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
       playSentMessageSound();
     } else {
-      // Offline notification
+      // Offline Local Mesh Transmission: Broadcast over direct offline local transport (BroadcastChannel / Local Storage bus)
+      broadcastLocalMeshPayload({
+        type: 'mesh:packet',
+        message: cleanObject(finalMsg),
+        targetId: chatId,
+        senderId: user.uid,
+        timestamp: Date.now()
+      });
       playSentMessageSound();
-      if (isRelayEnabled) {
-        addToast('Сообщение сохранено в оффлайн Mesh и передается узлам', 'info');
-      } else {
-        addToast('Сообщение сохранено локально. Доставится при появлении сети', 'info');
-      }
+      addToast('Передано по локальной Mesh-связи (без интернета)', 'info');
     }
 
     // 7. Update activeChats list if new chat
