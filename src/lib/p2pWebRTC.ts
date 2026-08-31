@@ -24,13 +24,14 @@ class WebRTCP2PManager {
   private currentUid: string | null = null;
   private signalSender: ((event: string, payload: any) => void) | null = null;
 
-  // Standard Google and Twilio public STUN servers for robust NAT traversal
+  // Standard Google & Open STUN servers for robust NAT traversal across mobile & APK networks
   private readonly rtcConfig: RTCConfiguration = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:global.stun.twilio.com:3478' }
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' }
     ],
     iceCandidatePoolSize: 4
   };
