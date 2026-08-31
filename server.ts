@@ -503,6 +503,33 @@ async function startServer() {
   (global as any).userBotStates = new Map();
   (global as any).userBotVariables = new Map();
 
+  function unmaskAntiDPIPayload(envelope: any): any | null {
+    if (!envelope || !envelope.blob || !envelope.nonce) return null;
+    try {
+      const seed = 'ordina_anti_dpi_salt_2026_' + envelope.nonce;
+      let hash = 0;
+      for (let i = 0; i < seed.length; i++) {
+        hash = (hash << 5) - hash + seed.charCodeAt(i);
+        hash |= 0;
+      }
+      const key = Math.abs(hash).toString(16) + '9f8b4e72c01a';
+      const scrambled = typeof atob !== 'undefined'
+        ? decodeURIComponent(atob(envelope.blob))
+        : Buffer.from(envelope.blob, 'base64').toString('utf-8');
+
+      let original = '';
+      for (let i = 0; i < scrambled.length; i++) {
+        const maskedChar = scrambled.charCodeAt(i);
+        const keyChar = key.charCodeAt(i % key.length);
+        const originalChar = String.fromCharCode(maskedChar ^ keyChar ^ ((i + 7) & 0x7f));
+        original += originalChar;
+      }
+      return JSON.parse(original);
+    } catch (e) {
+      return null;
+    }
+  }
+
   const app = express();
   
   app.use((req, res, next) => {
@@ -570,6 +597,51 @@ async function startServer() {
       const channels = rows.map((r: any) => JSON.parse(r.data));
       res.json({ total: channels.length, channels });
     } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Anti-DPI Obfuscated Fallback Endpoint
+  app.post('/api/obfuscated/packet', async (req, res) => {
+    try {
+      const envelope = req.body;
+      const unmasked = unmaskAntiDPIPayload(envelope);
+      if (!unmasked || !unmasked.chatId || !unmasked.payload) {
+        return res.status(400).json({ error: 'Invalid obfuscated packet' });
+      }
+
+      const { chatId, payload } = unmasked;
+      const message = payload;
+      const myUid = message.senderId;
+
+      if (!myUid) {
+        return res.status(400).json({ error: 'Missing sender' });
+      }
+
+      const { rowCount: gCount } = await pool.query('SELECT id FROM groups WHERE id = $1', [chatId]);
+      const isGroup = !!message.groupId || chatId === 'global_channel' || gCount > 0;
+      let historyId = chatId;
+      let room = `chat:${chatId}`;
+
+      if (!isGroup && chatId !== 'global_channel') {
+        const receiverId = message.receiverId || chatId;
+        if (myUid === receiverId) historyId = myUid;
+        else historyId = [myUid, receiverId].sort().join('_');
+        room = `chat:${historyId}`;
+        message.receiverId = receiverId;
+      }
+
+      const query = 'INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET data = $3';
+      await pool.query(query, [message.id, historyId, JSON.stringify(message), message.createdAt || new Date().toISOString()]);
+
+      io.to(room).emit('message:received', message);
+      if (message.receiverId && !isGroup) {
+        io.to(`user:${message.receiverId}`).emit('message:received', message);
+      }
+
+      res.json({ status: 'ok', id: message.id });
+    } catch (e: any) {
+      console.error('[Anti-DPI API] Error processing obfuscated packet:', e);
       res.status(500).json({ error: e.message });
     }
   });
@@ -2396,6 +2468,48 @@ io.on('connection', (socket) => {
       await pool.query('DELETE FROM groups WHERE data LIKE $1', [`%${uid}%`]);
       await pool.query('DELETE FROM users WHERE uid = $1', [uid]);
       io.emit('user:deleted_completely', uid);
+    });
+
+    // Tier 1: Real WebRTC P2P Signaling Relay
+    socket.on('p2p:signal', (data: { type: string; callerUid: string; targetUid: string; offer?: any; answer?: any; candidate?: any }) => {
+      if (data && data.targetUid) {
+        io.to(`user:${data.targetUid}`).emit('p2p:signal', data);
+      }
+    });
+
+    // Tier 2: Anti-DPI Obfuscated Socket Relay
+    socket.on('obfuscated:packet', async (envelope: any) => {
+      try {
+        const unmasked = unmaskAntiDPIPayload(envelope);
+        if (!unmasked || !unmasked.chatId || !unmasked.message) return;
+
+        const { chatId, message } = unmasked;
+        const myUid = (socket as any).uid || message.senderId;
+        if (!myUid) return;
+
+        const { rowCount: gCount } = await pool.query('SELECT id FROM groups WHERE id = $1', [chatId]);
+        const isGroup = !!message.groupId || chatId === 'global_channel' || gCount > 0;
+        let historyId = chatId;
+        let room = `chat:${chatId}`;
+
+        if (!isGroup && chatId !== 'global_channel') {
+          const receiverId = message.receiverId || chatId;
+          if (myUid === receiverId) historyId = myUid;
+          else historyId = [myUid, receiverId].sort().join('_');
+          room = `chat:${historyId}`;
+          message.receiverId = receiverId;
+        }
+
+        const query = 'INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET data = $3';
+        await pool.query(query, [message.id, historyId, JSON.stringify(message), message.createdAt || new Date().toISOString()]);
+
+        io.to(room).emit('message:received', message);
+        if (message.receiverId && !isGroup) {
+          io.to(`user:${message.receiverId}`).emit('message:received', message);
+        }
+      } catch (e) {
+        console.error('[Anti-DPI Socket] Error:', e);
+      }
     });
 
     socket.on('disconnect', async () => {

@@ -27,7 +27,7 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw, RefreshCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles, Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -54,6 +54,10 @@ import {
   subscribeLocalMeshPayload,
   LocalMeshPacket
 } from './lib/mesh';
+import { p2pManager } from './lib/p2pWebRTC';
+import { obfuscationEngine } from './lib/obfuscation';
+import { bleMeshEngine } from './lib/bleMesh';
+import { multiTierRouter, TransportTier } from './lib/multiTierRouter';
 import { FirestoreMedia } from './lib/FirestoreMedia';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -370,12 +374,35 @@ function AppContent() {
   const [recentPreviews, setRecentPreviews] = useState<{ [chatId: string]: Message }>({});
 
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [socketConnected, setSocketConnected] = useState(false);
   const [socketPresences, setSocketPresences] = useState<Array<{uid: string, status: string, customStatus?: string}>>([]);
   const [, setPresenceTicker] = useState(0);
+
+  // 3-Tier Network Transport state
+  const [activeTransportTier, setActiveTransportTier] = useState<TransportTier>(() => multiTierRouter.determineActiveTier());
+  const [isDirectP2PActive, setIsDirectP2PActive] = useState<boolean>(false);
+
+  useEffect(() => {
+    const tier = multiTierRouter.determineActiveTier();
+    setActiveTransportTier(tier);
+
+    if (selectedChat?.type === 'user' && selectedChat.id) {
+      const p2pPeer = p2pManager.getPeerStatus(selectedChat.id);
+      setIsDirectP2PActive(p2pPeer?.state === 'connected');
+
+      // Attempt P2P WebRTC handshake if online and tier1 is active
+      if (socketConnected && tier === 'tier1_p2p' && selectedChat.id !== user?.uid) {
+        p2pManager.connectToPeer(selectedChat.id);
+      }
+    } else {
+      setIsDirectP2PActive(false);
+    }
+  }, [selectedChat, socketConnected, user?.uid]);
 
   useEffect(() => {
     const timer = setInterval(() => {
       setPresenceTicker(t => t + 1);
+      setActiveTransportTier(multiTierRouter.determineActiveTier());
     }, 15000);
     return () => clearInterval(timer);
   }, []);
@@ -470,7 +497,6 @@ function AppContent() {
   const selectedChatRef = useRef(selectedChat);
   const usersRef = useRef(users);
   const profileRef = useRef(profile);
-  const [socketConnected, setSocketConnected] = useState(false);
 
   useEffect(() => {
     selectedChatRef.current = selectedChat;
@@ -678,6 +704,9 @@ function AppContent() {
             type: deviceType
           }
         });
+
+        // Initialize 3-Tier Multi-Transport Router
+        multiTierRouter.init(user.uid, newSocket);
       }
       const current = selectedChatRef.current;
       if (current && user) {
@@ -710,6 +739,11 @@ function AppContent() {
 
     newSocket.on('presence:update', (presences: any[]) => {
       setSocketPresences(presences);
+    });
+
+    // Tier 1: Real WebRTC P2P Signaling Receiver
+    newSocket.on('p2p:signal', (signalData: any) => {
+      p2pManager.handleSignal(signalData);
     });
 
      newSocket.on('message:received', async (msg: Message) => {
@@ -1144,20 +1178,81 @@ function AppContent() {
   const [isRelayEnabled, setIsRelayEnabled] = useState(true);
   const [offlinePendingMessages, setOfflinePendingMessages] = useState<Message[]>([]);
 
-  // Local Mesh Direct Offline Peer-to-Peer Bus Listener & Auto-Relay
+  // Unified 3-Tier Multi-Transport Message Bus Listener & Auto-Relay
   useEffect(() => {
     if (!user?.uid) return;
 
-    const unsubscribe = subscribeLocalMeshPayload((packet: LocalMeshPacket) => {
+    const handleIncomingChatMessage = (msg: Message, transportLabel?: string) => {
+      if (!msg || msg.senderId === user.uid) return;
+
+      // Anti-DDoS & Deduplication check
+      if (deduplicationEngine.isDuplicateOrFlood(msg.id, msg.senderId)) {
+        return;
+      }
+
+      const chatId = msg.groupId || msg.senderId;
+      const confirmedMsg: Message = { ...msg, status: 'delivered' };
+
+      // 1. Save to local weekly cache
+      saveMessageToLocalCache(chatId, confirmedMsg);
+
+      // 2. Update recent previews
+      setRecentPreviews(prev => ({
+        ...prev,
+        [chatId]: confirmedMsg
+      }));
+
+      // 3. Play incoming sound
+      playIncomingMessageSound();
+
+      // 4. Update messages in state if viewing this chat
+      const currentChat = selectedChatRef.current;
+      if (currentChat?.id === chatId || (currentChat?.type === 'user' && currentChat?.id === msg.senderId)) {
+        setMessages(prev => {
+          const existingIdx = prev.findIndex(m => m.id === msg.id);
+          if (existingIdx !== -1) {
+            const next = [...prev];
+            next[existingIdx] = confirmedMsg;
+            return next;
+          }
+          return [...prev, confirmedMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+        });
+      }
+    };
+
+    // 1. Tier 1: Listen for Direct WebRTC P2P DataChannel Packets
+    const unsubP2P = p2pManager.onMessage((senderUid, data) => {
+      if (data?.type === 'chat:message' && data.message) {
+        handleIncomingChatMessage(data.message, 'WebRTC P2P');
+      } else if (data?.type === 'chat:ack' && data.messageId) {
+        removeMailmanCarrierPacket(data.messageId);
+        setMessages(prev => prev.map(m => m.id === data.messageId ? { ...m, status: 'delivered' } : m));
+      }
+    });
+
+    // 2. Tier 3: Listen for Bluetooth LE & Multi-Hop Mesh Packets
+    const unsubBLE = bleMeshEngine.onPacket((packet) => {
+      if (!packet) return;
+
+      if (packet.type === 'data' && packet.message) {
+        const isForMe = packet.targetUid === user.uid || packet.message.receiverId === user.uid || !packet.targetUid;
+        if (isForMe) {
+          handleIncomingChatMessage(packet.message, 'BLE Mesh');
+        }
+      } else if (packet.type === 'ack' && packet.packetId) {
+        removeMailmanCarrierPacket(packet.packetId);
+        setMessages(prev => prev.map(m => m.id === packet.packetId ? { ...m, status: 'delivered' } : m));
+      }
+    });
+
+    // 3. Local Subnet / Tab Broadcast Channel fallback
+    const unsubscribeLocal = subscribeLocalMeshPayload((packet: LocalMeshPacket) => {
       if (!packet || !packet.type) return;
 
       if (packet.type === 'mesh:packet' && packet.message) {
         const msg = packet.message;
-        
-        // Skip messages originated by myself
         if (msg.senderId === user.uid) return;
 
-        // Anti-DDoS & Deduplication check
         if (deduplicationEngine.isDuplicateOrFlood(msg.id, packet.senderId || msg.senderId)) {
           return;
         }
@@ -1166,36 +1261,9 @@ function AppContent() {
         const isGroupOrChannel = !!msg.groupId || packet.targetId === 'global_channel' || packet.targetId?.startsWith('group_');
 
         if (isForMe || isGroupOrChannel) {
-          const chatId = msg.groupId || msg.senderId;
-          const confirmedMsg: Message = { ...msg, status: 'delivered' };
+          handleIncomingChatMessage(msg, 'Local Bus');
 
-          // 1. Save to local weekly cache
-          saveMessageToLocalCache(chatId, confirmedMsg);
-
-          // 2. Update recent previews
-          setRecentPreviews(prev => ({
-            ...prev,
-            [chatId]: confirmedMsg
-          }));
-
-          // 3. Play incoming sound
-          playIncomingMessageSound();
-
-          // 4. Update messages in state if viewing this chat
-          const currentChat = selectedChatRef.current;
-          if (currentChat?.id === chatId || (currentChat?.type === 'user' && currentChat?.id === msg.senderId)) {
-            setMessages(prev => {
-              const existingIdx = prev.findIndex(m => m.id === msg.id);
-              if (existingIdx !== -1) {
-                const next = [...prev];
-                next[existingIdx] = confirmedMsg;
-                return next;
-              }
-              return [...prev, confirmedMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-            });
-          }
-
-          // 5. Send ACK over local Mesh bus so sender knows it was received offline
+          // Send ACK over local Mesh bus
           broadcastLocalMeshPayload({
             type: 'mesh:ack',
             messageId: msg.id,
@@ -1203,7 +1271,6 @@ function AppContent() {
             timestamp: Date.now()
           });
         } else if (msg.relayTo === user.uid && isRelayEnabled) {
-          // Mesh relay node: forward to next hop or local peers
           const nextHop = findNextHop(usersRef.current as any, user.uid, packet.targetId || '');
           const relayedMsg: Message = {
             ...msg,
@@ -1219,16 +1286,8 @@ function AppContent() {
           });
         }
       } else if (packet.type === 'mesh:ack' && packet.messageId) {
-        // Receipt ACK delivered via local Mesh!
         removeMailmanCarrierPacket(packet.messageId);
-
-        setMessages(prev => prev.map(m => {
-          if (m.id === packet.messageId) {
-            return { ...m, status: 'delivered' };
-          }
-          return m;
-        }));
-
+        setMessages(prev => prev.map(m => m.id === packet.messageId ? { ...m, status: 'delivered' } : m));
         setRecentPreviews(prev => {
           const next = { ...prev };
           Object.keys(next).forEach(chatKey => {
@@ -1242,7 +1301,9 @@ function AppContent() {
     });
 
     return () => {
-      unsubscribe();
+      unsubP2P();
+      unsubBLE();
+      unsubscribeLocal();
     };
   }, [user?.uid, isRelayEnabled]);
 
@@ -3243,22 +3304,18 @@ function AppContent() {
       }
     }
 
-    // 6. Try to send via active socket or WebRTC mesh
-    if (socketConnected && socket) {
-      socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
-      playSentMessageSound();
-    } else {
-      // Offline Local Mesh Transmission: Broadcast over direct offline local transport (BroadcastChannel / Local Storage bus)
-      broadcastLocalMeshPayload({
-        type: 'mesh:packet',
-        message: cleanObject(finalMsg),
-        targetId: chatId,
-        senderId: user.uid,
-        timestamp: Date.now()
+    // 6. Dispatch message through Unified 3-Tier Multi-Transport Router
+    multiTierRouter.dispatchMessage(chatId, cleanObject(finalMsg))
+      .then(res => {
+        playSentMessageSound();
+        if (res.tierUsed === 'tier3_mesh') {
+          addToast(res.note, 'info');
+        }
+      })
+      .catch(err => {
+        console.error('Error dispatching message via multiTierRouter:', err);
+        playSentMessageSound();
       });
-      playSentMessageSound();
-      addToast('Передано по локальной Mesh-связи (без интернета)', 'info');
-    }
 
     // 7. Update activeChats list if new chat
     if (selectedChat?.type === 'user' && profile && !(profile.activeChats || []).includes(chatId)) {
@@ -7086,6 +7143,39 @@ function AppContent() {
                 </div>
               </div>
               <div className="flex items-center gap-2 relative">
+                {/* 3-Tier Network Transport Badge */}
+                <button 
+                  onClick={() => setShowMeshInspectorModal(true)}
+                  className={cn(
+                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer",
+                    activeTransportTier === 'tier1_p2p' && isDirectP2PActive
+                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                      : activeTransportTier === 'tier1_p2p'
+                      ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                      : activeTransportTier === 'tier2_obfuscated'
+                      ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 animate-pulse"
+                      : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
+                  )}
+                  title="3 Уровня связи: P2P, Anti-DPI, Mesh BLE. Нажмите для открытия инспектора."
+                >
+                  {activeTransportTier === 'tier1_p2p' ? (
+                    <>
+                      <Zap size={13} className={isDirectP2PActive ? "text-emerald-600 fill-emerald-500" : "text-blue-600"} />
+                      <span className="hidden md:inline">{isDirectP2PActive ? "P2P Прямой" : "Ур. 1 P2P"}</span>
+                    </>
+                  ) : activeTransportTier === 'tier2_obfuscated' ? (
+                    <>
+                      <ShieldAlert size={13} className="text-amber-600" />
+                      <span className="hidden md:inline">Ур. 2 Anti-DPI</span>
+                    </>
+                  ) : (
+                    <>
+                      <Radio size={13} className="text-purple-600 animate-pulse" />
+                      <span className="hidden md:inline">Ур. 3 Mesh BLE</span>
+                    </>
+                  )}
+                </button>
+
                 {selectedChat.type !== 'user' && isGroupAdmin && (
                   <button 
                     onClick={() => setShowGroupSettings(true)}
