@@ -10,6 +10,7 @@ import { Message } from '../types';
 import { p2pManager } from './p2pWebRTC';
 import { obfuscationEngine } from './obfuscation';
 import { bleMeshEngine, MultiHopMeshPacket } from './bleMesh';
+import { broadcastLocalMeshPayload, addMailmanCarrierPacket } from './mesh';
 
 export type TransportTier = 'tier1_p2p' | 'tier2_obfuscated' | 'tier3_mesh';
 
@@ -110,14 +111,34 @@ class MultiTierTransportRouter {
         timestamp: Date.now()
       };
 
+      // 1. Dispatch to BLE Mesh
       bleMeshEngine.broadcastPacket(meshPacket);
+
+      // 2. Dispatch to Local Bus (BroadcastChannel + Local Storage)
+      broadcastLocalMeshPayload({
+        type: 'mesh:packet',
+        message,
+        messageId: message.id,
+        targetId: chatId,
+        senderId: this.currentUid || message.senderId,
+        timestamp: Date.now()
+      });
+
+      // 3. Save to Mailman Carrier buffer
+      addMailmanCarrierPacket({
+        id: message.id,
+        message,
+        targetId: chatId,
+        carrierId: this.currentUid || message.senderId,
+        carriedAt: Date.now()
+      });
 
       return {
         tierUsed: 'tier3_mesh',
         deliveredDirectly: false,
         hopCount: 0,
         relayPath: meshPacket.relayPath,
-        note: 'Передано через Уровень 3: Bluetooth LE и локальную Mesh-сеть'
+        note: 'Сохранено и передано через Уровень 3: Bluetooth LE и офлайн Mesh-сеть'
       };
     }
 

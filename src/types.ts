@@ -114,6 +114,9 @@ export interface Message {
   isEncrypted?: boolean;
   encryptionMethod?: 'simple-xor' | 'aes-256'; // For future expansion
   status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
+  deliveryStatus?: 'pending' | 'sent' | 'relayed' | 'delivered' | 'read';
+  ttl?: number; // Time-to-live for mesh multi-hop (default 5)
+  version?: number; // Incremental sync version
   readBy?: string[]; // List of UIDs who have read the message
   deliveredDevices?: Record<string, boolean>; // Maps deviceId to delivered (true/false)
   asChannel?: boolean; // Whether the user posted this message as the channel
@@ -126,6 +129,18 @@ export interface Message {
     text: string;
     originalSenderId: string;
   };
+}
+
+export interface Chat {
+  id: string;
+  type: 'user' | 'group' | 'channel';
+  name?: string;
+  photoURL?: string;
+  version?: number;
+  lastMessage?: Message;
+  unreadCount?: number;
+  updatedAt?: string;
+  members?: string[];
 }
 
 export interface GroupPermissions {
@@ -157,6 +172,7 @@ export interface Group {
   isPublic: boolean;
   isGlobal?: boolean;
   isVerified?: boolean;
+  version?: number;
   bannedUsers: string[];
   bannedFromComments?: string[]; // List of UIDs banned from commenting
   permissions: {

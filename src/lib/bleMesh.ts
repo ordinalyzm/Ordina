@@ -325,8 +325,8 @@ class BLEMeshEngine {
       return;
     }
 
-    const isTargetMe = packet.targetUid === this.currentUid;
-    const isBroadcastGroup = !packet.targetUid || packet.targetUid === 'global_channel' || packet.targetUid.startsWith('group_');
+    const isTargetMe = packet.targetUid === this.currentUid || packet.message?.receiverId === this.currentUid;
+    const isBroadcastGroup = !packet.targetUid || packet.targetUid === 'global_channel' || packet.targetUid.startsWith('group_') || !!packet.message?.groupId;
 
     if (isTargetMe || isBroadcastGroup) {
       // Message has reached its final destination!

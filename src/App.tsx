@@ -35,11 +35,17 @@ import { ru } from 'date-fns/locale';
 import { QRCodeSVG } from 'qrcode.react';
 import { UserProfile, Message, Group, MeshNode, GroupPermissions, StickerPack, UserDevice } from './types';
 import { 
+  saveMessage,
+  updateMessageStatus,
+  getDeltaSyncVersion,
+  mergeDelta,
+  initDatabase,
   saveMessageToLocalCache, 
   saveMessagesToLocalCache, 
   loadMessagesFromLocalCache, 
   clearChatLocalCache 
 } from './utils/localCache';
+import { bleMesh } from './services/bleMesh';
 import { initializeVersionAndSyncState } from './utils/versionManager';
 import { Radar } from './components/Radar';
 import { 
@@ -725,6 +731,16 @@ function AppContent() {
       } catch (e) {
         console.error('Error flushing mailman carrier packets:', e);
       }
+
+      // Delta-Sync on connect: request incremental updates from server
+      try {
+        getDeltaSyncVersion().then(localVer => {
+          console.log('[DeltaSync] Connected to server, requesting delta from version:', localVer);
+          newSocket.emit('chat:get_delta', { clientVersion: localVer });
+        });
+      } catch (e) {
+        console.error('Error initiating delta sync:', e);
+      }
     };
 
     if (newSocket.connected) {
@@ -735,6 +751,45 @@ function AppContent() {
 
     newSocket.on('disconnect', () => {
       setSocketConnected(false);
+    });
+
+    // Delta-Sync Response: Merge incremental updates into SQLite and in-memory state
+    newSocket.on('chat:delta_response', async (data: { chats?: any[], messages?: Message[], serverVersion?: number }) => {
+      try {
+        console.log('[DeltaSync] Received delta response:', data);
+        if ((data.chats && data.chats.length > 0) || (data.messages && data.messages.length > 0)) {
+          await mergeDelta(data.chats || [], data.messages || []);
+
+          if (data.chats && data.chats.length > 0) {
+            setGroups(prev => {
+              const map = new Map<string, Group>();
+              prev.forEach(g => map.set(g.id, g));
+              data.chats?.forEach(c => {
+                if (c.type === 'group' || c.type === 'channel') {
+                  const existing = map.get(c.id);
+                  map.set(c.id, existing ? { ...existing, ...c } : c);
+                }
+              });
+              return Array.from(map.values());
+            });
+          }
+
+          if (data.messages && data.messages.length > 0 && selectedChatRef.current?.id) {
+            const currentId = selectedChatRef.current.id;
+            const currentDeltas = data.messages.filter(m => m.groupId === currentId || m.receiverId === currentId || m.senderId === currentId);
+            if (currentDeltas.length > 0) {
+              setMessages(prev => {
+                const map = new Map<string, Message>();
+                prev.forEach(m => map.set(m.id, m));
+                currentDeltas.forEach(m => map.set(m.id, m));
+                return Array.from(map.values()).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.error('[DeltaSync] Error handling delta response:', e);
+      }
     });
 
     newSocket.on('presence:update', (presences: any[]) => {
@@ -1231,6 +1286,20 @@ function AppContent() {
     });
 
     // 2. Tier 3: Listen for Bluetooth LE & Multi-Hop Mesh Packets
+    bleMesh.setCurrentUserId(user?.uid || null);
+    bleMesh.initialize().catch(() => {});
+    const unsubBLEService = bleMesh.onPacketReceived((packet) => {
+      if (!packet) return;
+      if (packet.type === 'data' && packet.message) {
+        handleIncomingChatMessage(packet.message, 'BLE Mesh');
+      } else if (packet.type === 'ack' && packet.packetId) {
+        const origId = packet.packetId.replace('ack_', '');
+        updateMessageStatus(origId, 'delivered');
+        removeMailmanCarrierPacket(origId);
+        setMessages(prev => prev.map(m => m.id === origId ? { ...m, status: 'delivered', deliveryStatus: 'delivered' } : m));
+      }
+    });
+
     const unsubBLE = bleMeshEngine.onPacket((packet) => {
       if (!packet) return;
 
@@ -1303,6 +1372,7 @@ function AppContent() {
     return () => {
       unsubP2P();
       unsubBLE();
+      unsubBLEService();
       unsubscribeLocal();
     };
   }, [user?.uid, isRelayEnabled]);
@@ -1330,6 +1400,27 @@ function AppContent() {
 
     return () => clearInterval(interval);
   }, [user?.uid, socketConnected]);
+
+  // Auto-flush offline messages when internet/socket reconnects
+  useEffect(() => {
+    if (!user?.uid || !socketConnected || !socket) return;
+
+    try {
+      const packets = getMailmanCarrierPackets();
+      if (packets.length > 0) {
+        packets.forEach(p => {
+          if (p.message && p.targetId) {
+            socket.emit('message:new', {
+              chatId: p.targetId,
+              message: cleanObject({ ...p.message, status: 'sent' })
+            });
+            removeMailmanCarrierPacket(p.id);
+          }
+        });
+        setMessages(prev => prev.map(m => m.status === 'pending' ? { ...m, status: 'sent' } : m));
+      }
+    } catch (e) {}
+  }, [socketConnected, socket, user?.uid]);
 
   // Offline Caching & Relay Sync
   useEffect(() => {
@@ -3255,20 +3346,25 @@ function AppContent() {
   const dispatchOutgoingMessage = (chatId: string, msg: Message) => {
     if (!chatId || !user) return;
 
-    const isOnline = socketConnected && (navigator as any).onLine !== false;
+    const isOnline = socketConnected && socket?.connected && (navigator as any).onLine !== false;
     const initialStatus: 'pending' | 'sent' = isOnline ? 'sent' : 'pending';
 
     const finalMsg: Message = {
       ...msg,
+      id: msg.id || createMessageId(user.uid, Date.now()),
       senderId: msg.senderId || user.uid,
       createdAt: msg.createdAt || new Date().toISOString(),
-      status: msg.status || initialStatus
+      status: msg.status || initialStatus,
+      deliveryStatus: msg.deliveryStatus || initialStatus,
+      ttl: msg.ttl !== undefined ? msg.ttl : 5,
+      version: msg.version || Date.now()
     };
 
-    // 1. Immediately save to local persistent cache
+    // 1 & 2. Save directly to SQLite DB with 'pending'/'sent'
+    saveMessage(finalMsg);
     saveMessageToLocalCache(chatId, finalMsg);
 
-    // 2. Immediately update messages state so it renders in current chat (like Telegram)
+    // 3. Immediately update messages state so it renders in current chat (like Telegram)
     setMessages(prev => {
       const idx = prev.findIndex(m => m.id === finalMsg.id);
       if (idx !== -1) {
@@ -3279,13 +3375,13 @@ function AppContent() {
       return [...prev, finalMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     });
 
-    // 3. Update preview in chat list
+    // 4. Update preview in chat list
     setRecentPreviews(prev => ({
       ...prev,
       [chatId]: finalMsg
     }));
 
-    // 4. Save to Mailman Carrier Engine for offline/Mesh storage
+    // 5. Save to Mailman Carrier Engine for offline/Mesh storage
     addMailmanCarrierPacket({
       id: finalMsg.id,
       message: finalMsg,
@@ -3294,7 +3390,7 @@ function AppContent() {
       carriedAt: Date.now()
     });
 
-    // 5. Check Mesh Relay next hop
+    // 6. Check Mesh Relay next hop
     const isReceiverOnline = socketPresences.some(p => p.uid === chatId && p.status === 'online');
     if (!isReceiverOnline && isRelayEnabled) {
       const nextHop = findNextHop(users as any, user.uid, chatId);
@@ -3304,20 +3400,32 @@ function AppContent() {
       }
     }
 
-    // 6. Dispatch message through Unified 3-Tier Multi-Transport Router
-    multiTierRouter.dispatchMessage(chatId, cleanObject(finalMsg))
-      .then(res => {
-        playSentMessageSound();
-        if (res.tierUsed === 'tier3_mesh') {
-          addToast(res.note, 'info');
-        }
-      })
-      .catch(err => {
-        console.error('Error dispatching message via multiTierRouter:', err);
-        playSentMessageSound();
+    // 7. Route via Socket or BLE Mesh
+    if (isOnline && socket?.connected) {
+      socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
+      playSentMessageSound();
+    } else {
+      // Offline: Broadcast via BLE Mesh Service
+      console.log('[Offline BLE Mesh] Broadcasting message:', finalMsg.id);
+      bleMesh.broadcast({
+        packetId: finalMsg.id,
+        type: 'data',
+        senderId: user.uid,
+        recipientId: chatId,
+        ttl: 5,
+        hopCount: 0,
+        relayPath: [user.uid],
+        message: finalMsg,
+        timestamp: Date.now()
       });
+      playSentMessageSound();
+      addToast('📡 Сообщение передано в оффлайн BLE Mesh-сеть', 'info');
+    }
 
-    // 7. Update activeChats list if new chat
+    // Dispatch also to multi-tier router fallback
+    multiTierRouter.dispatchMessage(chatId, cleanObject(finalMsg)).catch(() => {});
+
+    // 8. Update activeChats list if new chat
     if (selectedChat?.type === 'user' && profile && !(profile.activeChats || []).includes(chatId)) {
       const newActive = [...(profile.activeChats || []), chatId];
       setProfile(p => p ? { ...p, activeChats: newActive } : null);
@@ -3371,7 +3479,8 @@ function AppContent() {
         return;
       }
       
-      if (selectedChat.type === 'user' && selectedChat.id !== user.uid && !((users.find(u => u.uid === selectedChat.id)) as any)?.isBot) {
+      const isOnlineMode = socketConnected && (navigator as any).onLine !== false;
+      if (isOnlineMode && selectedChat.type === 'user' && selectedChat.id !== user.uid && !((users.find(u => u.uid === selectedChat.id)) as any)?.isBot) {
         // Count messages sent by me to them in this specific chat
         const myMessagesToThem = messages.filter(m => m.senderId === user.uid && m.receiverId === selectedChat.id);
         const theirMessagesToMe = messages.filter(m => m.senderId === selectedChat.id && m.receiverId === user.uid);

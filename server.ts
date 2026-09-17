@@ -458,6 +458,34 @@ const cleanupStickers = async () => {
   }
 };
 
+/**
+ * Auto-purge delivered messages older than 14 days to preserve database space.
+ * Runs every 24 hours.
+ */
+const autoPurgeDeliveredMessages = async () => {
+  try {
+    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+    console.log(`[Auto-Purge] Running scheduled purge for messages created before ${fourteenDaysAgo}...`);
+    const { rows } = await pool.query('SELECT id, data FROM messages WHERE "createdAt" < $1', [fourteenDaysAgo]);
+    let deletedCount = 0;
+    for (const row of rows) {
+      try {
+        const msg = JSON.parse(row.data);
+        if (msg.status === 'delivered' || msg.deliveryStatus === 'delivered' || msg.status === 'read' || (msg.readBy && msg.readBy.length > 0)) {
+          await pool.query('DELETE FROM messages WHERE id = $1', [row.id]);
+          deletedCount++;
+        }
+      } catch (e) {}
+    }
+    console.log(`[Auto-Purge] Cleaned up ${deletedCount} delivered messages older than 14 days.`);
+  } catch (err) {
+    console.error('[Auto-Purge] Error during delivered messages cleanup:', err);
+  }
+};
+
+// Schedule Auto-Purge every 24 hours
+setInterval(autoPurgeDeliveredMessages, 24 * 60 * 60 * 1000);
+
 const seedGlobalChannel = async () => {
   try {
     const globalId = 'global_channel';
@@ -1477,7 +1505,16 @@ io.on('connection', (socket) => {
   
       }
 
-      const msg = { ...data.message, senderId: myUid, id: data.message.id || uuidv4(), createdAt: data.message.createdAt || new Date().toISOString(), chatId: historyId };
+      const msg = { 
+        ...data.message, 
+        senderId: myUid, 
+        id: data.message.id || uuidv4(), 
+        createdAt: data.message.createdAt || new Date().toISOString(), 
+        chatId: historyId,
+        version: data.message.version || Date.now(),
+        deliveryStatus: data.message.deliveryStatus || data.message.status || 'sent',
+        ttl: data.message.ttl !== undefined ? data.message.ttl : 5
+      };
       console.log('New message for chat:', historyId, 'receiverId:', msg.receiverId, 'senderId:', myUid);
 
       
@@ -2307,7 +2344,8 @@ io.on('connection', (socket) => {
       const row = rows[0];
       if (row) {
         const existing = JSON.parse(row.data);
-        const updated = { ...existing, ...data.update };
+        const newVersion = (existing.version || 1) + 1;
+        const updated = { ...existing, ...data.update, version: newVersion };
         await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(updated), data.id]);
         io.emit('group:updated', updated);
       }
@@ -2317,10 +2355,74 @@ io.on('connection', (socket) => {
       try {
         const id = group.id || uuidv4();
         group.id = id;
+        group.version = group.version || 1;
         await pool.query('INSERT INTO groups (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [id, JSON.stringify(group)]);
         io.emit('group:created', group);
       } catch (err) {
         console.error('group:create error', err);
+      }
+    });
+
+    /**
+     * Delta-Sync Handler: Returns only chats & messages updated since clientVersion
+     */
+    socket.on('chat:get_delta', async (data: { clientVersion?: number }) => {
+      try {
+        const clientVersion = Number(data?.clientVersion) || 0;
+        const myUid = (socket as any).uid;
+
+        // 1. Fetch updated chats/groups where version > clientVersion
+        const { rows: groupRows } = await pool.query('SELECT id, data FROM groups');
+        const updatedChats: any[] = [];
+        for (const r of groupRows) {
+          try {
+            const g = JSON.parse(r.data);
+            const ver = g.version || 1;
+            if (ver > clientVersion) {
+              updatedChats.push({
+                id: g.id,
+                type: g.type || 'group',
+                name: g.name,
+                photoURL: g.photoURL,
+                version: ver,
+                members: g.members,
+                updatedAt: g.createdAt
+              });
+            }
+          } catch (e) {}
+        }
+
+        // 2. Fetch updated messages where version > clientVersion
+        const { rows: msgRows } = await pool.query('SELECT id, "chatId", data, "createdAt" FROM messages ORDER BY "createdAt" DESC LIMIT 500');
+        const updatedMessages: any[] = [];
+        for (const r of msgRows) {
+          try {
+            const m = JSON.parse(r.data);
+            const ver = m.version || 1;
+            if (ver > clientVersion) {
+              const isGlobal = r.chatId === 'global_channel' || m.groupId === 'global_channel';
+              const isUserInDirect = !m.groupId && (m.senderId === myUid || m.receiverId === myUid);
+              const isUserInGroup = m.groupId && m.groupId !== 'global_channel';
+
+              if (isGlobal || isUserInDirect || isUserInGroup || !myUid) {
+                updatedMessages.push(m);
+              }
+            }
+          } catch (e) {}
+        }
+
+        const maxChatVer = Math.max(0, ...updatedChats.map(c => c.version || 1));
+        const maxMsgVer = Math.max(0, ...updatedMessages.map(m => m.version || 1));
+        const serverVersion = Math.max(clientVersion, maxChatVer, maxMsgVer);
+
+        socket.emit('chat:delta_response', {
+          chats: updatedChats,
+          messages: updatedMessages,
+          serverVersion
+        });
+      } catch (err) {
+        console.error('[Socket] chat:get_delta error:', err);
+        socket.emit('chat:delta_response', { chats: [], messages: [], serverVersion: data?.clientVersion || 0 });
       }
     });
 
