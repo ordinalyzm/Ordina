@@ -90,16 +90,56 @@ if (typeof window !== 'undefined') {
   initDatabase().catch(e => console.error('[SQLite] Auto-init error:', e));
 }
 
+// Write-deduplication map to prevent multiple redundant writes within milliseconds
+const recentWritesMap = new Map<string, string>();
+
 /**
  * Saves a single message to SQLite database and local cache.
  */
 export async function saveMessage(msg: Message): Promise<void> {
   if (!msg || !msg.id) return;
+
+  const textValue = (typeof msg.text === 'string' && msg.text.length > 0)
+    ? msg.text
+    : (typeof msg.content === 'string' && msg.content.length > 0)
+      ? msg.content
+      : (typeof msg.text === 'string' ? msg.text : (typeof msg.content === 'string' ? msg.content : ''));
+
+  const fileUrlValue = msg.fileUrl || null;
+  const fileNameValue = msg.fileName || null;
+  const typeValue = fileUrlValue 
+    ? (msg.type || 'file') 
+    : (['sticker', 'poll', 'system', 'audio', 'voice', 'video', 'image', 'game'].includes(msg.type) ? msg.type : 'text');
+
+  const normalizedMsg: Message = {
+    ...msg,
+    text: textValue,
+    content: textValue,
+    type: typeValue as any,
+    fileUrl: fileUrlValue || undefined,
+    fileName: fileNameValue || undefined
+  };
+
+  // Check deduplication signature to eliminate 8+ duplicate SQLite operations within milliseconds
+  const writeSig = `${normalizedMsg.id}:${normalizedMsg.status}:${normalizedMsg.deliveryStatus}:${normalizedMsg.updatedAt || ''}:${(normalizedMsg as any).readBy?.length || 0}`;
+  if (recentWritesMap.get(normalizedMsg.id) === writeSig) {
+    return; // Already written with identical state
+  }
+  recentWritesMap.set(normalizedMsg.id, writeSig);
+  if (recentWritesMap.size > 500) {
+    const firstKey = recentWritesMap.keys().next().value;
+    if (firstKey) recentWritesMap.delete(firstKey);
+  }
   
   // Also keep in localStorage for immediate sync access
-  const chatId = msg.groupId || msg.receiverId || msg.senderId;
+  let chatId = normalizedMsg.groupId || normalizedMsg.chatId;
+  if (!chatId && normalizedMsg.senderId && normalizedMsg.receiverId) {
+    chatId = [normalizedMsg.senderId, normalizedMsg.receiverId].sort().join('_');
+  } else if (!chatId) {
+    chatId = normalizedMsg.receiverId || normalizedMsg.senderId;
+  }
   if (chatId) {
-    saveMessageToLocalStorage(chatId, msg);
+    saveMessageToLocalStorage(chatId, normalizedMsg);
   }
 
   try {
@@ -112,22 +152,22 @@ export async function saveMessage(msg: Message): Promise<void> {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `;
       const values = [
-        msg.id,
-        msg.senderId || '',
-        msg.receiverId || null,
-        msg.groupId || null,
-        msg.text || '',
-        msg.type || 'text',
-        msg.fileUrl || null,
-        msg.fileName || null,
-        msg.fileSize || 0,
-        msg.createdAt || new Date().toISOString(),
-        msg.updatedAt || null,
-        msg.status || 'pending',
-        msg.deliveryStatus || msg.status || 'pending',
-        msg.ttl !== undefined ? msg.ttl : 5,
-        msg.version || 1,
-        JSON.stringify(msg)
+        normalizedMsg.id,
+        normalizedMsg.senderId || '',
+        normalizedMsg.receiverId || null,
+        normalizedMsg.groupId || null,
+        textValue,
+        typeValue,
+        fileUrlValue,
+        fileNameValue,
+        normalizedMsg.fileSize || 0,
+        normalizedMsg.createdAt || new Date().toISOString(),
+        normalizedMsg.updatedAt || null,
+        normalizedMsg.status || 'pending',
+        normalizedMsg.deliveryStatus || normalizedMsg.status || 'pending',
+        normalizedMsg.ttl !== undefined ? normalizedMsg.ttl : 5,
+        normalizedMsg.version || 1,
+        JSON.stringify(normalizedMsg)
       ];
       await dbInstance.run(statement, values);
     }
@@ -314,11 +354,21 @@ export function loadMessagesFromLocalCache(chatId: string): Message[] {
   return [];
 }
 
-export function clearChatLocalCache(chatId: string): void {
+export function clearChatLocalCache(chatId: string, currentUserId?: string): void {
   try {
     localStorage.removeItem(`ordina_cache_${chatId}`);
     if (dbInstance) {
-      dbInstance.run('DELETE FROM messages WHERE groupId = ? OR receiverId = ? OR senderId = ?;', [chatId, chatId, chatId]).catch(() => {});
+      if (currentUserId && currentUserId !== chatId) {
+        dbInstance.run(
+          'DELETE FROM messages WHERE groupId = ? OR (senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?);',
+          [chatId, chatId, currentUserId, currentUserId, chatId]
+        ).catch(() => {});
+      } else {
+        dbInstance.run(
+          'DELETE FROM messages WHERE groupId = ? OR (receiverId = ? AND groupId IS NULL);',
+          [chatId, chatId]
+        ).catch(() => {});
+      }
     }
   } catch (e) {}
 }

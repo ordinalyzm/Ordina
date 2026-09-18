@@ -93,11 +93,13 @@ export interface PollData {
 
 export interface Message {
   id: string;
+  chatId?: string;
   senderId: string;
   receiverId?: string;
   groupId?: string;
   text: string;
-  type: 'text' | 'image' | 'video' | 'file' | 'poll' | 'game' | 'sticker' | 'audio';
+  content?: string; // Mesh compatibility alias
+  type: 'text' | 'image' | 'video' | 'file' | 'poll' | 'game' | 'sticker' | 'audio' | 'voice' | 'system';
   fileUrl?: string;
   fileName?: string;
   fileSize?: number;
@@ -114,7 +116,7 @@ export interface Message {
   isEncrypted?: boolean;
   encryptionMethod?: 'simple-xor' | 'aes-256'; // For future expansion
   status?: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
-  deliveryStatus?: 'pending' | 'sent' | 'relayed' | 'delivered' | 'read';
+  deliveryStatus?: 'pending' | 'sent' | 'relayed' | 'delivered' | 'read' | 'sending' | 'failed';
   ttl?: number; // Time-to-live for mesh multi-hop (default 5)
   version?: number; // Incremental sync version
   readBy?: string[]; // List of UIDs who have read the message
@@ -129,6 +131,11 @@ export interface Message {
     text: string;
     originalSenderId: string;
   };
+  isMesh?: boolean;
+  meshHops?: number;
+  meshRoute?: string[];
+  signature?: string;
+  encryptedPayload?: string;
 }
 
 export interface Chat {
@@ -173,14 +180,51 @@ export interface Group {
   isGlobal?: boolean;
   isVerified?: boolean;
   version?: number;
-  bannedUsers: string[];
+  bannedUsers?: string[];
   bannedFromComments?: string[]; // List of UIDs banned from commenting
-  permissions: {
+  permissions?: {
     member: GroupPermissions;
     admin: GroupPermissions;
   };
   createdTitles?: UserTitle[]; // Global titles created by the owner
 }
+
+export const DEFAULT_GLOBAL_CHANNEL: Group = {
+  id: 'global_channel',
+  name: 'Ордина Глобал 🌐',
+  description: 'Главный канал мессенджера Ордина. Общайтесь, задавайте вопросы и делитесь идеями!',
+  ownerId: 'le6qifgHZsV99qTBzSe3VZpYVlE2',
+  createdAt: '2026-09-17T00:00:00.000Z',
+  photoURL: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=80',
+  type: 'channel',
+  isPublic: true,
+  isGlobal: true,
+  isVerified: true,
+  members: ['le6qifgHZsV99qTBzSe3VZpYVlE2'],
+  memberRoles: { 'le6qifgHZsV99qTBzSe3VZpYVlE2': 'owner' },
+  version: 1,
+  bannedUsers: [],
+  permissions: {
+    member: {
+      canSendMessages: true,
+      canSendMedia: true,
+      canAddMembers: true,
+      canDeleteForEveryone: false,
+      canBanUsers: false,
+      canChangeProfile: false,
+      canComment: true
+    },
+    admin: {
+      canSendMessages: true,
+      canSendMedia: true,
+      canAddMembers: true,
+      canDeleteForEveryone: true,
+      canBanUsers: true,
+      canChangeProfile: true,
+      canComment: true
+    }
+  }
+};
 
 export interface MeshNode {
   id: string;
@@ -190,10 +234,15 @@ export interface MeshNode {
   y?: number;
   lat?: number;
   lng?: number;
-  isOnline: boolean;
+  isOnline?: boolean;
+  status?: 'active' | 'relaying' | 'offline';
   rssi?: number;
   ping?: number;
   hops?: number;
+  lastSeen?: string;
+  publicKey?: string;
+  address?: string;
+  capabilities?: ('relay' | 'storage' | 'gateway')[];
   nodeType?: 'peer' | 'relay' | 'bot' | 'me';
   transportType?: 'ble' | 'webrtc' | 'websocket' | 'broadcast_channel' | 'hybrid_bridge';
   estimatedModemRangeMeters?: number;

@@ -167,7 +167,23 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
     return { rows: [], rowCount: 1 };
   }
 
-  if (normalized.includes('DELETE FROM messages WHERE "chatId" =')) {
+  if (normalized.includes('DELETE FROM messages WHERE ("senderId" =') || normalized.includes('DELETE FROM messages WHERE (senderId =')) {
+    const u1 = params[0];
+    const u2 = params[1];
+    Object.keys(localDb.messages).forEach(id => {
+      try {
+        const m = localDb.messages[id];
+        const parsed = JSON.parse(m.data);
+        if (!parsed.groupId && ((parsed.senderId === u1 && parsed.receiverId === u2) || (parsed.senderId === u2 && parsed.receiverId === u1))) {
+          delete localDb.messages[id];
+        }
+      } catch (e) {}
+    });
+    saveLocalDb();
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (normalized.includes('DELETE FROM messages WHERE "chatId" =') || normalized.includes('DELETE FROM messages WHERE chatId =')) {
     const chatId = params[0];
     Object.keys(localDb.messages).forEach(id => {
       if (localDb.messages[id].chatId === chatId) {
@@ -180,8 +196,10 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
 
   if (normalized.includes('DELETE FROM groups WHERE id =')) {
     const id = params[0];
-    delete localDb.groups[id];
-    saveLocalDb();
+    if (id !== 'global_channel') {
+      delete localDb.groups[id];
+      saveLocalDb();
+    }
     return { rows: [], rowCount: 1 };
   }
 
@@ -346,7 +364,7 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
   if (normalized.includes('DELETE FROM groups WHERE data LIKE')) {
     const p1 = params[0]?.replace(/%/g, '');
     Object.keys(localDb.groups).forEach(id => {
-      if (localDb.groups[id].data.includes(p1)) {
+      if (id !== 'global_channel' && localDb.groups[id].data.includes(p1)) {
         delete localDb.groups[id];
       }
     });
@@ -2207,8 +2225,14 @@ io.on('connection', (socket) => {
 
     socket.on('chat:delete_everyone', async (data: { user1: string, user2: string }) => {
       try {
+        if (!data || !data.user1 || !data.user2) return;
+        if (data.user1 === 'global_channel' || data.user2 === 'global_channel') {
+          console.warn('[ChatDelete] Attempted to delete global channel, ignoring');
+          return;
+        }
+
         const historyId = data.user1 === data.user2 ? data.user1 : [data.user1, data.user2].sort().join('_');
-        await pool.query('DELETE FROM messages WHERE "chatId" = $1 OR ("chatId" = $2 AND "groupId" IS NULL)', [historyId, data.user1]);
+        await pool.query('DELETE FROM messages WHERE ("chatId" = $1 AND "groupId" IS NULL)', [historyId]);
         await pool.query('DELETE FROM messages WHERE ("senderId" = $1 AND "receiverId" = $2) OR ("senderId" = $2 AND "receiverId" = $1)', [data.user1, data.user2]);
         
         for (const [u1, u2] of [[data.user1, data.user2], [data.user2, data.user1]]) {
@@ -2216,6 +2240,9 @@ io.on('connection', (socket) => {
            if (rows[0]) {
              let uData = JSON.parse(rows[0].data);
              uData.activeChats = (uData.activeChats || []).filter((id: any) => id !== u2);
+             if (!uData.activeChats.includes('global_channel')) {
+               uData.activeChats.unshift('global_channel');
+             }
              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(uData), u1]);
              io.to(`user:${u1}`).emit('auth:synced', uData);
              io.emit('user:updated', uData);
@@ -2226,17 +2253,21 @@ io.on('connection', (socket) => {
         io.to(`user:${data.user2}`).emit('chat:deleted_everyone', data.user1);
         io.emit('chat:purged', { user1: data.user1, user2: data.user2 });
       } catch (e) {
-        console.error(e);
+        console.error('Error in chat:delete_everyone:', e);
       }
     });
 
     socket.on('group:delete', async (data: { id: string }) => {
       try {
+        if (!data || !data.id || data.id === 'global_channel') {
+          console.warn('[GroupDelete] Cannot delete global channel or empty ID');
+          return;
+        }
         await pool.query('DELETE FROM messages WHERE "chatId" = $1', [data.id]);
         await pool.query('DELETE FROM groups WHERE id = $1', [data.id]);
         io.emit('group:deleted', data.id);
       } catch (e) {
-        console.error(e);
+        console.error('Error in group:delete:', e);
       }
     });
 
@@ -2561,13 +2592,31 @@ io.on('connection', (socket) => {
 
     socket.on('groups:fetch', async () => {
       const { rows } = await pool.query('SELECT data FROM groups');
-      const groups = rows.map((r: any) => JSON.parse(r.data));
+      let groups = rows.map((r: any) => JSON.parse(r.data));
+      if (!groups.some((g: any) => g.id === 'global_channel')) {
+        const globalData = {
+          id: 'global_channel',
+          name: 'Ордина Глобал 🌐',
+          description: 'Главный канал мессенджера Ордина. Общайтесь, задавайте вопросы и делитесь идеями!',
+          ownerId: 'le6qifgHZsV99qTBzSe3VZpYVlE2',
+          createdAt: new Date().toISOString(),
+          photoURL: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=80',
+          type: 'channel',
+          isPublic: true,
+          isGlobal: true,
+          isVerified: true,
+          members: ['le6qifgHZsV99qTBzSe3VZpYVlE2'],
+          memberRoles: { 'le6qifgHZsV99qTBzSe3VZpYVlE2': 'owner' }
+        };
+        groups.unshift(globalData);
+        await pool.query('INSERT INTO groups (id, data) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING', ['global_channel', JSON.stringify(globalData)]).catch(() => {});
+      }
       socket.emit('groups:list', groups);
     });
 
     socket.on('user:delete_all_data', async (uid: string) => {
       await pool.query('DELETE FROM messages WHERE data LIKE $1 OR data LIKE $2', [`%${uid}%`, `%${uid}%`]);
-      await pool.query('DELETE FROM groups WHERE data LIKE $1', [`%${uid}%`]);
+      await pool.query('DELETE FROM groups WHERE data LIKE $1 AND id != $2', [`%${uid}%`, 'global_channel']);
       await pool.query('DELETE FROM users WHERE uid = $1', [uid]);
       io.emit('user:deleted_completely', uid);
     });
@@ -2576,6 +2625,27 @@ io.on('connection', (socket) => {
     socket.on('p2p:signal', (data: { type: string; callerUid: string; targetUid: string; offer?: any; answer?: any; candidate?: any }) => {
       if (data && data.targetUid) {
         io.to(`user:${data.targetUid}`).emit('p2p:signal', data);
+      }
+    });
+
+    // Mesh Network WebRTC DataChannel Signaling Relay
+    socket.on('mesh:signal', (data: { to: string; signal: any; from?: string }) => {
+      if (data && data.to) {
+        const fromUid = data.from || (socket as any).uid;
+        io.to(`user:${data.to}`).emit('mesh:signal', { from: fromUid, signal: data.signal });
+      }
+    });
+
+    // Mesh Gateway Broadcast to Server
+    socket.on('chat:broadcast', async (msg: any) => {
+      if (!msg || !msg.id) return;
+      try {
+        const query = 'INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET data = $3';
+        const historyId = msg.groupId || msg.chatId || 'global_channel';
+        await pool.query(query, [msg.id, historyId, JSON.stringify(msg), msg.createdAt || new Date().toISOString()]);
+        io.emit('message:received', msg);
+      } catch (err) {
+        console.error('Error handling chat:broadcast:', err);
       }
     });
 

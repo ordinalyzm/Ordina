@@ -33,7 +33,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { QRCodeSVG } from 'qrcode.react';
-import { UserProfile, Message, Group, MeshNode, GroupPermissions, StickerPack, UserDevice } from './types';
+import { UserProfile, Message, Group, MeshNode, GroupPermissions, StickerPack, UserDevice, DEFAULT_GLOBAL_CHANNEL } from './types';
 import { 
   saveMessage,
   updateMessageStatus,
@@ -47,7 +47,10 @@ import {
 } from './utils/localCache';
 import { bleMesh } from './services/bleMesh';
 import { initializeVersionAndSyncState } from './utils/versionManager';
+import { normalizeIncomingMeshMessage } from './utils/messageAdapter';
 import { Radar } from './components/Radar';
+import { MeshRadar } from './components/MeshRadar';
+import { MeshManager } from './utils/meshManager';
 import { 
   getRelayPath, 
   findNextHop, 
@@ -367,8 +370,15 @@ function AppContent() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [groups, setGroups] = useState<Group[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem('ordina_cached_groups') || '[]');
-    } catch { return []; }
+      const cached = JSON.parse(localStorage.getItem('ordina_cached_groups') || '[]');
+      if (Array.isArray(cached) && cached.length > 0) {
+        if (!cached.some((g: any) => g.id === 'global_channel')) {
+          return [DEFAULT_GLOBAL_CHANNEL, ...cached];
+        }
+        return cached;
+      }
+      return [DEFAULT_GLOBAL_CHANNEL];
+    } catch { return [DEFAULT_GLOBAL_CHANNEL]; }
   });
   const [users, setUsers] = useState<UserProfile[]>(() => {
     try {
@@ -473,6 +483,7 @@ function AppContent() {
   };
 
   const [showRadar, setShowRadar] = useState(false);
+  const [radarViewTab, setRadarViewTab] = useState<'mesh' | 'geo'>('mesh');
   const [showChatSearch, setShowChatSearch] = useState(false);
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [chatSearchFilterUser, setChatSearchFilterUser] = useState<string | null>(null);
@@ -484,7 +495,22 @@ function AppContent() {
   const [createChatName, setCreateChatName] = useState('');
   
   const [isAdminState, setIsAdminState] = useState(false);
-  const isGlobalAdmin = isAdminState;
+  const isGlobalAdmin = useMemo(() => {
+    if (!user) return false;
+    if (
+      user.uid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' ||
+      user.email === 'ordinalyzm25@gmail.com' ||
+      profile?.username === 'MEGAKPYIIIuTeJIb' ||
+      profile?.displayName === 'MEGAKPYIIIuTeJIb'
+    ) {
+      return true;
+    }
+    const global = groups.find(g => g.id === 'global_channel');
+    if (global && (global.ownerId === user.uid || global.memberRoles?.[user.uid] === 'owner' || global.memberRoles?.[user.uid] === 'admin')) {
+      return true;
+    }
+    return isAdminState;
+  }, [user, profile?.username, profile?.displayName, groups, isAdminState]);
 
   const [isAdminAssessed, setIsAdminAssessed] = useState(false);
   
@@ -741,6 +767,14 @@ function AppContent() {
       } catch (e) {
         console.error('Error initiating delta sync:', e);
       }
+
+      // Always fetch groups, users, stickers on connect for resilience
+      newSocket.emit('users:fetch');
+      newSocket.emit('groups:fetch');
+      newSocket.emit('stickers:list');
+      if (user?.uid) {
+        newSocket.emit('bots:list', user.uid);
+      }
     };
 
     if (newSocket.connected) {
@@ -982,8 +1016,12 @@ function AppContent() {
     });
 
     newSocket.on('groups:list', (gList: Group[]) => {
-      setGroups(gList);
-      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(gList)); } catch (e) {}
+      let finalGroups = Array.isArray(gList) ? [...gList] : [];
+      if (!finalGroups.some(g => g.id === 'global_channel')) {
+        finalGroups.unshift(DEFAULT_GLOBAL_CHANNEL);
+      }
+      setGroups(finalGroups);
+      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(finalGroups)); } catch (e) {}
     });
 
     newSocket.on('group:updated', (updatedGroup: Group) => {
@@ -991,6 +1029,9 @@ function AppContent() {
         const index = prev.findIndex(g => g.id === updatedGroup.id);
         const next = index === -1 ? [...prev, updatedGroup] : [...prev];
         if (index !== -1) next[index] = updatedGroup;
+        if (!next.some(g => g.id === 'global_channel')) {
+          next.unshift(DEFAULT_GLOBAL_CHANNEL);
+        }
         try { localStorage.setItem('ordina_cached_groups', JSON.stringify(next)); } catch (e) {}
         return next;
       });
@@ -1045,8 +1086,20 @@ function AppContent() {
       // Use functional update to avoid stale profile closure
       setProfile(prev => {
         if (prev?.uid === updatedUser.uid) {
-          // If the server tells us we have new data, we MUST accept it
-          return { ...prev, ...updatedUser };
+          const mergedActive = Array.from(new Set([
+            'global_channel',
+            ...(updatedUser.activeChats || []),
+            ...(prev.activeChats || [])
+          ]));
+          return {
+            ...prev,
+            ...updatedUser,
+            displayName: updatedUser.displayName || prev.displayName || 'Пользователь',
+            photoURL: updatedUser.photoURL || prev.photoURL || '',
+            username: updatedUser.username || prev.username || '',
+            bio: updatedUser.bio || prev.bio || '',
+            activeChats: mergedActive
+          };
         }
         return prev;
       });
@@ -1054,7 +1107,23 @@ function AppContent() {
 
     newSocket.on('auth:synced', (syncedProfile: UserProfile) => {
       console.log('Profile synced:', syncedProfile.uid);
-      setProfile(syncedProfile);
+      setProfile(prev => {
+        if (!prev) return syncedProfile;
+        const mergedActive = Array.from(new Set([
+          'global_channel',
+          ...(syncedProfile.activeChats || []),
+          ...(prev.activeChats || [])
+        ]));
+        return {
+          ...prev,
+          ...syncedProfile,
+          displayName: syncedProfile.displayName || prev.displayName || 'Пользователь',
+          photoURL: syncedProfile.photoURL || prev.photoURL || '',
+          username: syncedProfile.username || prev.username || '',
+          bio: syncedProfile.bio || prev.bio || '',
+          activeChats: mergedActive
+        };
+      });
 
       // Weekly multi-device usage check
       try {
@@ -1114,9 +1183,9 @@ function AppContent() {
     });
 
     newSocket.on('chat:deleted_everyone', (otherUserId: string) => {
-      clearChatLocalCache(otherUserId);
+      clearChatLocalCache(otherUserId, user?.uid);
       if (user?.uid) {
-        clearChatLocalCache([user.uid, otherUserId].sort().join('_'));
+        clearChatLocalCache([user.uid, otherUserId].sort().join('_'), user.uid);
       }
       setMessages(prev => prev.filter(m => !(m.senderId === otherUserId && m.receiverId === user?.uid) && !(m.senderId === user?.uid && m.receiverId === otherUserId)));
       setRecentPreviews(prev => {
@@ -1124,7 +1193,14 @@ function AppContent() {
         delete next[otherUserId];
         return next;
       });
-      setProfile(prev => prev ? { ...prev, activeChats: prev.activeChats?.filter(id => id !== otherUserId) } : prev);
+      setProfile(prev => {
+        if (!prev) return prev;
+        const newActive = (prev.activeChats || []).filter(id => id !== otherUserId);
+        if (!newActive.includes('global_channel')) {
+          newActive.unshift('global_channel');
+        }
+        return { ...prev, activeChats: newActive };
+      });
       if (selectedChatRef.current?.id === otherUserId) {
         setSelectedChat(null);
         setMobileView('list');
@@ -1134,13 +1210,21 @@ function AppContent() {
     newSocket.on('chat:purged', (data: { user1: string, user2: string }) => {
       if (user?.uid === data.user1 || user?.uid === data.user2) {
         const otherId = user.uid === data.user1 ? data.user2 : data.user1;
-        clearChatLocalCache(otherId);
-        clearChatLocalCache([data.user1, data.user2].sort().join('_'));
+        clearChatLocalCache(otherId, user.uid);
+        clearChatLocalCache([data.user1, data.user2].sort().join('_'), user.uid);
         setMessages(prev => prev.filter(m => !(m.senderId === otherId && m.receiverId === user.uid) && !(m.senderId === user.uid && m.receiverId === otherId)));
         setRecentPreviews(prev => {
           const next = { ...prev };
           delete next[otherId];
           return next;
+        });
+        setProfile(prev => {
+          if (!prev) return prev;
+          const newActive = (prev.activeChats || []).filter(id => id !== otherId);
+          if (!newActive.includes('global_channel')) {
+            newActive.unshift('global_channel');
+          }
+          return { ...prev, activeChats: newActive };
         });
         if (selectedChatRef.current?.id === otherId) {
           setSelectedChat(null);
@@ -1150,15 +1234,29 @@ function AppContent() {
     });
 
     newSocket.on('group:deleted', (groupId: string) => {
-      clearChatLocalCache(groupId);
-      setGroups(prev => prev.filter(g => g.id !== groupId));
+      if (groupId === 'global_channel') return;
+      clearChatLocalCache(groupId, user?.uid);
+      setGroups(prev => {
+        const filtered = prev.filter(g => g.id !== groupId);
+        if (!filtered.some(g => g.id === 'global_channel')) {
+          return [DEFAULT_GLOBAL_CHANNEL, ...filtered];
+        }
+        return filtered;
+      });
       setMessages(prev => prev.filter(m => m.groupId !== groupId));
       setRecentPreviews(prev => {
         const next = { ...prev };
         delete next[groupId];
         return next;
       });
-      setProfile(prev => prev ? { ...prev, activeChats: prev.activeChats?.filter(id => id !== groupId) } : prev);
+      setProfile(prev => {
+        if (!prev) return prev;
+        const newActive = (prev.activeChats || []).filter(id => id !== groupId);
+        if (!newActive.includes('global_channel')) {
+          newActive.unshift('global_channel');
+        }
+        return { ...prev, activeChats: newActive };
+      });
       if (selectedChatRef.current?.id === groupId) {
         setSelectedChat(null);
         setMobileView('list');
@@ -1178,11 +1276,22 @@ function AppContent() {
     });
 
     newSocket.on('groups:list', (groupsList: Group[]) => {
-      setGroups(groupsList);
+      let finalGroups = Array.isArray(groupsList) ? [...groupsList] : [];
+      if (!finalGroups.some(g => g.id === 'global_channel')) {
+        finalGroups.unshift(DEFAULT_GLOBAL_CHANNEL);
+      }
+      setGroups(finalGroups);
+      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(finalGroups)); } catch (e) {}
     });
 
     newSocket.on('group:created', (newGroup: Group) => {
-      setGroups(prev => [...prev, newGroup]);
+      setGroups(prev => {
+        const next = [...prev, newGroup];
+        if (!next.some(g => g.id === 'global_channel')) {
+          next.unshift(DEFAULT_GLOBAL_CHANNEL);
+        }
+        return next;
+      });
     });
 
     return () => {
@@ -1216,15 +1325,21 @@ function AppContent() {
   }, [groups]);
 
   useEffect(() => {
-    if (!user || !groups.length) return;
+    if (!user) return;
+    const isSpecialOwner = 
+      user.uid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' ||
+      user.email === 'ordinalyzm25@gmail.com' ||
+      profile?.username === 'MEGAKPYIIIuTeJIb' ||
+      profile?.displayName === 'MEGAKPYIIIuTeJIb';
+
     const global = groups.find(g => g.id === 'global_channel');
-    if (global && global.ownerId === user.uid) {
+    if (isSpecialOwner || (global && (global.ownerId === user.uid || global.memberRoles?.[user.uid] === 'owner' || global.memberRoles?.[user.uid] === 'admin'))) {
       setIsAdminState(true);
     } else {
       setIsAdminState(false);
     }
     setIsAdminAssessed(true);
-  }, [user, groups]);
+  }, [user, profile?.username, profile?.displayName, groups]);
   useEffect(() => {
     log(`RADAR_VISIBILITY_CHANGED: ${showRadar}`);
   }, [showRadar]);
@@ -1237,16 +1352,23 @@ function AppContent() {
   useEffect(() => {
     if (!user?.uid) return;
 
-    const handleIncomingChatMessage = (msg: Message, transportLabel?: string) => {
-      if (!msg || msg.senderId === user.uid) return;
+    const handleIncomingChatMessage = (rawMsg: any, transportLabel?: string) => {
+      if (!rawMsg || rawMsg.senderId === user.uid) return;
+
+      const msg = normalizeIncomingMeshMessage(rawMsg, user.uid);
 
       // Anti-DDoS & Deduplication check
       if (deduplicationEngine.isDuplicateOrFlood(msg.id, msg.senderId)) {
         return;
       }
 
-      const chatId = msg.groupId || msg.senderId;
-      const confirmedMsg: Message = { ...msg, status: 'delivered' };
+      let chatId = msg.groupId || msg.chatId;
+      if (!chatId && msg.senderId && msg.receiverId) {
+        chatId = [msg.senderId, msg.receiverId].sort().join('_');
+      } else if (!chatId) {
+        chatId = msg.senderId;
+      }
+      const confirmedMsg: Message = { ...msg, status: 'delivered', deliveryStatus: 'delivered' };
 
       // 1. Save to local weekly cache
       saveMessageToLocalCache(chatId, confirmedMsg);
@@ -1262,7 +1384,11 @@ function AppContent() {
 
       // 4. Update messages in state if viewing this chat
       const currentChat = selectedChatRef.current;
-      if (currentChat?.id === chatId || (currentChat?.type === 'user' && currentChat?.id === msg.senderId)) {
+      if (
+        (currentChat?.id === chatId) || 
+        (currentChat?.type === 'user' && (currentChat?.id === msg.senderId || currentChat?.id === msg.receiverId)) ||
+        (currentChat?.id === 'global_channel' && msg.groupId === 'global_channel')
+      ) {
         setMessages(prev => {
           const existingIdx = prev.findIndex(m => m.id === msg.id);
           if (existingIdx !== -1) {
@@ -1274,6 +1400,14 @@ function AppContent() {
         });
       }
     };
+
+    // 0. Mesh Network (WebRTC DataChannel, Epidemic Gossip & E2EE)
+    const meshInstance = MeshManager.getInstance();
+    meshInstance.init({ uid: user.uid, displayName: profile?.displayName || user.displayName }, socket || undefined).catch(() => {});
+    const onMeshMessage = (msg: Message) => {
+      handleIncomingChatMessage(msg, 'WebRTC Mesh');
+    };
+    meshInstance.on('messageReceived', onMeshMessage);
 
     // 1. Tier 1: Listen for Direct WebRTC P2P DataChannel Packets
     const unsubP2P = p2pManager.onMessage((senderUid, data) => {
@@ -1370,6 +1504,7 @@ function AppContent() {
     });
 
     return () => {
+      meshInstance.off('messageReceived', onMeshMessage);
       unsubP2P();
       unsubBLE();
       unsubBLEService();
@@ -4032,7 +4167,8 @@ function AppContent() {
   };
 
   const purgeChatDataLocally = (chatId: string) => {
-    clearChatLocalCache(chatId);
+    if (chatId === 'global_channel') return;
+    clearChatLocalCache(chatId, user?.uid);
     setMessages(prev => prev.filter(m => 
       m.groupId !== chatId && 
       !( (m.senderId === user?.uid && m.receiverId === chatId) || (m.senderId === chatId && m.receiverId === user?.uid) )
@@ -4047,6 +4183,11 @@ function AppContent() {
   const deleteChatForMe = async () => {
     if (!user || !selectedChat) return;
     const chatId = selectedChat.id;
+    if (chatId === 'global_channel') {
+      addToast('Главный канал "Ордина Глобал" нельзя покинуть или удалить', 'info');
+      setShowDeleteModal(false);
+      return;
+    }
     
     purgeChatDataLocally(chatId);
 
@@ -4075,6 +4216,10 @@ function AppContent() {
 
   const deleteChatForEveryoneById = async (chatId: string, type: string) => {
     if (!user) return;
+    if (chatId === 'global_channel') {
+      addToast('Главный канал "Ордина Глобал" нельзя удалить', 'info');
+      return;
+    }
     purgeChatDataLocally(chatId);
     if (type !== 'user') {
       const group = groups.find(g => g.id === chatId);
@@ -4092,6 +4237,10 @@ function AppContent() {
 
   const deleteChatForMeById = async (chatId: string, type: string) => {
     if (!user) return;
+    if (chatId === 'global_channel') {
+      addToast('Главный канал "Ордина Глобал" нельзя удалить', 'info');
+      return;
+    }
     purgeChatDataLocally(chatId);
     if (type !== 'user') {
         socket?.emit('group:leave', { id: chatId, uid: user.uid });
@@ -4158,6 +4307,11 @@ function AppContent() {
   const deleteChatForEveryone = async () => {
     if (!user || !selectedChat) return;
     const chatId = selectedChat.id;
+    if (chatId === 'global_channel') {
+      addToast('Главный канал "Ордина Глобал" нельзя удалить', 'info');
+      setShowDeleteModal(false);
+      return;
+    }
     purgeChatDataLocally(chatId);
     
     if (selectedChat.type !== 'user') {
@@ -7721,12 +7875,12 @@ function AppContent() {
                           );
                         })()}
 
-                        {msg.text && (msg.type !== 'text' || !msg.isEncrypted) && msg.type !== 'audio' && (
+                        {(msg.text || msg.content) && (msg.type !== 'text' || !msg.isEncrypted) && msg.type !== 'audio' && (
                           <p className={cn(
                             "text-sm leading-relaxed mb-2 whitespace-pre-wrap break-words",
                             msg.type === 'text' ? "" : "opacity-90"
                           )}>
-                            {formatMessageText(msg.text, showChatSearch ? chatSearchQuery : undefined)}
+                            {formatMessageText(msg.text || msg.content || '', showChatSearch ? chatSearchQuery : undefined)}
                           </p>
                         )}
 
@@ -8881,130 +9035,169 @@ function AppContent() {
             window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[620px] max-w-[95vw] border-l border-slate-800 shadow-2xl pt-0 pb-0"
           )}
         >
-          <div className="h-16 border-b border-white/10 flex items-center justify-between px-6 bg-slate-900 text-white shrink-0">
+          {/* Header & Tabs */}
+          <div className="h-16 border-b border-white/10 flex items-center justify-between px-4 sm:px-6 bg-slate-900 text-white shrink-0">
             <div className="flex items-center gap-3">
               <button 
                 onClick={() => {
                   setShowRadar(false);
                   setMobileView('list');
                 }} 
-                className="p-3 pl-4 -ml-3 rounded-r-2xl rounded-l-md hover:bg-white/10 active:bg-white/20 transition-all flex items-center gap-1 active:scale-95 text-white"
+                className="p-3 pl-3 -ml-2 rounded-xl hover:bg-white/10 active:bg-white/20 transition-all flex items-center gap-1 active:scale-95 text-white"
                 title="Назад"
               >
                 <ArrowLeft size={22} />
               </button>
-              <h2 className="font-bold tracking-tight">Радар ({profile?.displayName || 'User'})</h2>
+              <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button
+                  onClick={() => setRadarViewTab('mesh')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5",
+                    radarViewTab === 'mesh' ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
+                  )}
+                >
+                  <Radio size={14} /> P2P Mesh
+                </button>
+                <button
+                  onClick={() => setRadarViewTab('geo')}
+                  className={cn(
+                    "px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5",
+                    radarViewTab === 'geo' ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
+                  )}
+                >
+                  <RadarIcon size={14} /> Гео-Радар
+                </button>
+              </div>
             </div>
-              <button 
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowSettings(true);
-                }}
-                className="p-3 hover:bg-white/10 rounded-xl transition-colors active:scale-95"
-                title="Настройки"
-              >
-                <Settings size={22} />
-              </button>
-          </div>
-          
-          <div className="p-6 bg-slate-900/50 border-b border-white/5 flex flex-col gap-3">
             <button 
-              onClick={() => {
-                const nextState = !isRadarActive;
-                setIsRadarActive(nextState);
-                if (nextState) {
-                  if ('geolocation' in navigator) {
-                    navigator.geolocation.getCurrentPosition(
-                      (pos) => {
-                        addToast(`Геолокация определена: ${pos.coords.latitude.toFixed(3)}, ${pos.coords.longitude.toFixed(3)}`, 'success');
-                      },
-                      (err) => {
-                        console.warn('Geolocation denied:', err);
-                        addToast('Доступ к геолокации отклонен. Открываем настройки...', 'error');
-                        openAppSettings();
-                      },
-                      { enableHighAccuracy: true, timeout: 8000 }
-                    );
-                  } else {
-                    addToast('Геолокация не поддерживается устройством', 'error');
-                  }
-                }
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowSettings(true);
               }}
-              className={cn(
-                "w-full py-4 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all shadow-lg border",
-                isRadarActive 
-                  ? "bg-red-500/20 text-red-400 border-red-500/30 hover:bg-red-500/30" 
-                  : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30"
-              )}
+              className="p-2.5 hover:bg-white/10 rounded-xl transition-colors active:scale-95"
+              title="Настройки"
             >
-              <RadarIcon size={20} className={cn(isRadarActive && "animate-pulse")} />
-              {isRadarActive ? "ОСТАНОВИТЬ СКАНИРОВАНИЕ (Гео)" : "ЗАПУСТИТЬ СКАНИРОВАНИЕ (Гео)"}
-            </button>
-
-            <button 
-              onClick={() => setShowMeshInspectorModal(true)}
-              className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30"
-            >
-              <Radio size={18} />
-              ИНСПЕКТОР И ДИАГНОСТИКА MESH
+              <Settings size={20} />
             </button>
           </div>
           
-          <div className="flex-1 relative bg-[#020617] overflow-hidden">
-            {(() => {
-              try {
-                if (!isRadarActive) {
-                  return (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#020617] text-slate-500 gap-6 p-8 text-center">
-                      <div className="relative">
-                        <div className="w-32 h-32 rounded-full bg-slate-900/50 flex items-center justify-center border-2 border-dashed border-slate-800">
-                          <RadarIcon size={64} className="text-slate-700" />
-                        </div>
-                        <div className="absolute -inset-4 border border-blue-500/10 rounded-full animate-[ping_4s_linear_infinite]" />
-                      </div>
-                      <div className="space-y-2">
-                        <p className="text-xl font-bold text-slate-300 uppercase tracking-[0.2em]">MESH_OFFLINE</p>
-                        <p className="text-[10px] text-slate-500 font-mono">Активируйте сканирование для поиска узлов</p>
-                      </div>
-                    </div>
-                  );
-                }
-                
-                return (
-                  <div className="w-full h-full relative bg-[#020617]">
-                    <Radar 
-                      nodes={radarNodes}
-                      currentUserNodeId={user?.uid || profile?.uid || 'local_me'}
-                      onNodeClick={(node) => {
-                        selectChat({ type: 'user', id: node.id });
-                        setShowRadar(false);
-                      }}
-                    />
-                  </div>
-                );
-              } catch (e) {
-                return <div className="p-8 text-red-400 text-xs font-mono bg-[#020617] h-full flex items-center justify-center text-center">
-                  CRITICAL_UI_ERROR:<br/>{String(e)}
-                </div>;
-              }
-            })()}
-          </div>
-
-          <div className="p-6 bg-slate-900 border-t border-white/5 shrink-0">
-            <h3 className="font-bold text-blue-400 text-[10px] mb-3 uppercase tracking-widest flex items-center gap-2">
-              <Shield size={12} /> СТАТУС ВАШЕГО УЗЛА (NODE_ID: {user?.uid?.substring(0, 8)})
-            </h3>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="bg-black/40 p-3 rounded-xl border border-white/5">
-                <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Соседи (Direct)</p>
-                <p className="text-lg font-mono text-emerald-400">{users.filter(u => u.status === 'online').length}</p>
-              </div>
-              <div className="bg-black/40 p-3 rounded-xl border border-white/5">
-                <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Режим работы</p>
-                <p className="text-xs font-bold text-blue-400 uppercase">{isRadarActive ? 'Активен' : 'Спящий'}</p>
-              </div>
+          {radarViewTab === 'mesh' ? (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <MeshRadar
+                currentUser={{
+                  uid: user?.uid || profile?.uid || 'me',
+                  displayName: profile?.displayName || user?.displayName || 'User'
+                }}
+                socket={socket}
+                onClose={() => {
+                  setShowRadar(false);
+                  setMobileView('list');
+                }}
+                onOpenInspector={() => setShowMeshInspectorModal(true)}
+              />
             </div>
-          </div>
+          ) : (
+            <>
+              <div className="p-6 bg-slate-900/50 border-b border-white/5 flex flex-col gap-3">
+                <button 
+                  onClick={() => {
+                    const nextState = !isRadarActive;
+                    setIsRadarActive(nextState);
+                    if (nextState) {
+                      if ('geolocation' in navigator) {
+                        navigator.geolocation.getCurrentPosition(
+                          (pos) => {
+                            addToast(`Геолокация определена: ${pos.coords.latitude.toFixed(3)}, ${pos.coords.longitude.toFixed(3)}`, 'success');
+                          },
+                          (err) => {
+                            console.warn('Geolocation denied:', err);
+                            addToast('Доступ к геолокации отклонен. Открываем настройки...', 'error');
+                            openAppSettings();
+                          },
+                          { enableHighAccuracy: true, timeout: 8000 }
+                        );
+                      } else {
+                        addToast('Геолокация не поддерживается устройством', 'error');
+                      }
+                    }
+                  }}
+                  className={cn(
+                    "w-full py-4 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all shadow-lg border",
+                    isRadarActive 
+                      ? "bg-red-500/20 text-red-400 border-red-500/30 hover:bg-red-500/30" 
+                      : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30"
+                  )}
+                >
+                  <RadarIcon size={20} className={cn(isRadarActive && "animate-pulse")} />
+                  {isRadarActive ? "ОСТАНОВИТЬ СКАНИРОВАНИЕ (Гео)" : "ЗАПУСТИТЬ СКАНИРОВАНИЕ (Гео)"}
+                </button>
+
+                <button 
+                  onClick={() => setShowMeshInspectorModal(true)}
+                  className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30"
+                >
+                  <Radio size={18} />
+                  ИНСПЕКТОР И ДИАГНОСТИКА MESH
+                </button>
+              </div>
+              
+              <div className="flex-1 relative bg-[#020617] overflow-hidden">
+                {(() => {
+                  try {
+                    if (!isRadarActive) {
+                      return (
+                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#020617] text-slate-500 gap-6 p-8 text-center">
+                          <div className="relative">
+                            <div className="w-32 h-32 rounded-full bg-slate-900/50 flex items-center justify-center border-2 border-dashed border-slate-800">
+                              <RadarIcon size={64} className="text-slate-700" />
+                            </div>
+                            <div className="absolute -inset-4 border border-blue-500/10 rounded-full animate-[ping_4s_linear_infinite]" />
+                          </div>
+                          <div className="space-y-2">
+                            <p className="text-xl font-bold text-slate-300 uppercase tracking-[0.2em]">MESH_OFFLINE</p>
+                            <p className="text-[10px] text-slate-500 font-mono">Активируйте сканирование для поиска узлов</p>
+                          </div>
+                        </div>
+                      );
+                    }
+                    
+                    return (
+                      <div className="w-full h-full relative bg-[#020617]">
+                        <Radar 
+                          nodes={radarNodes}
+                          currentUserNodeId={user?.uid || profile?.uid || 'local_me'}
+                          onNodeClick={(node) => {
+                            selectChat({ type: 'user', id: node.id });
+                            setShowRadar(false);
+                          }}
+                        />
+                      </div>
+                    );
+                  } catch (e) {
+                    return <div className="p-8 text-red-400 text-xs font-mono bg-[#020617] h-full flex items-center justify-center text-center">
+                      CRITICAL_UI_ERROR:<br/>{String(e)}
+                    </div>;
+                  }
+                })()}
+              </div>
+
+              <div className="p-6 bg-slate-900 border-t border-white/5 shrink-0">
+                <h3 className="font-bold text-blue-400 text-[10px] mb-3 uppercase tracking-widest flex items-center gap-2">
+                  <Shield size={12} /> СТАТУС ВАШЕГО УЗЛА (NODE_ID: {user?.uid?.substring(0, 8)})
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-black/40 p-3 rounded-xl border border-white/5">
+                    <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Соседи (Direct)</p>
+                    <p className="text-lg font-mono text-emerald-400">{users.filter(u => u.status === 'online').length}</p>
+                  </div>
+                  <div className="bg-black/40 p-3 rounded-xl border border-white/5">
+                    <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Режим работы</p>
+                    <p className="text-xs font-bold text-blue-400 uppercase">{isRadarActive ? 'Активен' : 'Спящий'}</p>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
       <AnimatePresence>
