@@ -65,6 +65,9 @@ export interface UserProfile {
   activeTitleId?: string; // ID of the currently active title
   grantedTitles?: UserTitle[]; // Titles granted to this user
   isBot?: boolean;
+  isVerified?: boolean;
+  role?: string;
+  isAdmin?: boolean;
   usersList?: string[];
   devices?: UserDevice[]; // Registered devices tracking
 }
@@ -103,6 +106,7 @@ export interface Message {
   fileUrl?: string;
   fileName?: string;
   fileSize?: number;
+  audioDuration?: number;
   createdAt: string;
   updatedAt?: string;
   inlineButtons?: { text: string; callbackData?: string; url?: string }[][];

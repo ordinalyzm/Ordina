@@ -232,9 +232,23 @@ export class MeshRouter {
     };
   }
 
+  private lastNotifyTime: number = 0;
+  private notifyThrottleTimer: any = null;
+
   private notifyUI() {
-    const nodes = this.getNodes();
-    this.onNodesChangedCallbacks.forEach(cb => cb(nodes));
+    const now = Date.now();
+    if (now - this.lastNotifyTime > 800) {
+      this.lastNotifyTime = now;
+      const nodes = this.getNodes();
+      this.onNodesChangedCallbacks.forEach(cb => cb(nodes));
+    } else if (!this.notifyThrottleTimer) {
+      this.notifyThrottleTimer = setTimeout(() => {
+        this.notifyThrottleTimer = null;
+        this.lastNotifyTime = Date.now();
+        const nodes = this.getNodes();
+        this.onNodesChangedCallbacks.forEach(cb => cb(nodes));
+      }, Math.max(50, 800 - (now - this.lastNotifyTime)));
+    }
   }
 
   private notifyMessage(msg: Message) {

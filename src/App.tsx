@@ -1641,15 +1641,8 @@ function AppContent() {
       if (chatId && participant) {
         setShowRadar(false);
         setSelectedChat({
-          id: chatId,
-          type: 'direct',
-          participant: {
-            uid: participant.uid,
-            displayName: participant.displayName,
-            photoURL: '',
-            status: 'online',
-            lastSeen: new Date().toISOString()
-          }
+          id: participant.uid,
+          type: 'user'
         });
         setMobileView('chat');
       }
@@ -9309,15 +9302,8 @@ function AppContent() {
                 onOpenChat={(chatId, participant) => {
                   setShowRadar(false);
                   setSelectedChat({
-                    id: chatId,
-                    type: 'direct',
-                    participant: {
-                      uid: participant.uid,
-                      displayName: participant.displayName,
-                      photoURL: '',
-                      status: 'online',
-                      lastSeen: new Date().toISOString()
-                    }
+                    id: participant.uid,
+                    type: 'user'
                   });
                   setMobileView('chat');
                 }}

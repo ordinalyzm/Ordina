@@ -25,9 +25,11 @@ import { Message, UserProfile } from '../types';
 interface SavedNotebookModalProps {
   isOpen: boolean;
   onClose: () => void;
-  profile: UserProfile | null;
+  profile?: UserProfile | null;
+  user?: UserProfile | null | any;
   messages: Message[];
   onSelectMessage?: (messageId: string) => void;
+  onDeleteMessage?: (messageId: string) => void;
   onOpenEditProfile?: () => void;
 }
 
@@ -36,11 +38,14 @@ type TabType = 'media' | 'voice' | 'files' | 'audio' | 'links' | 'notes';
 export const SavedNotebookModal: React.FC<SavedNotebookModalProps> = ({
   isOpen,
   onClose,
-  profile,
+  profile: propProfile,
+  user,
   messages,
   onSelectMessage,
+  onDeleteMessage,
   onOpenEditProfile,
 }) => {
+  const profile = propProfile || user || null;
   const [activeTab, setActiveTab] = useState<TabType>('media');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);

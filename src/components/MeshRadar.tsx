@@ -29,9 +29,24 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
     if (!currentUser?.uid) return;
     router.init(currentUser.uid, currentUser.displayName || 'Пользователь', navigator.onLine);
     
+    let lastUpdate = 0;
+    let pendingTimer: any = null;
+
     const unsubscribeNodes = router.subscribe((updatedNodes) => {
-      setNodes(updatedNodes);
-      setMuleCount(router.getMuleCount());
+      const now = Date.now();
+      // Обновляем радар НЕ чаще, чем раз в 800 миллисекунд для устранения фризов (Choreographer)
+      if (now - lastUpdate > 800) {
+        lastUpdate = now;
+        setNodes(updatedNodes);
+        setMuleCount(router.getMuleCount());
+      } else if (!pendingTimer) {
+        pendingTimer = setTimeout(() => {
+          pendingTimer = null;
+          lastUpdate = Date.now();
+          setNodes(router.getNodes());
+          setMuleCount(router.getMuleCount());
+        }, Math.max(50, 800 - (now - lastUpdate)));
+      }
     });
 
     const unsubscribeMsg = router.onMessage((msg) => {
@@ -41,6 +56,7 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
     });
 
     return () => {
+      if (pendingTimer) clearTimeout(pendingTimer);
       unsubscribeNodes();
       unsubscribeMsg();
     };
