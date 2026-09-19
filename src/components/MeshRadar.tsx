@@ -91,9 +91,24 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
     };
   }, [currentUser?.uid, currentUser?.displayName, onMessageReceived]);
 
-  const handleOpenDirectChat = (peerId: string, peerName: string) => {
-    const chatId = [currentUser.uid, peerId].sort().join('_');
-    const participant = { uid: peerId, displayName: peerName };
+  const handleOpenDirectChat = async (peerId: string, peerName: string) => {
+    let targetUid = peerId;
+    // Если это MAC адрес — запрашиваем реальный UID собеседника по BLE рукопожатию
+    if (peerId.includes(':')) {
+      try {
+        setFeedback({ type: 'success', text: 'Связывание с узлом по радиоканалу BLE...' });
+        targetUid = await MeshTransport.resolvePeerUid(peerId);
+      } catch (e) {
+        console.error('UID resolve error:', e);
+      }
+    }
+
+    const chatId = [currentUser.uid, targetUid].sort().join('_');
+    const cleanName = peerName && !peerName.includes(peerId)
+      ? peerName
+      : `Узел [${targetUid.slice(0, 5)}]`;
+
+    const participant = { uid: targetUid, displayName: cleanName };
     if (onOpenChat) {
       onOpenChat(chatId, participant);
     } else {

@@ -48,6 +48,8 @@ import {
   clearChatLocalCache 
 } from './utils/localCache';
 import { bleMesh } from './services/bleMesh';
+import { Preferences } from '@capacitor/preferences';
+import { MeshTransport } from './utils/meshTransport';
 import { initializeVersionAndSyncState } from './utils/versionManager';
 import { normalizeIncomingMeshMessage } from './utils/messageAdapter';
 import { Radar } from './components/Radar';
@@ -421,11 +423,19 @@ function AppContent() {
   }, [selectedChat, socketConnected, user?.uid]);
 
   useEffect(() => {
+    const handleTierChanged = () => {
+      setActiveTransportTier(multiTierRouter.determineActiveTier());
+    };
+    window.addEventListener('ordina:tier_changed', handleTierChanged);
+
     const timer = setInterval(() => {
       setPresenceTicker(t => t + 1);
       setActiveTransportTier(multiTierRouter.determineActiveTier());
     }, 15000);
-    return () => clearInterval(timer);
+    return () => {
+      window.removeEventListener('ordina:tier_changed', handleTierChanged);
+      clearInterval(timer);
+    };
   }, []);
 
   const isUserOnline = (u: UserProfile | null | undefined): boolean => {
@@ -1358,6 +1368,17 @@ function AppContent() {
     }
   }, [socket, user, profile?.status, profile?.customStatus]);
 
+  // Sync last_auth_uid for Native Android BLE GATT server
+  useEffect(() => {
+    if (user?.uid) {
+      Preferences.set({ key: 'last_auth_uid', value: user.uid }).catch(() => {});
+      try {
+        localStorage.setItem('last_auth_uid', user.uid);
+      } catch (e) {}
+      MeshTransport.setMyUid(user.uid);
+    }
+  }, [user?.uid]);
+
   // Automatically sync users & groups cache to localStorage whenever they are added, updated, or removed
   useEffect(() => {
     if (users.length > 0) {
@@ -1645,14 +1666,75 @@ function AppContent() {
           type: 'user'
         });
         setMobileView('chat');
+
+        if (participant.uid) {
+          setProfile(prev => {
+            if (!prev) return prev;
+            const currentActive = prev.activeChats || [];
+            if (!currentActive.includes(participant.uid)) {
+              return {
+                ...prev,
+                activeChats: [...currentActive, participant.uid]
+              };
+            }
+            return prev;
+          });
+        }
+      }
+    };
+
+    const handleNewOfflineMessage = (e: any) => {
+      const newMsg: Message = e.detail;
+      if (!newMsg || !newMsg.id) return;
+
+      const peerId = newMsg.senderId !== user?.uid ? newMsg.senderId : newMsg.receiverId;
+
+      // Мгновенно выводим сообщение на экран активного чата
+      setSelectedChat(currentChat => {
+        if (
+          currentChat?.id &&
+          (currentChat.id === newMsg.senderId ||
+           currentChat.id === newMsg.receiverId ||
+           currentChat.id === newMsg.chatId ||
+           currentChat.id === newMsg.groupId)
+        ) {
+          setMessages(prev => {
+            if (prev.some(m => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg].sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            );
+          });
+        }
+        return currentChat;
+      });
+
+      if (peerId && !peerId.includes(':')) {
+        setProfile(prev => {
+          if (!prev) return prev;
+          const currentActive = prev.activeChats || [];
+          if (!currentActive.includes(peerId)) {
+            return {
+              ...prev,
+              activeChats: [...currentActive, peerId]
+            };
+          }
+          return prev;
+        });
+
+        setRecentPreviews(prev => ({
+          ...prev,
+          [peerId]: newMsg
+        }));
       }
     };
 
     window.addEventListener('mesh:gateway:send', handleGatewaySend);
     window.addEventListener('ordina:open_chat', handleOpenChatEvent);
+    window.addEventListener('ordinamsg:new', handleNewOfflineMessage);
     return () => {
       window.removeEventListener('mesh:gateway:send', handleGatewaySend);
       window.removeEventListener('ordina:open_chat', handleOpenChatEvent);
+      window.removeEventListener('ordinamsg:new', handleNewOfflineMessage);
     };
   }, [socket, socketConnected, user?.uid]);
 
@@ -3659,26 +3741,73 @@ function AppContent() {
       }
     }
 
-    // 7. Route via Socket or BLE Mesh
-    if (isOnline && socket?.connected) {
-      socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
-      playSentMessageSound();
-    } else {
-      // Offline: Broadcast via BLE Mesh Service
-      console.log('[Offline BLE Mesh] Broadcasting message:', finalMsg.id);
-      bleMesh.broadcast({
-        packetId: finalMsg.id,
-        type: 'data',
-        senderId: user.uid,
-        recipientId: chatId,
-        ttl: 5,
-        hopCount: 0,
-        relayPath: [user.uid],
-        message: finalMsg,
-        timestamp: Date.now()
+    // Clean packet for radio/wire transport
+    const blePacket = {
+      id: finalMsg.id,
+      senderId: user.uid,
+      receiverId: chatId,
+      chatId: chatId,
+      text: finalMsg.text || finalMsg.content || '',
+      content: finalMsg.text || finalMsg.content || '',
+      createdAt: finalMsg.createdAt,
+      type: finalMsg.type || 'text'
+    };
+
+    const connectionLevel = multiTierRouter.getConnectionLevel();
+    console.log(`[Dispatcher] Отправка сообщения в режиме: ${connectionLevel.toUpperCase()}`);
+
+    // 7. Route via 4 Connection Levels
+    // -------------------------------------------------------------
+    // РЕЖИМ 1: ТОЛЬКО BLE (ОФЛАЙН РАЦИЯ)
+    // -------------------------------------------------------------
+    if (connectionLevel === 'ble') {
+      console.log('[Dispatcher] Режим BLE: принудительно глушим интернет и шлем только по Bluetooth');
+      MeshTransport.sendMeshMessage(chatId, blePacket).catch(err => {
+        console.warn('[BLE Send] Ошибка передачи:', err);
       });
       playSentMessageSound();
-      addToast('📡 Сообщение передано в оффлайн BLE Mesh-сеть', 'info');
+      addToast('📡 Сообщение передано в радиоэфир (Режим BLE)', 'info');
+    }
+    // -------------------------------------------------------------
+    // РЕЖИМ 2: АВТО (ПАРАЛЛЕЛЬНАЯ ДУАЛЬНАЯ ОТПРАВКА: СЕРВЕР + BLE ОДНОВРЕМЕННО)
+    // -------------------------------------------------------------
+    else if (connectionLevel === 'auto') {
+      // 1. Если есть сокет сервера — пушим на сервер
+      if (isOnline && socket?.connected) {
+        socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
+      }
+      // 2. И ОДНОВРЕМЕННО передаем в эфир по BLE (для соседей без интернета!)
+      MeshTransport.sendMeshMessage(chatId, blePacket).catch(err => {
+        console.warn('[Dual-Send BLE] Ошибка радио-передачи:', err);
+      });
+
+      playSentMessageSound();
+      if (!isOnline) {
+        addToast('📡 Отправлено в офлайн BLE Mesh-сеть', 'info');
+      }
+    }
+    // -------------------------------------------------------------
+    // РЕЖИМ 3: P2P (Прямой WebRTC / Wi-Fi Hotspot / BLE)
+    // -------------------------------------------------------------
+    else if (connectionLevel === 'p2p') {
+      p2pManager.sendDirectP2P(chatId, finalMsg);
+      if (isOnline && socket?.connected) {
+        socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
+      }
+      MeshTransport.sendMeshMessage(chatId, blePacket).catch(() => {});
+      playSentMessageSound();
+    }
+    // -------------------------------------------------------------
+    // РЕЖИМ 4: АНТИ-DPI (Только защищенный сервер с обфускацией)
+    // -------------------------------------------------------------
+    else if (connectionLevel === 'antidpi') {
+      if (isOnline && socket?.connected) {
+        const masked = obfuscationEngine.maskPayload({ chatId, message: cleanObject(finalMsg) });
+        socket.emit('obfuscated:packet', masked);
+      } else {
+        obfuscationEngine.sendViaHttpBypass(chatId, finalMsg).catch(() => {});
+      }
+      playSentMessageSound();
     }
 
     // Dispatch also to multi-tier router fallback
@@ -4662,7 +4791,15 @@ function AppContent() {
 
   const activeChatData = selectedChat 
     ? (selectedChat.type === 'user' 
-        ? users.find(u => u.uid === selectedChat.id)
+        ? (users.find(u => u.uid === selectedChat.id) || ({
+            uid: selectedChat.id,
+            displayName: `Узел [${selectedChat.id.slice(0, 5)}]`,
+            username: selectedChat.id.slice(0, 8),
+            status: 'online',
+            customStatus: 'Офлайн BLE узел',
+            lastSeen: new Date().toISOString(),
+            createdAt: new Date().toISOString()
+          } as unknown as UserProfile))
         : groups.find(g => g.id === selectedChat.id))
     : null;
 
@@ -7546,28 +7683,33 @@ function AppContent() {
                 </div>
               </div>
               <div className="flex items-center gap-2 relative">
-                {/* 3-Tier Network Transport Badge (only for real network chats) */}
+                {/* 4-Tier Network Transport Badge (only for real network chats) */}
                 {selectedChat.id !== user?.uid && (
                   <button 
                     onClick={() => setShowMeshInspectorModal(true)}
                     className={cn(
                       "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                      activeTransportTier === 'tier1_p2p' && isDirectP2PActive
-                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                        : activeTransportTier === 'tier1_p2p'
-                        ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
-                        : activeTransportTier === 'tier2_obfuscated'
+                      multiTierRouter.getConnectionLevel() === 'auto'
+                        ? "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
+                        : multiTierRouter.getConnectionLevel() === 'p2p'
+                        ? (isDirectP2PActive ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" : "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100")
+                        : multiTierRouter.getConnectionLevel() === 'antidpi'
                         ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 animate-pulse"
                         : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
                     )}
-                    title="3 Уровня связи: P2P, Anti-DPI, Mesh BLE. Нажмите для открытия инспектора."
+                    title="4 Уровня связи: Авто (Dual), Ур. 1 P2P, Ур. 2 Anti-DPI, Ур. 3 BLE. Нажмите для открытия инспектора связи."
                   >
-                    {activeTransportTier === 'tier1_p2p' ? (
+                    {multiTierRouter.getConnectionLevel() === 'auto' ? (
+                      <>
+                        <Zap size={13} className="text-indigo-600 fill-indigo-500" />
+                        <span className="hidden md:inline">Авто (Dual)</span>
+                      </>
+                    ) : multiTierRouter.getConnectionLevel() === 'p2p' ? (
                       <>
                         <Zap size={13} className={isDirectP2PActive ? "text-emerald-600 fill-emerald-500" : "text-blue-600"} />
                         <span className="hidden md:inline">{isDirectP2PActive ? "P2P Прямой" : "Ур. 1 P2P"}</span>
                       </>
-                    ) : activeTransportTier === 'tier2_obfuscated' ? (
+                    ) : multiTierRouter.getConnectionLevel() === 'antidpi' ? (
                       <>
                         <ShieldAlert size={13} className="text-amber-600" />
                         <span className="hidden md:inline">Ур. 2 Anti-DPI</span>
@@ -7575,7 +7717,7 @@ function AppContent() {
                     ) : (
                       <>
                         <Radio size={13} className="text-purple-600 animate-pulse" />
-                        <span className="hidden md:inline">Ур. 3 Mesh BLE</span>
+                        <span className="hidden md:inline">Ур. 3 BLE</span>
                       </>
                     )}
                   </button>

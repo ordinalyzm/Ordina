@@ -73,26 +73,15 @@ public class MainActivity extends BridgeActivity {
 
     private void startMeshEngine() {
         BluetoothManager manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-        if (manager == null) {
-            Log.e(TAG, "BluetoothManager недоступен");
-            return;
-        }
-
+        if (manager == null) return;
         BluetoothAdapter adapter = manager.getAdapter();
-        if (adapter == null || !adapter.isEnabled()) {
-            Log.e(TAG, "Bluetooth выключен или не поддерживается!");
-            return;
-        }
 
-        // 1. Поднимаем GATT-сервер для приема офлайн сообщений
+        if (adapter == null || !adapter.isEnabled()) return;
+
         setupGattServer(manager);
 
-        // 2. Включаем вещание маяка
         advertiser = adapter.getBluetoothLeAdvertiser();
-        if (advertiser == null) {
-            Log.e(TAG, "BLE Advertiser не поддерживается устройством");
-            return;
-        }
+        if (advertiser == null) return;
 
         AdvertiseSettings settings = new AdvertiseSettings.Builder()
                 .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -102,7 +91,7 @@ public class MainActivity extends BridgeActivity {
 
         AdvertiseData data = new AdvertiseData.Builder()
                 .addServiceUuid(new ParcelUuid(SERVICE_UUID))
-                .setIncludeDeviceName(false) // Отключаем имя, чтобы влезть в лимит 31 байт!
+                .setIncludeDeviceName(false)
                 .build();
 
         try {
@@ -111,20 +100,18 @@ public class MainActivity extends BridgeActivity {
                 public void onStartSuccess(AdvertiseSettings settingsInEffect) {
                     Log.i(TAG, ">>> [УСПЕХ] BLE МАЯК РАБОТАЕТ В ЭФИРЕ!");
                 }
-
                 @Override
                 public void onStartFailure(int errorCode) {
                     Log.e(TAG, ">>> [ОШИБКА] Код ошибки маяка: " + errorCode);
                 }
             });
-        } catch (SecurityException e) {
-            Log.e(TAG, "SecurityException: " + e.getMessage());
-        }
+        } catch (SecurityException ignored) {}
     }
 
     private void setupGattServer(BluetoothManager manager) {
         try {
             gattServer = manager.openGattServer(this, new BluetoothGattServerCallback() {
+                // Прием входящего офлайн-сообщения
                 @Override
                 public void onCharacteristicWriteRequest(BluetoothDevice device, int requestId, BluetoothGattCharacteristic characteristic, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
                     super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value);
@@ -133,14 +120,59 @@ public class MainActivity extends BridgeActivity {
                         String rawJson = new String(value, StandardCharsets.UTF_8);
                         Log.i(TAG, ">>> ПРИНЯТО ОФЛАЙН СООБЩЕНИЕ ПО BLE: " + rawJson);
 
-                        // Пробрасываем сообщение в JS-слой (React/Capacitor)
+                        // Безопасный проброс чистого JSON в WebView
                         runOnUiThread(() -> {
-                            getBridge().triggerWindowJSEvent("mesh:directPacket", "{ 'raw': '" + rawJson.replace("'", "\\'") + "' }");
+                            try {
+                                String safeQuotedJson = org.json.JSONObject.quote(rawJson);
+                                String jsCode = "try { " +
+                                        "var raw = JSON.parse(" + safeQuotedJson + "); " +
+                                        "window.dispatchEvent(new CustomEvent('mesh:incoming_raw', { detail: raw })); " +
+                                        "} catch(e) { console.error('[OrdinaBLE] JS eval error', e); }";
+                                if (getBridge() != null && getBridge().getWebView() != null) {
+                                    getBridge().getWebView().evaluateJavascript(jsCode, null);
+                                }
+                            } catch (Throwable t) {
+                                Log.e(TAG, "Ошибка проброса BLE пакета в WebView", t);
+                            }
                         });
 
                         if (responseNeeded) {
                             gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
                         }
+                    }
+                }
+
+                // Ответ на запрос нашего UID (рукопожатие перед открытием чата)
+                @Override
+                public void onCharacteristicReadRequest(BluetoothDevice device, int requestId, int offset, BluetoothGattCharacteristic characteristic) {
+                    super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
+                    if (CHAR_UUID.equals(characteristic.getUuid())) {
+                        // Отдаем наш локальный UID собеседнику
+                        String myInfo = null;
+                        try {
+                            android.content.SharedPreferences prefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
+                            myInfo = prefs.getString("last_auth_uid", null);
+                        } catch (Throwable ignored) {}
+
+                        if (myInfo == null || myInfo.isEmpty()) {
+                            try {
+                                android.content.SharedPreferences defPrefs = getSharedPreferences(getPackageName() + "_preferences", Context.MODE_PRIVATE);
+                                myInfo = defPrefs.getString("last_auth_uid", null);
+                            } catch (Throwable ignored) {}
+                        }
+
+                        if (myInfo == null || myInfo.isEmpty()) {
+                            try {
+                                @SuppressWarnings("deprecation")
+                                android.content.SharedPreferences legacyPrefs = android.preference.PreferenceManager.getDefaultSharedPreferences(getApplicationContext());
+                                myInfo = legacyPrefs.getString("last_auth_uid", null);
+                            } catch (Throwable ignored) {}
+                        }
+
+                        if (myInfo == null || myInfo.isEmpty()) myInfo = "unknown_peer";
+                        Log.i(TAG, ">>> [GATT Read] Отдаем наш UID собеседнику: " + myInfo);
+                        byte[] responseBytes = myInfo.getBytes(StandardCharsets.UTF_8);
+                        gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, responseBytes);
                     }
                 }
             });
@@ -154,8 +186,6 @@ public class MainActivity extends BridgeActivity {
             service.addCharacteristic(charac);
             gattServer.addService(service);
             Log.i(TAG, ">>> GATT СЕРВЕР ПРИЕМА ОФЛАЙН-ДАННЫХ ЗАПУЩЕН!");
-        } catch (SecurityException e) {
-            Log.e(TAG, "SecurityException при старте GATT: " + e.getMessage());
-        }
+        } catch (SecurityException ignored) {}
     }
 }

@@ -282,7 +282,13 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
                     )}
                   </h4>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Автоматический переход между уровнями 1, 2 и 3 в зависимости от состояния сети
+                    {forcedTier === null 
+                      ? 'Режим «АВТО»: параллельная отправка на сервер и в BLE Mesh радиоэфир всем соседям'
+                      : forcedTier === 'tier1_p2p'
+                      ? 'Уровень 1 (P2P): прямая связь WebRTC и локальная сеть (LAN/Hotspot)'
+                      : forcedTier === 'tier2_obfuscated'
+                      ? 'Уровень 2 (Анти-DPI): маскированный трафик и обход блокировок через сервер'
+                      : 'Уровень 3 (BLE): автономная радиосвязь без интернета (только Bluetooth)'}
                   </p>
                 </div>
                 <div className="flex items-center gap-1 bg-slate-900 p-1 rounded-xl border border-slate-800 shrink-0">

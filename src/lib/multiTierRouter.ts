@@ -60,11 +60,19 @@ class MultiTierTransportRouter {
       } else {
         localStorage.removeItem('ordina_forced_tier');
       }
+      window.dispatchEvent(new CustomEvent('ordina:tier_changed', { detail: { tier } }));
     }
   }
 
   public getForcedTier(): TransportTier | null {
     return this.forcedTier;
+  }
+
+  public getConnectionLevel(): 'auto' | 'p2p' | 'antidpi' | 'ble' {
+    if (this.forcedTier === 'tier3_mesh') return 'ble';
+    if (this.forcedTier === 'tier2_obfuscated') return 'antidpi';
+    if (this.forcedTier === 'tier1_p2p') return 'p2p';
+    return 'auto';
   }
 
   /**
