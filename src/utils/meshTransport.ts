@@ -41,24 +41,30 @@ export class MeshTransport {
       await BleClient.initialize();
       this.isScanning = true;
 
+      // 1. ОСТАНАВЛИВАЕМ предыдущее сканирование во избежание ошибки "could not find callback wrapper"
+      try {
+        await BleClient.stopLEScan();
+      } catch (_) {}
+
+      // 2. СКАНИРУЕМ БЕЗ ФИЛЬТРА ПО UUID (иначе Android блокирует пакеты из-за 31-байтного лимита рекламы)
       await BleClient.requestLEScan(
         {
-          services: [ORDINA_SERVICE_UUID],
-          allowDuplicates: true
+          services: [], // ПУСТОЙ МАССИВ! Слушаем весь эфир без обрезки по UUID
+          allowDuplicates: true // Обязательно true для непрерывного приема маяков
         },
         (result) => {
           // Имя устройства транслируется в формате: ORD_<UID>_<NAME>
-          const deviceName = result.device?.name || result.localName;
+          const deviceName = result.device?.name || result.localName || '';
           if (deviceName && deviceName.startsWith('ORD_')) {
             const parts = deviceName.split('_');
-            if (parts.length >= 3) {
+            if (parts.length >= 2) {
               const peerUid = parts[1];
-              const peerName = parts.slice(2).join('_');
+              const peerName = parts.slice(2).join('_') || 'Узел';
 
               if (peerUid && peerUid !== myUid) {
                 this.registerPeer({
                   id: peerUid,
-                  name: peerName || `Узел ${peerUid.slice(0, 5)}`,
+                  name: peerName,
                   transport: 'ble',
                   rssi: result.rssi,
                   lastSeen: Date.now()

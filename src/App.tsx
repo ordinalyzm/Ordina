@@ -39,6 +39,8 @@ import {
   updateMessageStatus,
   getDeltaSyncVersion,
   mergeDelta,
+  saveLocalSetting,
+  getLocalSetting,
   initDatabase,
   saveMessageToLocalCache, 
   saveMessagesToLocalCache, 
@@ -1176,7 +1178,26 @@ function AppContent() {
       newSocket.emit('groups:fetch');
       newSocket.emit('stickers:list');
       newSocket.emit('bots:list', syncedProfile.uid);
+
+      // DeltaSync initialization
+      getDeltaSyncVersion().then((ver) => {
+        newSocket.emit('chat:get_delta', { clientVersion: ver, userId: syncedProfile.uid });
+        newSocket.emit('delta:sync', { fromVersion: ver, userId: syncedProfile.uid });
+      }).catch(() => {});
     });
+
+    // Delta-Sync Handlers with empty data safeguards
+    const handleDeltaResponse = async (data: { chats?: any[], messages?: any[], serverVersion?: number }) => {
+      const { chats = [], messages = [], serverVersion } = data || {};
+      if ((!chats || chats.length === 0) && (!messages || messages.length === 0)) {
+        console.log('[DeltaSync] Сервер вернул 0 обновлений. Локальная база сохранена.');
+        return;
+      }
+      await mergeDelta(chats, messages);
+    };
+
+    newSocket.on('chat:delta_response', handleDeltaResponse);
+    newSocket.on('delta:sync:response', handleDeltaResponse);
 
     newSocket.on('auth:sync_error', (data: any) => {
       console.error('Auth sync error:', data);
@@ -3013,6 +3034,32 @@ function AppContent() {
     if (!user) return;
   }, [user]);
 
+  const safeUpdateProfile = async (userObj: any, profileData: { displayName?: string; photoURL?: string }) => {
+    const safeData: any = {};
+    if (profileData.displayName) {
+      safeData.displayName = profileData.displayName;
+    }
+    if (profileData.photoURL) {
+      // Firebase Auth имеет жесткий лимит на photoURL (макс 2048 байт).
+      // Если это большой Base64 / data URL (>1500 символов), сохраняем в локальную БД и профиль, не краша Auth.
+      if (profileData.photoURL.length > 1500) {
+        console.warn('[Profile] Photo URL превышает лимит Firebase Auth (>1500 символов). Сохраняем в локальный кэш и сокет-профиль.');
+        if (userObj?.uid) {
+          saveLocalSetting(`avatar_${userObj.uid}`, profileData.photoURL).catch(() => {});
+        }
+      } else {
+        safeData.photoURL = profileData.photoURL;
+      }
+    }
+
+    try {
+      const { updateProfile } = await import('firebase/auth');
+      await updateProfile(userObj, safeData);
+    } catch (e) {
+      console.warn('[Profile] Auth profile sync non-fatal warning:', e);
+    }
+  };
+
   const handleUpdateProfile = async () => {
     console.log('handleUpdateProfile clicked');
     if (!profile || !user) {
@@ -3039,10 +3086,9 @@ function AppContent() {
     setProfile(updatedProfile);
     setIsEditingProfile(false);
     
-    // Auth profile also needs updating
+    // Auth profile also needs safe updating
     try {
-      const { updateProfile } = await import('firebase/auth');
-      await updateProfile(user, {
+      await safeUpdateProfile(user, {
         displayName: editName,
         photoURL: editAvatar
       });

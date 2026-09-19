@@ -250,37 +250,87 @@ export async function getDeltaSyncVersion(): Promise<number> {
 }
 
 /**
+ * Saves a key-value pair in SQLite settings and localStorage.
+ */
+export async function saveLocalSetting(key: string, value: string): Promise<void> {
+  try {
+    localStorage.setItem(`ordina_setting_${key}`, value);
+    await initDatabase();
+    if (dbInstance) {
+      await dbInstance.run(
+        'INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?);',
+        [key, value]
+      );
+    }
+  } catch (err) {
+    console.error('[SQLite] saveLocalSetting error:', err);
+  }
+}
+
+/**
+ * Gets a key-value pair from SQLite settings or localStorage.
+ */
+export async function getLocalSetting(key: string): Promise<string | null> {
+  try {
+    const local = localStorage.getItem(`ordina_setting_${key}`);
+    if (local !== null) return local;
+
+    await initDatabase();
+    if (dbInstance) {
+      const res = await dbInstance.query('SELECT value FROM settings WHERE key = ?;', [key]);
+      if (res.values && res.values.length > 0) {
+        return res.values[0].value;
+      }
+    }
+  } catch (err) {
+    console.error('[SQLite] getLocalSetting error:', err);
+  }
+  return null;
+}
+
+/**
  * Merges delta sync data (incremental chats and messages from server) into SQLite.
  */
 export async function mergeDelta(chats: Chat[] = [], messages: Message[] = []): Promise<void> {
   try {
+    // ЗАЩИТА: Если с сервера пришел пустой массив — 
+    // НИ В КОЕМ СЛУЧАЕ НЕ ОЧИЩАЙТЕ И НЕ ПЕРЕЗАПИСЫВАЙТЕ ПУСТОТОЙ ЛОКАЛЬНУЮ БАЗУ!
+    if ((!chats || chats.length === 0) && (!messages || messages.length === 0)) {
+      console.log('[DeltaSync] Сервер вернул 0 обновлений. Локальная база сохранена.');
+      return;
+    }
+
     await initDatabase();
     let maxVer = await getDeltaSyncVersion();
 
-    // 1. Merge chats
-    for (const chat of chats) {
-      if (!chat || !chat.id) continue;
-      const ver = chat.version || 1;
-      if (ver > maxVer) maxVer = ver;
+    // 1. Merge chats (UPSERT only - never delete existing chats)
+    if (Array.isArray(chats)) {
+      for (const chat of chats) {
+        if (!chat || !chat.id) continue;
+        const ver = chat.version || 1;
+        if (ver > maxVer) maxVer = ver;
 
-      if (dbInstance) {
-        await dbInstance.run(
-          'INSERT OR REPLACE INTO chats (id, type, name, photoURL, version, rawJson) VALUES (?, ?, ?, ?, ?, ?);',
-          [chat.id, chat.type, chat.name || '', chat.photoURL || '', ver, JSON.stringify(chat)]
-        );
+        if (dbInstance) {
+          await dbInstance.run(
+            'INSERT OR REPLACE INTO chats (id, type, name, photoURL, version, rawJson) VALUES (?, ?, ?, ?, ?, ?);',
+            [chat.id, chat.type, chat.name || '', chat.photoURL || '', ver, JSON.stringify(chat)]
+          );
+        }
       }
     }
 
-    // 2. Merge messages
-    for (const msg of messages) {
-      if (!msg || !msg.id) continue;
-      const ver = msg.version || 1;
-      if (ver > maxVer) maxVer = ver;
-      await saveMessage(msg);
+    // 2. Merge messages (UPSERT only)
+    if (Array.isArray(messages)) {
+      for (const msg of messages) {
+        if (!msg || !msg.id) continue;
+        const ver = msg.version || 1;
+        if (ver > maxVer) maxVer = ver;
+        await saveMessage(msg);
+      }
     }
 
     localStorage.setItem('ordina_delta_version', maxVer.toString());
-    console.log(`[SQLite] Merged delta: ${chats.length} chats, ${messages.length} messages. New max version: ${maxVer}`);
+    console.log(`[SQLite] Merged delta: ${chats?.length || 0} chats, ${messages?.length || 0} messages. New max version: ${maxVer}`);
   } catch (err) {
     console.error('[SQLite] mergeDelta error:', err);
   }

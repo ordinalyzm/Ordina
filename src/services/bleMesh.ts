@@ -74,13 +74,18 @@ class BLEMeshService {
     const performScan = async () => {
       try {
         if (Capacitor.isNativePlatform()) {
+          try {
+            await BleClient.stopLEScan();
+          } catch (_) {}
+
           await BleClient.requestLEScan(
             {
-              services: [ORDINA_SERVICE_UUID],
-              allowDuplicates: false
+              services: [], // ПУСТОЙ МАССИВ! Слушаем весь эфир без фильтра по UUID
+              allowDuplicates: true
             },
             (result) => {
-              if (result.device) {
+              const name = result.device?.name || result.localName || '';
+              if (result.device && name.startsWith('ORD_')) {
                 this.nearbyDevices.set(result.device.deviceId, result.device);
                 this.tryConnectAndRead(result.device);
               }
