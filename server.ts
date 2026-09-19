@@ -2364,21 +2364,28 @@ io.on('connection', (socket) => {
         await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2) ON CONFLICT (uid) DO UPDATE SET data = EXCLUDED.data', [data.uid, JSON.stringify(finalProfile)]);
         
         io.emit('user:updated', finalProfile);
-        socket.emit('auth:synced', finalProfile);
+        io.to(`user:${data.uid}`).emit('auth:synced', finalProfile);
       } catch (err) {
         console.error('Failed to update profile:', err);
       }
     });
 
     socket.on('group:update', async (data: { id: string, update: any }) => {
-      const { rows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.id]);
-      const row = rows[0];
-      if (row) {
-        const existing = JSON.parse(row.data);
-        const newVersion = (existing.version || 1) + 1;
-        const updated = { ...existing, ...data.update, version: newVersion };
-        await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(updated), data.id]);
+      try {
+        const { rows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.id]);
+        const row = rows[0];
+        let updated: any;
+        if (row) {
+          const existing = JSON.parse(row.data);
+          const newVersion = (existing.version || 1) + 1;
+          updated = { ...existing, ...data.update, version: newVersion };
+        } else {
+          updated = { id: data.id, ...data.update, version: 1 };
+        }
+        await pool.query('INSERT INTO groups (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [data.id, JSON.stringify(updated)]);
         io.emit('group:updated', updated);
+      } catch (err) {
+        console.error('Failed to update group:', err);
       }
     });
 

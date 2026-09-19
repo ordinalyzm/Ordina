@@ -5,6 +5,8 @@ import { saveMessage } from './localCache';
 import { normalizeIncomingMeshMessage } from './messageAdapter';
 import { Socket } from 'socket.io-client';
 
+import { MeshRouter } from './meshRouter';
+
 type EventCallback<T = any> = (data: T) => void;
 
 interface PeerConnectionState {

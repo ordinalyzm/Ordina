@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence } from 'motion/react';
 import { X, Save, Trash2, Plus, Flag, Type, Palette } from 'lucide-react';
 import { UserTitle, UserProfile, Group } from '../types';
 import { RenderTitle, FLAG_GRADIENTS, AVAILABLE_FONTS } from '../lib/TitleRenderer';

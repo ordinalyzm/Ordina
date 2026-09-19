@@ -85,6 +85,9 @@ import { MeshInspectorModal } from './components/MeshInspectorModal';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal';
 import { MessageItem } from './components/MessageItem';
 import { OnboardingModal } from './components/OnboardingModal';
+import { SavedNotebookModal } from './components/SavedNotebookModal';
+import { ConfirmDeleteModal } from './components/ConfirmDeleteModal';
+import { MeshRouter } from './utils/meshRouter';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -490,6 +493,15 @@ function AppContent() {
   
   const [showCreateChatModal, setShowCreateChatModal] = useState(false);
   const [showMultiDeleteModal, setShowMultiDeleteModal] = useState(false);
+  const [showSavedNotebookModal, setShowSavedNotebookModal] = useState(false);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{
+    isOpen: boolean;
+    msgIds: string[];
+    forEveryone: boolean;
+    delayMs?: number;
+    title?: string;
+    description?: string;
+  } | null>(null);
   const [deleteTimerDelay, setDeleteTimerDelay] = useState<number>(0);
   const [createChatType, setCreateChatType] = useState<'group' | 'channel'>('group');
   const [createChatName, setCreateChatName] = useState('');
@@ -863,6 +875,19 @@ function AppContent() {
         [chatId]: confirmedMsg
       }));
 
+      // Automatically add peer to activeChats if it's a 1-to-1 conversation so they never disappear
+      if (!msg.groupId && chatId && chatId !== 'global_channel' && chatId !== user?.uid) {
+        setProfile(prev => {
+          if (!prev) return prev;
+          const currentActive = prev.activeChats || [];
+          if (!currentActive.includes(chatId)) {
+            const updatedActive = [chatId, ...currentActive.filter(id => id !== chatId)];
+            return { ...prev, activeChats: updatedActive };
+          }
+          return prev;
+        });
+      }
+
       const isCurrentChat = (currentChat?.type !== 'user' && msg.groupId === currentChat?.id) ||
                             (currentChat?.type === 'user' && (
                               (msg.senderId === currentChat.id && msg.receiverId === user.uid) ||
@@ -1109,6 +1134,7 @@ function AppContent() {
       console.log('Profile synced:', syncedProfile.uid);
       setProfile(prev => {
         if (!prev) return syncedProfile;
+        if (prev.uid !== syncedProfile.uid) return prev;
         const mergedActive = Array.from(new Set([
           'global_channel',
           ...(syncedProfile.activeChats || []),
@@ -1379,6 +1405,22 @@ function AppContent() {
         [chatId]: confirmedMsg
       }));
 
+      // Automatically add peer to activeChats if it's a 1-to-1 conversation so they never disappear
+      if (!msg.groupId && chatId && chatId !== 'global_channel' && chatId !== user?.uid) {
+        const peerId = msg.senderId === user?.uid ? msg.receiverId : msg.senderId;
+        if (peerId && peerId !== user?.uid) {
+          setProfile(prev => {
+            if (!prev) return prev;
+            const currentActive = prev.activeChats || [];
+            if (!currentActive.includes(peerId)) {
+              const updatedActive = [peerId, ...currentActive.filter(id => id !== peerId)];
+              return { ...prev, activeChats: updatedActive };
+            }
+            return prev;
+          });
+        }
+      }
+
       // 3. Play incoming sound
       playIncomingMessageSound();
 
@@ -1556,6 +1598,49 @@ function AppContent() {
       }
     } catch (e) {}
   }, [socketConnected, socket, user?.uid]);
+
+  // Sync MeshRouter with server online status and listen to gateway forward events
+  useEffect(() => {
+    MeshRouter.getInstance().setServerOnlineStatus(socketConnected);
+  }, [socketConnected]);
+
+  useEffect(() => {
+    const handleGatewaySend = (e: any) => {
+      const msg = e.detail;
+      if (msg && socket && socketConnected) {
+        socket.emit('message:new', {
+          chatId: msg.chatId || (user?.uid && msg.receiverId ? [user.uid, msg.receiverId].sort().join('_') : 'general'),
+          message: cleanObject({ ...msg, status: 'sent', deliveryStatus: 'sent' })
+        });
+      }
+    };
+
+    const handleOpenChatEvent = (e: any) => {
+      const { chatId, participant } = e.detail || {};
+      if (chatId && participant) {
+        setShowRadar(false);
+        setSelectedChat({
+          id: chatId,
+          type: 'direct',
+          participant: {
+            uid: participant.uid,
+            displayName: participant.displayName,
+            photoURL: '',
+            status: 'online',
+            lastSeen: new Date().toISOString()
+          }
+        });
+        setMobileView('chat');
+      }
+    };
+
+    window.addEventListener('mesh:gateway:send', handleGatewaySend);
+    window.addEventListener('ordina:open_chat', handleOpenChatEvent);
+    return () => {
+      window.removeEventListener('mesh:gateway:send', handleGatewaySend);
+      window.removeEventListener('ordina:open_chat', handleOpenChatEvent);
+    };
+  }, [socket, socketConnected, user?.uid]);
 
   // Offline Caching & Relay Sync
   useEffect(() => {
@@ -4091,6 +4176,20 @@ function AppContent() {
     if (!user) return;
 
     const performDelete = async () => {
+      const currentChatId = selectedChat?.id || 'global_channel';
+      // Optimistic removal from active state
+      setMessages(prev => prev.filter(m => m.id !== id));
+      if (messageCacheRef.current[currentChatId]) {
+        messageCacheRef.current[currentChatId] = messageCacheRef.current[currentChatId].filter(m => m.id !== id);
+      }
+      try {
+        const cached = loadMessagesFromLocalCache(currentChatId);
+        if (cached && cached.length > 0) {
+          const updatedCached = cached.filter(m => m.id !== id);
+          saveMessagesToLocalCache(currentChatId, updatedCached);
+        }
+      } catch (e) {}
+
       if (forEveryone) {
         if (socket) {
           socket.emit('message:delete', { id, chatId: selectedChat?.id });
@@ -4813,7 +4912,7 @@ function AppContent() {
               )}
 
               {users.filter(u => u.uid !== user?.uid && 
-                (profile?.activeChats || []).includes(u.uid) && 
+                ((profile?.activeChats || []).includes(u.uid) || Boolean(recentPreviews[u.uid]) || Boolean(lastMessages[u.uid])) && 
                 !(profile?.hiddenChats || []).includes(u.uid))
                 .sort((a,b) => {
                    const aPinned = (profile?.pinnedChats || []).includes(a.uid);
@@ -7338,7 +7437,9 @@ function AppContent() {
                 </button>
                 <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
                   if (activeThread) return;
-                  if (selectedChat.type !== 'user') {
+                  if (selectedChat.id === user?.uid) {
+                    setShowSavedNotebookModal(true);
+                  } else if (selectedChat.type !== 'user') {
                     setShowGroupInfo(true);
                   } else {
                     setViewedProfile(activeChatData as UserProfile);
@@ -7406,38 +7507,40 @@ function AppContent() {
                 </div>
               </div>
               <div className="flex items-center gap-2 relative">
-                {/* 3-Tier Network Transport Badge */}
-                <button 
-                  onClick={() => setShowMeshInspectorModal(true)}
-                  className={cn(
-                    "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                    activeTransportTier === 'tier1_p2p' && isDirectP2PActive
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
-                      : activeTransportTier === 'tier1_p2p'
-                      ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
-                      : activeTransportTier === 'tier2_obfuscated'
-                      ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 animate-pulse"
-                      : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
-                  )}
-                  title="3 Уровня связи: P2P, Anti-DPI, Mesh BLE. Нажмите для открытия инспектора."
-                >
-                  {activeTransportTier === 'tier1_p2p' ? (
-                    <>
-                      <Zap size={13} className={isDirectP2PActive ? "text-emerald-600 fill-emerald-500" : "text-blue-600"} />
-                      <span className="hidden md:inline">{isDirectP2PActive ? "P2P Прямой" : "Ур. 1 P2P"}</span>
-                    </>
-                  ) : activeTransportTier === 'tier2_obfuscated' ? (
-                    <>
-                      <ShieldAlert size={13} className="text-amber-600" />
-                      <span className="hidden md:inline">Ур. 2 Anti-DPI</span>
-                    </>
-                  ) : (
-                    <>
-                      <Radio size={13} className="text-purple-600 animate-pulse" />
-                      <span className="hidden md:inline">Ур. 3 Mesh BLE</span>
-                    </>
-                  )}
-                </button>
+                {/* 3-Tier Network Transport Badge (only for real network chats) */}
+                {selectedChat.id !== user?.uid && (
+                  <button 
+                    onClick={() => setShowMeshInspectorModal(true)}
+                    className={cn(
+                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer",
+                      activeTransportTier === 'tier1_p2p' && isDirectP2PActive
+                        ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100"
+                        : activeTransportTier === 'tier1_p2p'
+                        ? "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                        : activeTransportTier === 'tier2_obfuscated'
+                        ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 animate-pulse"
+                        : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
+                    )}
+                    title="3 Уровня связи: P2P, Anti-DPI, Mesh BLE. Нажмите для открытия инспектора."
+                  >
+                    {activeTransportTier === 'tier1_p2p' ? (
+                      <>
+                        <Zap size={13} className={isDirectP2PActive ? "text-emerald-600 fill-emerald-500" : "text-blue-600"} />
+                        <span className="hidden md:inline">{isDirectP2PActive ? "P2P Прямой" : "Ур. 1 P2P"}</span>
+                      </>
+                    ) : activeTransportTier === 'tier2_obfuscated' ? (
+                      <>
+                        <ShieldAlert size={13} className="text-amber-600" />
+                        <span className="hidden md:inline">Ур. 2 Anti-DPI</span>
+                      </>
+                    ) : (
+                      <>
+                        <Radio size={13} className="text-purple-600 animate-pulse" />
+                        <span className="hidden md:inline">Ур. 3 Mesh BLE</span>
+                      </>
+                    )}
+                  </button>
+                )}
 
                 {selectedChat.type !== 'user' && isGroupAdmin && (
                   <button 
@@ -7492,6 +7595,50 @@ function AppContent() {
                           className="absolute top-full right-0 mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden z-[200] ring-1 ring-black/5"
                         >
                         <div className="p-2 space-y-1">
+                          {selectedChat.id === user?.uid && (
+                            <>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowChatMenu(false);
+                                  setShowSavedNotebookModal(true);
+                                }}
+                                className="w-full flex items-center gap-3 p-3 text-blue-600 hover:bg-blue-50 rounded-xl transition-all font-semibold text-sm"
+                              >
+                                <FileText size={18} /> Обзор медиа и файлов
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowChatMenu(false);
+                                  if (profile) {
+                                    setViewedProfile(profile);
+                                    setShowProfile(true);
+                                  }
+                                }}
+                                className="w-full flex items-center gap-3 p-3 text-slate-700 hover:bg-slate-50 rounded-xl transition-all font-semibold text-sm"
+                              >
+                                <UserIcon size={18} /> Мой профиль
+                              </button>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowChatMenu(false);
+                                  if (user) {
+                                    clearChatLocalCache(user.uid);
+                                    setMessages([]);
+                                    if (messageCacheRef.current[user.uid]) {
+                                      messageCacheRef.current[user.uid] = [];
+                                    }
+                                    addToast('Блокнот очищен', 'info');
+                                  }
+                                }}
+                                className="w-full flex items-center gap-3 p-3 text-red-500 hover:bg-red-50 rounded-xl transition-all font-semibold text-sm"
+                              >
+                                <Trash2 size={18} /> Очистить блокнот
+                              </button>
+                            </>
+                          )}
                           {selectedChat.type !== 'user' && (
                             <button 
                               onClick={(e) => {
@@ -7504,7 +7651,7 @@ function AppContent() {
                               <UserPlus size={18} /> Пригласить участника
                             </button>
                           )}
-                          {selectedChat.type === 'user' && (
+                          {selectedChat.type === 'user' && selectedChat.id !== user?.uid && (
                             <button 
                               onClick={async (e) => {
                                 e.stopPropagation();
@@ -8333,7 +8480,16 @@ function AppContent() {
                                   </button>
                                   {canDeleteForEveryoneState(msg) && (
                                     <button 
-                                      onClick={() => { deleteMessage(msg.id, true); setDeleteMenuMsgId(null); }}
+                                      onClick={() => {
+                                        setDeleteMenuMsgId(null);
+                                        setConfirmDeleteModal({
+                                          isOpen: true,
+                                          msgIds: [msg.id],
+                                          forEveryone: true,
+                                          title: 'Удалить сообщение для всех?',
+                                          description: 'Это сообщение будет безвозвратно удалено у всех участников чата.'
+                                        });
+                                      }}
                                       className="w-full text-left px-3 py-2 text-xs hover:bg-red-50 text-red-600 rounded-lg flex items-center gap-2"
                                     >
                                       Удалить для всех
@@ -8599,7 +8755,17 @@ function AppContent() {
 
                 {canDeleteForEveryoneState(contextMenu.msg) && (
                   <button 
-                    onClick={() => { deleteMessage(contextMenu.msg.id, true); setContextMenu(null); }}
+                    onClick={() => {
+                      const msgId = contextMenu.msg.id;
+                      setContextMenu(null);
+                      setConfirmDeleteModal({
+                        isOpen: true,
+                        msgIds: [msgId],
+                        forEveryone: true,
+                        title: 'Удалить сообщение для всех?',
+                        description: 'Это сообщение будет безвозвратно удалено у всех участников чата.'
+                      });
+                    }}
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 text-red-600 flex items-center gap-3 transition-colors"
                   >
                     <Trash2 size={16} className="text-red-400" /> 
@@ -9094,6 +9260,21 @@ function AppContent() {
                   setMobileView('list');
                 }}
                 onOpenInspector={() => setShowMeshInspectorModal(true)}
+                onOpenChat={(chatId, participant) => {
+                  setShowRadar(false);
+                  setSelectedChat({
+                    id: chatId,
+                    type: 'direct',
+                    participant: {
+                      uid: participant.uid,
+                      displayName: participant.displayName,
+                      photoURL: '',
+                      status: 'online',
+                      lastSeen: new Date().toISOString()
+                    }
+                  });
+                  setMobileView('chat');
+                }}
               />
             </div>
           ) : (
@@ -9695,11 +9876,19 @@ function AppContent() {
                   <button
                     type="button"
                     onClick={() => {
-                      selectedMsgIds.forEach(id => deleteMessage(id, true, deleteTimerDelay));
+                      const idsToDelete = [...selectedMsgIds];
+                      const delay = deleteTimerDelay;
+                      setShowMultiDeleteModal(false);
+                      setConfirmDeleteModal({
+                        isOpen: true,
+                        msgIds: idsToDelete,
+                        forEveryone: true,
+                        delayMs: delay,
+                        title: `Удалить ${idsToDelete.length} сообщений для всех?`,
+                        description: 'Эти сообщения будут безвозвратно удалены для всех участников чата.'
+                      });
                       setSelectedMsgIds([]);
                       setIsSelectionMode(false);
-                      setShowMultiDeleteModal(false);
-                      addToast(deleteTimerDelay > 0 ? `Сообщения будут удалены для всех через ${deleteTimerDelay / 1000} сек` : 'Сообщения удалены для всех', 'info');
                     }}
                     className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2"
                   >
@@ -9718,6 +9907,50 @@ function AppContent() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Saved Notebook Modal */}
+      <SavedNotebookModal
+        isOpen={showSavedNotebookModal}
+        onClose={() => setShowSavedNotebookModal(false)}
+        messages={messages}
+        user={profile || { uid: user?.uid || '', displayName: 'Пользователь', username: '' }}
+        onSelectMessage={(msgId) => {
+          setShowSavedNotebookModal(false);
+          const el = document.getElementById(`msg-${msgId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('ring-2', 'ring-blue-500');
+            setTimeout(() => el.classList.remove('ring-2', 'ring-blue-500'), 2000);
+          }
+        }}
+        onDeleteMessage={(msgId) => {
+          deleteMessage(msgId, false);
+        }}
+      />
+
+      {/* Confirm Delete for Everyone Modal */}
+      {confirmDeleteModal && (
+        <ConfirmDeleteModal
+          isOpen={confirmDeleteModal.isOpen}
+          title={confirmDeleteModal.title || 'Удалить для всех?'}
+          description={confirmDeleteModal.description || 'Это сообщение будет безвозвратно удалено для всех участников чата.'}
+          confirmText="Удалить для всех"
+          onClose={() => setConfirmDeleteModal(null)}
+          onConfirm={() => {
+            if (confirmDeleteModal.msgIds && confirmDeleteModal.msgIds.length > 0) {
+              confirmDeleteModal.msgIds.forEach(id => {
+                deleteMessage(id, true, confirmDeleteModal.delayMs || 0);
+              });
+              if (confirmDeleteModal.delayMs && confirmDeleteModal.delayMs > 0) {
+                addToast(`Удаление через ${confirmDeleteModal.delayMs / 1000} сек.`, 'info');
+              } else {
+                addToast(confirmDeleteModal.msgIds.length > 1 ? 'Сообщения удалены для всех' : 'Сообщение удалено для всех', 'info');
+              }
+            }
+            setConfirmDeleteModal(null);
+          }}
+        />
       )}
 
       {/* Highest priority Toasts container on top of all modals and overlays */}
