@@ -1,8 +1,9 @@
 // src/components/MeshRadar.tsx
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { Radio, Wifi, Bluetooth, MessageSquare, Briefcase, Zap, X, Shield, RefreshCw } from 'lucide-react';
+import { Radio, Wifi, Bluetooth, MessageSquare, Briefcase, Zap, X, Shield, RefreshCw, Send, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
 import { MeshRouter } from '../utils/meshRouter';
+import { MeshTransport } from '../utils/meshTransport';
 import { MeshNode } from '../types';
 
 interface MeshRadarProps {
@@ -23,7 +24,35 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
 }) => {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [muleCount, setMuleCount] = useState(0);
+  const [testText, setTestText] = useState('');
+  const [activeTestNodeId, setActiveTestNodeId] = useState<string | null>(null);
+  const [sendingNodeId, setSendingNodeId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const router = MeshRouter.getInstance();
+
+  const handleSendDirect = async (node: MeshNode) => {
+    if (!testText.trim()) return;
+
+    setSendingNodeId(node.id);
+    const packet = {
+      id: `${currentUser.uid}_${Date.now()}`,
+      senderId: currentUser.uid,
+      receiverId: node.id,
+      text: testText.trim(),
+      createdAt: new Date().toISOString()
+    };
+
+    const success = await MeshTransport.sendDirectMessage(node.id, packet);
+    setSendingNodeId(null);
+    if (success) {
+      setFeedback({ type: 'success', text: 'Сообщение передано напрямую по Bluetooth!' });
+      setTestText('');
+      setActiveTestNodeId(null);
+    } else {
+      setFeedback({ type: 'error', text: 'Сбой передачи по радиоканалу' });
+    }
+    setTimeout(() => setFeedback(null), 4000);
+  };
 
   useEffect(() => {
     if (!currentUser?.uid) return;
@@ -185,6 +214,18 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
           </span>
         </div>
 
+        {/* Уведомление о передаче */}
+        {feedback && (
+          <div className={`mb-3 p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
+            feedback.type === 'success' 
+              ? 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300' 
+              : 'bg-rose-950/70 border-rose-500/40 text-rose-300'
+          }`}>
+            {feedback.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
+            <span>{feedback.text}</span>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto space-y-2 pr-1">
           {nodes.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs py-8">
@@ -198,28 +239,67 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({
             nodes.map((node) => (
               <div
                 key={node.id}
-                className="bg-slate-900/80 border border-slate-800 hover:border-cyan-500/40 p-3 rounded-2xl flex items-center justify-between transition group shadow-sm"
+                className="bg-slate-900/80 border border-slate-800 hover:border-cyan-500/40 p-3 rounded-2xl flex flex-col gap-2 transition group shadow-sm"
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-emerald-400 shrink-0">
-                    <Wifi className="w-4 h-4" />
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-emerald-400 shrink-0">
+                      <Wifi className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-bold text-slate-200 group-hover:text-cyan-300 transition truncate">
+                        {node.displayName}
+                      </h4>
+                      <p className="text-[10px] text-slate-400 font-mono">
+                        ID: {node.id.slice(0, 8)}... | {node.rssi ? `${node.rssi} dBm` : 'Прямой эфир'}
+                      </p>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <h4 className="text-xs font-bold text-slate-200 group-hover:text-cyan-300 transition truncate">
-                      {node.displayName}
-                    </h4>
-                    <p className="text-[10px] text-slate-400 font-mono">
-                      ID: {node.id.slice(0, 8)}... | 1 хоп (Прямой эфир)
-                    </p>
+
+                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                    <button
+                      onClick={() => setActiveTestNodeId(activeTestNodeId === node.id ? null : node.id)}
+                      className="bg-slate-800 hover:bg-slate-700 text-cyan-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 border border-cyan-500/30 transition"
+                      title="Тест прямой передачи по BLE"
+                    >
+                      <Zap className="w-3.5 h-3.5" /> BLE
+                    </button>
+                    <button
+                      onClick={() => handleOpenDirectChat(node.id, node.displayName)}
+                      className="bg-cyan-600 hover:bg-cyan-500 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 text-white shadow-lg shadow-cyan-900/20"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" /> Написать
+                    </button>
                   </div>
                 </div>
 
-                <button
-                  onClick={() => handleOpenDirectChat(node.id, node.displayName)}
-                  className="bg-cyan-600 hover:bg-cyan-500 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 text-white shadow-lg shadow-cyan-900/20 shrink-0 ml-2"
-                >
-                  <MessageSquare className="w-3.5 h-3.5" /> Написать
-                </button>
+                {/* Раскрывающийся блок прямой отправки по Bluetooth без интернета */}
+                {activeTestNodeId === node.id && (
+                  <div className="mt-1 pt-2 border-t border-slate-800/80 flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={testText}
+                      onChange={(e) => setTestText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleSendDirect(node);
+                      }}
+                      placeholder="Тестовое сообщение в эфир..."
+                      className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
+                    />
+                    <button
+                      onClick={() => handleSendDirect(node)}
+                      disabled={!testText.trim() || sendingNodeId === node.id}
+                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 shrink-0 shadow"
+                    >
+                      {sendingNodeId === node.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
+                      Передать
+                    </button>
+                  </div>
+                )}
               </div>
             ))
           )}

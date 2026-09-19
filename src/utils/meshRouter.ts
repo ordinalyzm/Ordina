@@ -42,6 +42,44 @@ export class MeshRouter {
         this.handleIncomingBroadcast(event.data);
       };
     }
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('mesh:incoming', (e: any) => {
+        if (e.detail) {
+          this.handleIncomingDirectPacket(e.detail);
+        }
+      });
+    }
+  }
+
+  /** Прием входящего прямого пакета по BLE GATT */
+  private async handleIncomingDirectPacket(packet: any) {
+    if (!packet) return;
+    const msgId = packet.id || `ble_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    if (this.seenMessageIds.has(msgId)) return;
+    this.seenMessageIds.add(msgId);
+
+    const msg: Message = {
+      id: msgId,
+      chatId: [this.myUid, packet.senderId || 'peer'].sort().join('_'),
+      senderId: packet.senderId || 'peer',
+      receiverId: packet.receiverId || this.myUid,
+      text: packet.text || packet.content || '',
+      content: packet.text || packet.content || '',
+      type: 'text',
+      createdAt: packet.createdAt || new Date().toISOString(),
+      deliveryStatus: 'delivered',
+      isMesh: true,
+      meshHops: 1
+    };
+
+    await saveMessage(msg);
+    this.notifyMessage(msg);
+
+    // Если у нас есть интернет — шлюзуем на сервер
+    if (this.isOnlineWithServer) {
+      window.dispatchEvent(new CustomEvent('mesh:gateway:send', { detail: msg }));
+    }
   }
 
   public setServerOnlineStatus(online: boolean) {
@@ -168,7 +206,7 @@ export class MeshRouter {
     return message;
   }
 
-  public transmitDirectly(peerId: string, msg: Message) {
+  public async transmitDirectly(peerId: string, msg: Message) {
     try {
       this.broadcastChannel?.postMessage({
         type: 'DIRECT_MSG',
@@ -177,6 +215,20 @@ export class MeshRouter {
       });
     } catch (e) {}
     
+    // Физическая передача пакета в радиоэфир по BLE GATT
+    try {
+      const packet = {
+        id: msg.id,
+        senderId: msg.senderId,
+        receiverId: msg.receiverId,
+        text: msg.text || msg.content || '',
+        createdAt: msg.createdAt
+      };
+      await MeshTransport.sendDirectMessage(peerId, packet);
+    } catch (err) {
+      console.warn('[MeshRouter] Прямая BLE передача не удалась:', err);
+    }
+
     // Помечаем как доставленное
     msg.deliveryStatus = 'delivered';
     saveMessage(msg);

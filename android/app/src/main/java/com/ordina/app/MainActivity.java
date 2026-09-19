@@ -1,78 +1,161 @@
 package com.ordina.app;
 
+import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattServer;
+import android.bluetooth.BluetoothGattServerCallback;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.AdvertiseCallback;
 import android.bluetooth.le.AdvertiseData;
 import android.bluetooth.le.AdvertiseSettings;
 import android.bluetooth.le.BluetoothLeAdvertiser;
+import android.content.Context;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.ParcelUuid;
 import android.util.Log;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "OrdinaBLE";
-    // Сервисный UUID нашего мессенджера (16-битный короткий для экономии байт)
-    public static final UUID ORDINA_UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
+    public static final UUID SERVICE_UUID = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
+    public static final UUID CHAR_UUID    = UUID.fromString("0000ffe1-0000-1000-8000-00805f9b34fb");
+
     private BluetoothLeAdvertiser advertiser;
+    private BluetoothGattServer gattServer;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        startAdvertisingNode();
+        checkPermissionsAndStartMesh();
     }
 
-    public void startAdvertisingNode() {
+    private void checkPermissionsAndStartMesh() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            String[] permissions = {
+                Manifest.permission.BLUETOOTH_ADVERTISE,
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            };
+
+            boolean allGranted = true;
+            for (String perm : permissions) {
+                if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+
+            if (!allGranted) {
+                ActivityCompat.requestPermissions(this, permissions, 101);
+                return;
+            }
+        }
+        startMeshEngine();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 101) {
+            startMeshEngine();
+        }
+    }
+
+    private void startMeshEngine() {
+        BluetoothManager manager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
+        if (manager == null) {
+            Log.e(TAG, "BluetoothManager недоступен");
+            return;
+        }
+
+        BluetoothAdapter adapter = manager.getAdapter();
+        if (adapter == null || !adapter.isEnabled()) {
+            Log.e(TAG, "Bluetooth выключен или не поддерживается!");
+            return;
+        }
+
+        // 1. Поднимаем GATT-сервер для приема офлайн сообщений
+        setupGattServer(manager);
+
+        // 2. Включаем вещание маяка
+        advertiser = adapter.getBluetoothLeAdvertiser();
+        if (advertiser == null) {
+            Log.e(TAG, "BLE Advertiser не поддерживается устройством");
+            return;
+        }
+
+        AdvertiseSettings settings = new AdvertiseSettings.Builder()
+                .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+                .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+                .setConnectable(true)
+                .build();
+
+        AdvertiseData data = new AdvertiseData.Builder()
+                .addServiceUuid(new ParcelUuid(SERVICE_UUID))
+                .setIncludeDeviceName(false) // Отключаем имя, чтобы влезть в лимит 31 байт!
+                .build();
+
         try {
-            BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            if (adapter == null || !adapter.isEnabled()) {
-                Log.e(TAG, "Bluetooth выключен или не поддерживается");
-                return;
-            }
-
-            advertiser = adapter.getBluetoothLeAdvertiser();
-            if (advertiser == null) {
-                Log.e(TAG, "Устройство не поддерживает режим BLE Peripheral (Advertising)");
-                return;
-            }
-
-            AdvertiseSettings settings = new AdvertiseSettings.Builder()
-                    .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-                    .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-                    .setConnectable(true)
-                    .build();
-
-            // Вещаем имя устройства в эфир (ORD_<UID>)
-            // Берем первые 8 символов Android ID для уникальности узла
-            String androidId = android.provider.Settings.Secure.getString(getContentResolver(), android.provider.Settings.Secure.ANDROID_ID);
-            String nodeName = "ORD_" + (androidId != null ? androidId.substring(0, Math.min(8, androidId.length())) : "NODE");
-
-            try {
-                adapter.setName(nodeName);
-            } catch (SecurityException e) {
-                Log.w(TAG, "Не удалось изменить имя адаптера: " + e.getMessage());
-            }
-
-            AdvertiseData data = new AdvertiseData.Builder()
-                    .setIncludeDeviceName(true)
-                    .addServiceUuid(new ParcelUuid(ORDINA_UUID))
-                    .build();
-
             advertiser.startAdvertising(settings, data, new AdvertiseCallback() {
                 @Override
                 public void onStartSuccess(AdvertiseSettings settingsInEffect) {
-                    Log.i(TAG, ">>> BLE МАЯК УСПЕШНО ЗАПУЩЕН! Имя узла: " + nodeName);
+                    Log.i(TAG, ">>> [УСПЕХ] BLE МАЯК РАБОТАЕТ В ЭФИРЕ!");
                 }
 
                 @Override
                 public void onStartFailure(int errorCode) {
-                    Log.e(TAG, ">>> Ошибка запуска BLE маяка. Код: " + errorCode);
+                    Log.e(TAG, ">>> [ОШИБКА] Код ошибки маяка: " + errorCode);
                 }
             });
-        } catch (Exception e) {
-            Log.e(TAG, "startAdvertisingNode exception: " + e.getMessage(), e);
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException: " + e.getMessage());
+        }
+    }
+
+    private void setupGattServer(BluetoothManager manager) {
+        try {
+            gattServer = manager.openGattServer(this, new BluetoothGattServerCallback() {
+                @Override
+                public void onCharacteristicWriteRequest(BluetoothDevice device, int requestId, BluetoothGattCharacteristic characteristic, boolean preparedWrite, boolean responseNeeded, int offset, byte[] value) {
+                    super.onCharacteristicWriteRequest(device, requestId, characteristic, preparedWrite, responseNeeded, offset, value);
+
+                    if (CHAR_UUID.equals(characteristic.getUuid()) && value != null) {
+                        String rawJson = new String(value, StandardCharsets.UTF_8);
+                        Log.i(TAG, ">>> ПРИНЯТО ОФЛАЙН СООБЩЕНИЕ ПО BLE: " + rawJson);
+
+                        // Пробрасываем сообщение в JS-слой (React/Capacitor)
+                        runOnUiThread(() -> {
+                            getBridge().triggerWindowJSEvent("mesh:directPacket", "{ 'raw': '" + rawJson.replace("'", "\\'") + "' }");
+                        });
+
+                        if (responseNeeded) {
+                            gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, value);
+                        }
+                    }
+                }
+            });
+
+            BluetoothGattService service = new BluetoothGattService(SERVICE_UUID, BluetoothGattService.SERVICE_TYPE_PRIMARY);
+            BluetoothGattCharacteristic charac = new BluetoothGattCharacteristic(
+                    CHAR_UUID,
+                    BluetoothGattCharacteristic.PROPERTY_WRITE | BluetoothGattCharacteristic.PROPERTY_READ,
+                    BluetoothGattCharacteristic.PERMISSION_WRITE | BluetoothGattCharacteristic.PERMISSION_READ
+            );
+            service.addCharacteristic(charac);
+            gattServer.addService(service);
+            Log.i(TAG, ">>> GATT СЕРВЕР ПРИЕМА ОФЛАЙН-ДАННЫХ ЗАПУЩЕН!");
+        } catch (SecurityException e) {
+            Log.e(TAG, "SecurityException при старте GATT: " + e.getMessage());
         }
     }
 }

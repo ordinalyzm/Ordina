@@ -1,8 +1,13 @@
+// src/utils/meshTransport.ts
 import { BleClient } from '@capacitor-community/bluetooth-le';
 import { Capacitor } from '@capacitor/core';
 
+export const ORDINA_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
+export const ORDINA_CHAR    = '0000ffe1-0000-1000-8000-00805f9b34fb';
+
 export interface DiscoveredPeer {
   id: string;             // UID пользователя или ID устройства
+  deviceId?: string;
   name: string;           // Имя пользователя
   transport: 'ble' | 'lan' | 'relay';
   rssi?: number;
@@ -17,6 +22,7 @@ export class MeshTransport {
   private static pingInterval: any = null;
   private static pruneInterval: any = null;
   private static broadcastChannel: BroadcastChannel | null = null;
+  private static isDirectPacketListenerBound = false;
 
   public static setOnPeersChanged(cb: (peers: DiscoveredPeer[]) => void) {
     this.onPeersChanged = cb;
@@ -31,6 +37,22 @@ export class MeshTransport {
 
   /** Запуск гибридного прослушивания по всем каналам связи */
   public static async startOmniListening(myUid: string, myName: string = 'Пользователь') {
+    // Слушаем входящие сообщения от нативного Java GATT-сервера
+    if (!this.isDirectPacketListenerBound && typeof window !== 'undefined') {
+      this.isDirectPacketListenerBound = true;
+      window.addEventListener('mesh:directPacket', (e: any) => {
+        try {
+          const rawJson = e.detail?.raw || e.data?.raw || (typeof e.detail === 'string' ? e.detail : null);
+          if (rawJson) {
+            const parsed = typeof rawJson === 'string' ? JSON.parse(rawJson) : rawJson;
+            window.dispatchEvent(new CustomEvent('mesh:incoming', { detail: parsed }));
+          }
+        } catch (err) {
+          console.error('[BLE] Ошибка разбора прямого пакета:', err);
+        }
+      });
+    }
+
     // 1. Запуск BLE слушателя (на Native платформах)
     if (Capacitor.isNativePlatform()) {
       await this.startBleScanner(myUid);
@@ -39,13 +61,13 @@ export class MeshTransport {
     // 2. Запуск локального сканирования подсети (Wi-Fi / Hotspot / Multi-tab)
     this.startSubnetPing(myUid, myName);
 
-    // 3. Запуск периодической очистки узлов, пропавших из эфира (>10 сек тишины)
+    // 3. Запуск периодической очистки узлов, пропавших из эфира (>12 сек тишины)
     if (!this.pruneInterval) {
       this.pruneInterval = setInterval(() => {
         const now = Date.now();
         let changed = false;
         this.discoveredPeers.forEach((peer, id) => {
-          if (now - peer.lastSeen > 10000) {
+          if (now - peer.lastSeen > 12000) {
             this.discoveredPeers.delete(id);
             changed = true;
           }
@@ -64,36 +86,45 @@ export class MeshTransport {
       await BleClient.initialize();
       this.isScanning = true;
 
-      // 1. Сбрасываем старое сканирование во избежание ошибки "could not find callback wrapper"
+      // 1. Сбрасываем старое сканирование во избежание конфликта callback
       try {
         await BleClient.stopLEScan();
       } catch (_) {}
 
-      // 2. Сканируем эфир без фильтра по UUID (чтобы ловить имя узла из маяка)
+      // 2. Сканируем эфир без фильтра в драйвере (принимаем всё, фильтруем в JS по UUID и префиксу)
       await BleClient.requestLEScan(
         {
-          services: [], // ПУСТОЙ МАССИВ! Слушаем весь эфир без ограничений 31-байтного пакета
-          allowDuplicates: true // Обязательно true для непрерывного приема маяков
+          services: [],
+          allowDuplicates: true
         },
         (result) => {
-          // Имя устройства из маяка
-          const name = result.device?.name || result.localName || '';
+          // ПРОВЕРЯЕМ: Принадлежит ли маяк нашему приложению Ordina по UUID сервиса
+          const isOrdinaUuid = result.uuids && result.uuids.some((u: string) => u.toLowerCase().includes('ffe0'));
+          
+          // Или по имени маяка ORD_...
+          const devName = result.device?.name || result.localName || '';
+          const isOrdinaName = devName.startsWith('ORD_');
 
-          // Ловим устройства с префиксом ORD_ (наш вещатель из MainActivity)
-          if (name.startsWith('ORD_')) {
-            const parts = name.split('_');
-            const peerId = parts[1] || result.device.deviceId;
+          if (isOrdinaUuid || isOrdinaName) {
+            const deviceId = result.device.deviceId;
+            let peerId = deviceId;
+            let peerName = `Узел Ордины [${deviceId.slice(-5)}]`;
 
-            // Если это не наш собственный маяк
+            if (isOrdinaName) {
+              const parts = devName.split('_');
+              peerId = parts[1] || deviceId;
+              peerName = parts.slice(2).join('_') || `Ордина [${peerId.slice(0, 5)}]`;
+            }
+
+            // Исключаем свой собственный узел
             const myShort = myUid ? myUid.slice(0, 5) : '';
             if (!myShort || !peerId.includes(myShort)) {
-              const peerName = parts.slice(2).join('_') || `Ордина [${peerId.slice(0, 4)}]`;
-
               this.registerPeer({
                 id: peerId,
+                deviceId: deviceId,
                 name: peerName,
                 transport: 'ble',
-                rssi: result.rssi || -70,
+                rssi: result.rssi || -60,
                 lastSeen: Date.now()
               });
             }
@@ -103,6 +134,39 @@ export class MeshTransport {
     } catch (err) {
       console.error('[MeshTransport] BLE Scan error or permission denied:', err);
       this.isScanning = false;
+    }
+  }
+
+  /** ПРЯМАЯ ОТПРАВКА БАЙТОВ БЕЗ ИНТЕРНЕТА ПО BLE GATT */
+  public static async sendDirectMessage(targetDeviceId: string, packet: any): Promise<boolean> {
+    try {
+      if (!Capacitor.isNativePlatform()) {
+        // В браузере транслируем через локальный BroadcastChannel
+        this.broadcastChannel?.postMessage({
+          type: 'DIRECT_PACKET',
+          targetId: targetDeviceId,
+          packet
+        });
+        return true;
+      }
+
+      // 1. Подключаемся к соседнему телефону
+      await BleClient.connect(targetDeviceId);
+
+      // 2. Кодируем JSON сообщения в байты
+      const jsonStr = JSON.stringify(packet);
+      const encoder = new TextEncoder();
+      const dataView = new DataView(encoder.encode(jsonStr).buffer);
+
+      // 3. Пишем прямо в GATT-характеристику соседа
+      await BleClient.write(targetDeviceId, ORDINA_SERVICE, ORDINA_CHAR, dataView);
+
+      // 4. Отключаемся
+      await BleClient.disconnect(targetDeviceId);
+      return true;
+    } catch (err) {
+      console.error('[BLE Send] Ошибка прямой передачи:', err);
+      return false;
     }
   }
 
@@ -119,11 +183,11 @@ export class MeshTransport {
         if (event.data.type === 'PING' && event.data.uid && event.data.uid !== myUid) {
           this.registerPeer({
             id: event.data.uid,
+            deviceId: event.data.uid,
             name: event.data.name || `Ордина [${event.data.uid.slice(0, 4)}]`,
             transport: 'lan',
             lastSeen: Date.now()
           });
-          // Отвечаем Pong
           try {
             this.broadcastChannel?.postMessage({
               type: 'PONG',
@@ -135,6 +199,7 @@ export class MeshTransport {
         } else if (event.data.type === 'PONG' && event.data.uid && event.data.uid !== myUid) {
           this.registerPeer({
             id: event.data.uid,
+            deviceId: event.data.uid,
             name: event.data.name || `Ордина [${event.data.uid.slice(0, 4)}]`,
             transport: 'lan',
             lastSeen: Date.now()
