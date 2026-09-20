@@ -1,10 +1,6 @@
-// src/components/MeshRadar.tsx
-import React, { useState, useEffect } from 'react';
-import { motion } from 'motion/react';
-import { Radio, Wifi, Bluetooth, MessageSquare, Briefcase, Zap, X, Shield, RefreshCw, Send, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react';
-import { MeshRouter } from '../utils/meshRouter';
-import { MeshTransport } from '../utils/meshTransport';
-import { MeshNode } from '../types';
+import React, { useEffect, useState, useMemo } from 'react';
+import { MeshTransport, DiscoveredPeer } from '../utils/meshTransport';
+import { MessageSquare, Radio, X, RefreshCw, Shield, Wifi, WifiOff } from 'lucide-react';
 
 interface MeshRadarProps {
   currentUser: { uid: string; displayName?: string };
@@ -15,311 +11,337 @@ interface MeshRadarProps {
   onMessageReceived?: (msg: any) => void;
 }
 
+// Deterministic angle from peer ID/MAC (0 to 2*PI)
+function getStableAngle(id: string): number {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash << 5) - hash + id.charCodeAt(i);
+    hash |= 0;
+  }
+  const normalized = Math.abs(hash) % 360;
+  return (normalized * Math.PI) / 180;
+}
+
+// Convert RSSI (-30 dBm to -95 dBm) to radius percent (15% to 45% of radar circle)
+function rssiToRadiusPercent(rssi: number): number {
+  const clamped = Math.max(-95, Math.min(-35, rssi));
+  // -35 dBm is very close (~15%), -95 dBm is outer edge (~44%)
+  const ratio = (clamped - (-35)) / (-95 - (-35));
+  return 15 + ratio * 29;
+}
+
+// Rough distance approximation from RSSI
+function rssiToDistanceLabel(rssi: number): string {
+  if (rssi >= -50) return '~1-3 м';
+  if (rssi >= -65) return '~4-8 м';
+  if (rssi >= -80) return '~10-20 м';
+  return '~25+ м';
+}
+
 export const MeshRadar: React.FC<MeshRadarProps> = ({ 
   currentUser, 
   onClose,
   onOpenInspector,
-  onOpenChat,
-  onMessageReceived 
+  onOpenChat 
 }) => {
-  const [nodes, setNodes] = useState<MeshNode[]>([]);
-  const [muleCount, setMuleCount] = useState(0);
-  const [testText, setTestText] = useState('');
-  const [activeTestNodeId, setActiveTestNodeId] = useState<string | null>(null);
-  const [sendingNodeId, setSendingNodeId] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  const router = MeshRouter.getInstance();
-
-  const handleSendDirect = async (node: MeshNode) => {
-    if (!testText.trim()) return;
-
-    setSendingNodeId(node.id);
-    const packet = {
-      id: `${currentUser.uid}_${Date.now()}`,
-      senderId: currentUser.uid,
-      receiverId: node.id,
-      text: testText.trim(),
-      createdAt: new Date().toISOString()
-    };
-
-    const success = await MeshTransport.sendDirectMessage(node.id, packet);
-    setSendingNodeId(null);
-    if (success) {
-      setFeedback({ type: 'success', text: 'Сообщение передано напрямую по Bluetooth!' });
-      setTestText('');
-      setActiveTestNodeId(null);
-    } else {
-      setFeedback({ type: 'error', text: 'Сбой передачи по радиоканалу' });
-    }
-    setTimeout(() => setFeedback(null), 4000);
-  };
+  const [peers, setPeers] = useState<DiscoveredPeer[]>(() => MeshTransport.getPeers());
+  const [resolvingMac, setResolvingMac] = useState<string | null>(null);
+  const [selectedPeer, setSelectedPeer] = useState<DiscoveredPeer | null>(null);
 
   useEffect(() => {
-    if (!currentUser?.uid) return;
-    router.init(currentUser.uid, currentUser.displayName || 'Пользователь', navigator.onLine);
-    
-    let lastUpdate = 0;
-    let pendingTimer: any = null;
-
-    const unsubscribeNodes = router.subscribe((updatedNodes) => {
-      const now = Date.now();
-      // Обновляем радар НЕ чаще, чем раз в 800 миллисекунд для устранения фризов (Choreographer)
-      if (now - lastUpdate > 800) {
-        lastUpdate = now;
-        setNodes(updatedNodes);
-        setMuleCount(router.getMuleCount());
-      } else if (!pendingTimer) {
-        pendingTimer = setTimeout(() => {
-          pendingTimer = null;
-          lastUpdate = Date.now();
-          setNodes(router.getNodes());
-          setMuleCount(router.getMuleCount());
-        }, Math.max(50, 800 - (now - lastUpdate)));
-      }
+    MeshTransport.setOnPeersChanged((updatedPeers) => {
+      setPeers([...updatedPeers]);
     });
 
-    const unsubscribeMsg = router.onMessage((msg) => {
-      if (onMessageReceived) {
-        onMessageReceived(msg);
+    MeshTransport.startDiscovery();
+  }, []);
+
+  const handleConnect = async (peer: DiscoveredPeer) => {
+    setResolvingMac(peer.mac);
+    try {
+      const realUid = peer.isResolved ? peer.id : await MeshTransport.resolvePeerUid(peer.mac);
+      const chatId = [currentUser.uid, realUid].sort().join('_');
+
+      if (onOpenChat) {
+        onOpenChat(chatId, {
+          uid: realUid,
+          displayName: peer.name
+        });
+      } else {
+        window.dispatchEvent(new CustomEvent('ordina:open_chat', {
+          detail: { chatId, participant: { uid: realUid, displayName: peer.name } }
+        }));
       }
-    });
-
-    return () => {
-      if (pendingTimer) clearTimeout(pendingTimer);
-      unsubscribeNodes();
-      unsubscribeMsg();
-    };
-  }, [currentUser?.uid, currentUser?.displayName, onMessageReceived]);
-
-  const handleOpenDirectChat = async (peerId: string, peerName: string) => {
-    let targetUid = peerId;
-    // Если это MAC адрес — запрашиваем реальный UID собеседника по BLE рукопожатию
-    if (peerId.includes(':')) {
-      try {
-        setFeedback({ type: 'success', text: 'Связывание с узлом по радиоканалу BLE...' });
-        targetUid = await MeshTransport.resolvePeerUid(peerId);
-      } catch (e) {
-        console.error('UID resolve error:', e);
-      }
-    }
-
-    const chatId = [currentUser.uid, targetUid].sort().join('_');
-    const cleanName = peerName && !peerName.includes(peerId)
-      ? peerName
-      : `Узел [${targetUid.slice(0, 5)}]`;
-
-    const participant = { uid: targetUid, displayName: cleanName };
-    if (onOpenChat) {
-      onOpenChat(chatId, participant);
-    } else {
-      // Dispatch custom event for App.tsx navigation
-      window.dispatchEvent(new CustomEvent('ordina:open_chat', {
-        detail: { chatId, participant }
-      }));
-    }
-    if (onClose) {
-      onClose();
+      if (onClose) onClose();
+    } finally {
+      setResolvingMac(null);
     }
   };
 
+  // Calculate peer positions on the radar circle
+  const radarNodes = useMemo(() => {
+    return peers.map(peer => {
+      const angle = getStableAngle(peer.mac || peer.id);
+      const radiusPercent = rssiToRadiusPercent(peer.rssi || -75);
+      // Center is at 50%, 50%
+      const x = 50 + radiusPercent * Math.cos(angle);
+      const y = 50 + radiusPercent * Math.sin(angle);
+      return {
+        peer,
+        x,
+        y,
+        distance: rssiToDistanceLabel(peer.rssi || -75)
+      };
+    });
+  }, [peers]);
+
   return (
-    <div className="flex flex-col h-full bg-slate-950 text-slate-100 select-none overflow-hidden">
-      {/* Шапка эфира */}
-      <header className="p-4 bg-slate-900/90 border-b border-slate-800 flex justify-between items-center shrink-0">
-        <div className="flex items-center gap-3">
+    <div className="flex flex-col h-full bg-slate-950 text-white select-none overflow-hidden">
+      {/* CSS for rotating sweep beam */}
+      <style>{`
+        @keyframes radarSweep {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .radar-sweep-beam {
+          animation: radarSweep 4s linear infinite;
+          transform-origin: center center;
+        }
+      `}</style>
+
+      {/* Header bar */}
+      <div className="flex items-center justify-between p-3.5 border-b border-slate-800/80 bg-slate-900/60 shrink-0">
+        <div className="flex items-center gap-2.5">
           {onClose && (
             <button
               onClick={onClose}
-              className="p-1.5 -ml-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition active:scale-95"
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition active:scale-95 md:hidden"
+              title="Закрыть"
             >
-              <X size={20} />
+              <X size={18} />
             </button>
           )}
           <div className="relative">
-            <Radio className="w-6 h-6 text-cyan-400 animate-pulse" />
-            <span className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-cyan-400 rounded-full animate-ping" />
+            <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
+            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 bg-cyan-400 rounded-full animate-ping" />
           </div>
           <div>
-            <h2 className="text-sm font-bold tracking-wider uppercase text-slate-200">
-              Mesh-Эфир (Офлайн)
-            </h2>
-            <p className="text-[11px] text-slate-400">
-              BLE + Wi-Fi Direct + Шлюз цепочек
-            </p>
+            <h3 className="font-bold text-sm text-slate-100 flex items-center gap-2">
+              Тактический Радиоэфир
+              <span className="text-[10px] bg-cyan-950 text-cyan-400 border border-cyan-800/80 px-2 py-0.5 rounded-full font-mono">
+                BLE MESH
+              </span>
+            </h3>
+            <p className="text-[11px] text-slate-400">Офлайн обнаружение узлов поблизости (RSSI)</p>
           </div>
         </div>
 
-        {/* Индикатор почтальона без бага с размножением */}
         <div className="flex items-center gap-2">
           {onOpenInspector && (
             <button
               onClick={onOpenInspector}
-              className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs transition active:scale-95"
-              title="Инспектор пакетов"
+              className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl border border-slate-800 text-xs transition active:scale-95"
+              title="Инспектор связи"
             >
-              <Shield className="w-3.5 h-3.5" />
+              <Shield size={16} />
             </button>
           )}
-          <div className="flex items-center gap-2 bg-slate-800 px-3 py-1.5 rounded-xl border border-slate-700 text-xs font-mono text-cyan-300">
-            <Briefcase className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Сумка: {muleCount}</span>
-          </div>
-        </div>
-      </header>
-
-      {/* Верхняя половина: Радар эфира */}
-      <div className="relative h-64 flex items-center justify-center overflow-hidden bg-gradient-to-b from-slate-900 to-slate-950 border-b border-slate-800/80 shrink-0">
-        {/* Кольца дальности радиосигнала */}
-        <div className="absolute w-56 h-56 rounded-full border border-slate-800 border-dashed" />
-        <div className="absolute w-40 h-40 rounded-full border border-cyan-500/20" />
-        <div className="absolute w-24 h-24 rounded-full border border-cyan-500/40" />
-
-        {/* Сканирующий световой луч */}
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ repeat: Infinity, duration: 4, ease: 'linear' }}
-          className="absolute w-56 h-56 rounded-full pointer-events-none origin-center"
-          style={{
-            background: 'conic-gradient(from 0deg, rgba(6, 182, 212, 0.25) 0deg, transparent 60deg, transparent 360deg)'
-          }}
-        />
-
-        {/* Центр: Мой узел */}
-        <div className="relative z-10 flex flex-col items-center">
-          <div className="w-10 h-10 rounded-full bg-cyan-500/20 border-2 border-cyan-400 flex items-center justify-center text-cyan-300 shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-            <Zap className="w-5 h-5" />
-          </div>
-          <span className="text-[10px] text-cyan-400 mt-1 font-mono font-bold">Я</span>
-        </div>
-
-        {/* Точки устройств на радаре */}
-        {nodes.map((node, idx) => {
-          const angle = (idx * (360 / Math.max(nodes.length, 1))) * (Math.PI / 180);
-          const radius = node.rssi ? Math.min(Math.max((-node.rssi - 30) * 1.5, 45), 105) : 75;
-          const x = Math.cos(angle) * radius;
-          const y = Math.sin(angle) * radius;
-
-          return (
-            <motion.div
-              key={node.id}
-              initial={{ scale: 0 }}
-              animate={{ scale: 1, x, y }}
-              className="absolute z-20 flex flex-col items-center cursor-pointer group"
-              onClick={() => handleOpenDirectChat(node.id, node.displayName)}
-            >
-              <div className="w-8 h-8 rounded-full bg-emerald-500/20 border-2 border-emerald-400 flex items-center justify-center text-emerald-300 shadow-[0_0_10px_rgba(16,185,129,0.5)] group-hover:scale-110 transition-transform">
-                <Bluetooth className="w-4 h-4" />
-              </div>
-              <span className="text-[9px] bg-slate-950/90 px-1.5 py-0.5 rounded border border-slate-800 text-slate-200 mt-1 font-mono max-w-[80px] truncate shadow">
-                {node.displayName}
-              </span>
-            </motion.div>
-          );
-        })}
-      </div>
-
-      {/* Нижняя половина: Список обнаруженных узлов и вход в чат */}
-      <div className="flex-1 flex flex-col p-4 overflow-hidden min-h-0">
-        <div className="flex justify-between items-center mb-2 shrink-0">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            В зоне радиовидимости ({nodes.length})
-          </h3>
-          <span className="text-[10px] text-cyan-400 font-mono flex items-center gap-1">
-            <RefreshCw className="w-2.5 h-2.5 animate-spin" /> Сканирование активно
+          <button
+            onClick={() => MeshTransport.startDiscovery()}
+            className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-slate-200 rounded-xl border border-slate-800 text-xs transition active:scale-95"
+            title="Обновить эфир"
+          >
+            <RefreshCw size={16} />
+          </button>
+          <span className="text-xs bg-cyan-950/90 text-cyan-300 border border-cyan-700/60 px-3 py-1 rounded-xl font-mono font-bold">
+            {peers.length} {peers.length === 1 ? 'узел' : 'узлов'}
           </span>
         </div>
+      </div>
 
-        {/* Уведомление о передаче */}
-        {feedback && (
-          <div className={`mb-3 p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
-            feedback.type === 'success' 
-              ? 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300' 
-              : 'bg-rose-950/70 border-rose-500/40 text-rose-300'
-          }`}>
-            {feedback.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0" /> : <AlertTriangle className="w-4 h-4 shrink-0" />}
-            <span>{feedback.text}</span>
+      {/* Main Radar Display Viewport */}
+      <div className="flex-1 flex flex-col overflow-y-auto custom-scrollbar p-3 space-y-3">
+        {/* Circular Tactical Radar Screen */}
+        <div className="relative w-full max-w-sm mx-auto aspect-square rounded-3xl bg-[#030712] border border-cyan-900/30 overflow-hidden shadow-2xl flex items-center justify-center p-4 shrink-0">
+          {/* Background Grid Lines */}
+          <div className="absolute inset-0 bg-[radial-gradient(#06b6d4_1px,transparent_1px)] [background-size:20px_20px] opacity-10" />
+
+          {/* Coordinate Axes */}
+          <div className="absolute inset-x-0 top-1/2 h-[1px] bg-cyan-500/20" />
+          <div className="absolute inset-y-0 left-1/2 w-[1px] bg-cyan-500/20" />
+
+          {/* Concentric Range Rings */}
+          {/* Ring 1 - Inner (Near) */}
+          <div className="absolute w-[30%] h-[30%] rounded-full border border-dashed border-cyan-500/30 pointer-events-none" />
+          {/* Ring 2 - Mid */}
+          <div className="absolute w-[60%] h-[60%] rounded-full border border-cyan-500/25 pointer-events-none" />
+          {/* Ring 3 - Outer Edge */}
+          <div className="absolute w-[90%] h-[90%] rounded-full border border-cyan-500/40 pointer-events-none shadow-[0_0_20px_rgba(6,182,212,0.1)]" />
+
+          {/* Range Distance Labels */}
+          <span className="absolute top-[36%] right-[52%] text-[8px] font-mono text-cyan-600/70 select-none">3m</span>
+          <span className="absolute top-[21%] right-[52%] text-[8px] font-mono text-cyan-600/70 select-none">10m</span>
+          <span className="absolute top-[6%] right-[52%] text-[8px] font-mono text-cyan-600/70 select-none">25m</span>
+
+          {/* Rotating Radar Sweep Beam */}
+          <div 
+            className="absolute inset-[5%] rounded-full radar-sweep-beam pointer-events-none"
+            style={{
+              background: 'conic-gradient(from 0deg, rgba(6, 182, 212, 0.25) 0deg, rgba(6, 182, 212, 0.05) 45deg, transparent 90deg, transparent 360deg)'
+            }}
+          />
+
+          {/* Center User Dot (YOU) */}
+          <div className="relative z-10 flex flex-col items-center justify-center">
+            <div className="w-4 h-4 rounded-full bg-cyan-400 shadow-[0_0_12px_#06b6d4] border-2 border-white flex items-center justify-center">
+              <div className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+            </div>
+            <span className="text-[9px] font-mono font-bold text-cyan-300 mt-1 uppercase tracking-wider">
+              ВЫ
+            </span>
+          </div>
+
+          {/* Detected Peer Markers on Radar */}
+          {radarNodes.map(({ peer, x, y, distance }) => {
+            const isSelected = selectedPeer?.mac === peer.mac;
+            return (
+              <div
+                key={peer.mac}
+                onClick={() => setSelectedPeer(peer)}
+                style={{ left: `${x}%`, top: `${y}%` }}
+                className="absolute -translate-x-1/2 -translate-y-1/2 z-20 cursor-pointer group"
+              >
+                {/* Ping pulse */}
+                <span className="absolute -inset-1.5 rounded-full bg-emerald-400/40 animate-ping" />
+                {/* Node blip dot */}
+                <div className={`w-3.5 h-3.5 rounded-full border-2 transition-all flex items-center justify-center ${
+                  isSelected 
+                    ? 'bg-amber-400 border-white shadow-[0_0_15px_#f59e0b] scale-125' 
+                    : peer.isResolved 
+                    ? 'bg-emerald-400 border-emerald-200 shadow-[0_0_10px_#10b981]' 
+                    : 'bg-cyan-400 border-cyan-200 shadow-[0_0_10px_#06b6d4]'
+                }`}>
+                  <div className="w-1 h-1 rounded-full bg-white" />
+                </div>
+                {/* Node callsign label */}
+                <div className="absolute left-1/2 -translate-x-1/2 top-4 px-1.5 py-0.5 bg-slate-900/90 border border-slate-700/80 rounded text-[9px] font-mono text-slate-200 whitespace-nowrap pointer-events-none group-hover:scale-105 transition">
+                  {peer.name || peer.mac.slice(-5)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Selected Peer Action Card (if any selected on radar) */}
+        {selectedPeer && (
+          <div className="p-3.5 bg-cyan-950/40 border border-cyan-700/50 rounded-2xl flex items-center justify-between gap-3 animate-in fade-in duration-200">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="font-bold text-sm text-cyan-200 truncate">{selectedPeer.name}</span>
+                {selectedPeer.isResolved && (
+                  <span className="text-[10px] bg-emerald-950 text-emerald-400 border border-emerald-800 px-1.5 py-0.5 rounded">
+                    UID
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                MAC: {selectedPeer.mac} • RSSI: {selectedPeer.rssi} dBm ({rssiToDistanceLabel(selectedPeer.rssi)})
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setSelectedPeer(null)}
+                className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-white/10"
+              >
+                <X size={16} />
+              </button>
+              <button
+                onClick={() => handleConnect(selectedPeer)}
+                disabled={resolvingMac === selectedPeer.mac}
+                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-lg shadow-cyan-600/20"
+              >
+                <MessageSquare size={14} />
+                {resolvingMac === selectedPeer.mac ? 'Связь...' : 'Чат'}
+              </button>
+            </div>
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-          {nodes.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-slate-500 text-xs py-8">
-              <Radio className="w-8 h-8 mb-2 opacity-30 animate-pulse text-cyan-400" />
-              <p className="font-medium text-slate-400">Нет устройств в зоне радиовидимости.</p>
-              <p className="text-[11px] text-slate-500 mt-1 text-center max-w-xs leading-relaxed">
-                Убедитесь, что на втором устройстве включен Bluetooth или подключитесь к одной сети Wi-Fi / раздаче точки доступа.
+        {/* List of Detected Nodes in Air */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              Узлы в радиусе действия
+            </span>
+            <span className="text-[11px] text-slate-500 font-mono">
+              Обновление в реальном времени
+            </span>
+          </div>
+
+          {peers.length === 0 ? (
+            <div className="p-8 text-center bg-slate-900/40 border border-slate-800/80 rounded-2xl flex flex-col items-center justify-center">
+              <div className="w-12 h-12 rounded-2xl bg-cyan-950/50 border border-cyan-800/40 flex items-center justify-center text-cyan-400 mb-3">
+                <WifiOff size={22} className="animate-pulse" />
+              </div>
+              <p className="text-sm font-semibold text-slate-200">Поиск радиомаяков Ordina...</p>
+              <p className="text-xs text-slate-400 max-w-sm mt-1">
+                Включите Bluetooth. Устройства с приложением Ordina Mesh обнаружатся автоматически даже без интернета.
               </p>
             </div>
           ) : (
-            nodes.map((node) => (
-              <div
-                key={node.id}
-                className="bg-slate-900/80 border border-slate-800 hover:border-cyan-500/40 p-3 rounded-2xl flex flex-col gap-2 transition group shadow-sm"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-emerald-400 shrink-0">
-                      <Wifi className="w-4 h-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="text-xs font-bold text-slate-200 group-hover:text-cyan-300 transition truncate">
-                        {node.displayName}
-                      </h4>
-                      <p className="text-[10px] text-slate-400 font-mono">
-                        ID: {node.id.slice(0, 8)}... | {node.rssi ? `${node.rssi} dBm` : 'Прямой эфир'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    <button
-                      onClick={() => setActiveTestNodeId(activeTestNodeId === node.id ? null : node.id)}
-                      className="bg-slate-800 hover:bg-slate-700 text-cyan-300 active:scale-95 px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 border border-cyan-500/30 transition"
-                      title="Тест прямой передачи по BLE"
-                    >
-                      <Zap className="w-3.5 h-3.5" /> BLE
-                    </button>
-                    <button
-                      onClick={() => handleOpenDirectChat(node.id, node.displayName)}
-                      className="bg-cyan-600 hover:bg-cyan-500 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 text-white shadow-lg shadow-cyan-900/20"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" /> Написать
-                    </button>
-                  </div>
-                </div>
-
-                {/* Раскрывающийся блок прямой отправки по Bluetooth без интернета */}
-                {activeTestNodeId === node.id && (
-                  <div className="mt-1 pt-2 border-t border-slate-800/80 flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={testText}
-                      onChange={(e) => setTestText(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSendDirect(node);
-                      }}
-                      placeholder="Тестовое сообщение в эфир..."
-                      className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-cyan-400"
-                    />
-                    <button
-                      onClick={() => handleSendDirect(node)}
-                      disabled={!testText.trim() || sendingNodeId === node.id}
-                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 active:scale-95 px-3 py-1.5 rounded-xl text-xs font-semibold text-white flex items-center gap-1.5 shrink-0 shadow"
-                    >
-                      {sendingNodeId === node.id ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Send className="w-3.5 h-3.5" />
+            peers.map((peer) => {
+              const isConnecting = resolvingMac === peer.mac;
+              const isSelected = selectedPeer?.mac === peer.mac;
+              return (
+                <div
+                  key={peer.mac}
+                  onClick={() => setSelectedPeer(peer)}
+                  className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all cursor-pointer ${
+                    isSelected
+                      ? 'bg-cyan-950/60 border-cyan-500/80 shadow-md'
+                      : 'bg-slate-900/60 hover:bg-slate-900 border-slate-800/80 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="min-w-0 pr-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <span className="font-semibold text-sm text-slate-100 truncate">
+                        {peer.name}
+                      </span>
+                      {peer.isResolved && (
+                        <span className="text-[9px] bg-emerald-950 text-emerald-400 border border-emerald-800 px-1.5 py-0.2 rounded shrink-0 font-mono">
+                          UID READY
+                        </span>
                       )}
-                      Передать
-                    </button>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1 font-mono flex items-center gap-2">
+                      <span>{peer.mac}</span>
+                      <span>•</span>
+                      <span className="text-cyan-400 font-semibold">{peer.rssi} dBm</span>
+                      <span>({rssiToDistanceLabel(peer.rssi)})</span>
+                    </div>
                   </div>
-                )}
-              </div>
-            ))
+
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleConnect(peer);
+                    }}
+                    disabled={isConnecting}
+                    className="flex items-center gap-1.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500 px-3.5 py-2 rounded-xl text-xs font-semibold text-white transition active:scale-95 shrink-0 shadow-md shadow-cyan-600/20"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    {isConnecting ? 'Связь...' : 'Написать'}
+                  </button>
+                </div>
+              );
+            })
           )}
         </div>
       </div>
     </div>
   );
 };
+
+export default MeshRadar;

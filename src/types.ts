@@ -107,6 +107,7 @@ export interface Message {
   fileName?: string;
   fileSize?: number;
   audioDuration?: number;
+  voiceDuration?: number;
   createdAt: string;
   updatedAt?: string;
   inlineButtons?: { text: string; callbackData?: string; url?: string }[][];

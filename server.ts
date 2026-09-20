@@ -1721,6 +1721,67 @@ io.on('connection', (socket) => {
                  }
               }
               
+              // Built-in currency commands if enabled
+              if (bot.currency?.enabled && !isGroup && msg.receiverId === bot.id) {
+                  const txt = (msg.text || '').trim().toLowerCase();
+                  const curName = bot.currency.name || 'валюты';
+                  const curSym = bot.currency.symbol || '⭐';
+                  const balanceKey = `__currency_balance_${bot.id}`;
+                  const botVars = (global as any).userBotVariables?.get(`${bot.id}_${myUid}`) || {};
+                  let curBalance = botVars[balanceKey];
+                  if (curBalance === undefined) {
+                      curBalance = bot.currency.initialBalance ?? 50;
+                      botVars[balanceKey] = curBalance;
+                      if (!(global as any).userBotVariables) (global as any).userBotVariables = new Map();
+                      (global as any).userBotVariables.set(`${bot.id}_${myUid}`, botVars);
+                  }
+
+                  if (txt === '/balance' || txt === '/баланс') {
+                      const inlineButtons = bot.currency.paymentUrl ? [[{
+                          text: `💳 Пополнить баланс (${curSym})`,
+                          url: bot.currency.paymentUrl.replace(/{user_uid}/g, myUid)
+                      }]] : undefined;
+
+                      const botMsg: any = {
+                          id: uuidv4(),
+                          senderId: bot.id,
+                          receiverId: myUid,
+                          chatId: historyId,
+                          text: `💰 Ваш текущий баланс: **${curBalance} ${curSym}** (${curName})`,
+                          type: 'text',
+                          createdAt: new Date().toISOString(),
+                          inlineButtons
+                      };
+                      await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                      io.to(room).emit('message:received', botMsg);
+                      io.to(`user:${myUid}`).emit('message:received', botMsg);
+                      continue;
+                  }
+
+                  if (txt === '/buy' || txt === '/купить' || txt === '/пополнить') {
+                      if (bot.currency.paymentUrl) {
+                          const warningTxt = bot.currency.paymentWarningText || 'Внимание: вы переходите на внешнюю страницу оплаты. Ordina Mesh не хранит данные платёжных карт.';
+                          const botMsg: any = {
+                              id: uuidv4(),
+                              senderId: bot.id,
+                              receiverId: myUid,
+                              chatId: historyId,
+                              text: `💳 Для покупки **${curName}** перейдите по ссылке ниже:\n\n⚠️ _${warningTxt}_`,
+                              type: 'text',
+                              createdAt: new Date().toISOString(),
+                              inlineButtons: [[{
+                                  text: `Купить ${curName} (${curSym})`,
+                                  url: bot.currency.paymentUrl.replace(/{user_uid}/g, myUid)
+                              }]]
+                          };
+                          await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                          io.to(room).emit('message:received', botMsg);
+                          io.to(`user:${myUid}`).emit('message:received', botMsg);
+                          continue;
+                      }
+                  }
+              }
+
               // Handle rules natively
               let rulesToExecute: any[] = [];
               if (bot.rules && bot.rules.length > 0) {
@@ -1920,6 +1981,144 @@ io.on('connection', (socket) => {
                      io.to(room).emit('message:received', botMsg);
                      if (botMsg.receiverId) io.to(`user:${botMsg.receiverId}`).emit('message:received', botMsg);
                      break; // Stop any subsequent actions, we are in wait mode
+                  
+                  } else if (act.type === 'charge_currency') {
+                     const curName = bot.currency?.name || 'валюты';
+                     const curSym = bot.currency?.symbol || '⭐';
+                     const balanceKey = `__currency_balance_${bot.id}`;
+                     const botVars = (global as any).userBotVariables?.get(`${bot.id}_${myUid}`) || {};
+                     let curBalance = botVars[balanceKey];
+                     if (curBalance === undefined) {
+                         curBalance = bot.currency?.initialBalance ?? 50;
+                     }
+
+                     const cost = Number(act.params?.amount ?? 10);
+                     if (curBalance < cost) {
+                         // Insufficient funds
+                         const insufficientText = act.params?.insufficientText || 
+                             `❌ Недостаточно ${curName} для выполнения этого действия.\n💰 Ваш баланс: **${curBalance} ${curSym}**\n🏷️ Стоимость: **${cost} ${curSym}**`;
+                         
+                         const inlineButtons = bot.currency?.paymentUrl ? [[{
+                             text: `💳 Пополнить баланс (${curSym})`,
+                             url: bot.currency.paymentUrl.replace(/{user_uid}/g, myUid)
+                         }]] : undefined;
+
+                         const botMsg: any = {
+                             id: uuidv4(),
+                             senderId: bot.id,
+                             receiverId: !isGroup ? myUid : undefined,
+                             groupId: isGroup ? data.chatId : undefined,
+                             chatId: historyId,
+                             text: insufficientText,
+                             type: 'text',
+                             createdAt: new Date().toISOString(),
+                             inlineButtons
+                         };
+                         await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                         io.to(room).emit('message:received', botMsg);
+                         if (botMsg.receiverId) io.to(`user:${botMsg.receiverId}`).emit('message:received', botMsg);
+                         break; // Stop executing rest of rule actions
+                     } else {
+                         // Sufficient funds, deduct
+                         curBalance -= cost;
+                         botVars[balanceKey] = curBalance;
+                         if (!(global as any).userBotVariables) (global as any).userBotVariables = new Map();
+                         (global as any).userBotVariables.set(`${bot.id}_${myUid}`, botVars);
+
+                         actionContext['balance'] = curBalance;
+                         actionContext['currency_name'] = curName;
+                         actionContext['currency_symbol'] = curSym;
+
+                         if (act.params?.text) {
+                             let outText = act.params.text.replace(/{balance}/g, String(curBalance)).replace(/{amount}/g, String(cost));
+                             const botMsg: any = {
+                                 id: uuidv4(),
+                                 senderId: bot.id,
+                                 receiverId: !isGroup ? myUid : undefined,
+                                 groupId: isGroup ? data.chatId : undefined,
+                                 chatId: historyId,
+                                 text: outText,
+                                 type: 'text',
+                                 createdAt: new Date().toISOString()
+                             };
+                             await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                             io.to(room).emit('message:received', botMsg);
+                             if (botMsg.receiverId) io.to(`user:${botMsg.receiverId}`).emit('message:received', botMsg);
+                         }
+                     }
+
+                  } else if (act.type === 'reward_currency') {
+                     const curName = bot.currency?.name || 'валюты';
+                     const curSym = bot.currency?.symbol || '⭐';
+                     const balanceKey = `__currency_balance_${bot.id}`;
+                     const botVars = (global as any).userBotVariables?.get(`${bot.id}_${myUid}`) || {};
+                     let curBalance = botVars[balanceKey];
+                     if (curBalance === undefined) {
+                         curBalance = bot.currency?.initialBalance ?? 50;
+                     }
+
+                     const rewardAmount = Number(act.params?.amount ?? 5);
+                     curBalance += rewardAmount;
+                     botVars[balanceKey] = curBalance;
+                     if (!(global as any).userBotVariables) (global as any).userBotVariables = new Map();
+                     (global as any).userBotVariables.set(`${bot.id}_${myUid}`, botVars);
+
+                     actionContext['balance'] = curBalance;
+                     actionContext['currency_name'] = curName;
+                     actionContext['currency_symbol'] = curSym;
+
+                     if (act.params?.text) {
+                         let outText = act.params.text.replace(/{balance}/g, String(curBalance)).replace(/{amount}/g, String(rewardAmount));
+                         const botMsg: any = {
+                             id: uuidv4(),
+                             senderId: bot.id,
+                             receiverId: !isGroup ? myUid : undefined,
+                             groupId: isGroup ? data.chatId : undefined,
+                             chatId: historyId,
+                             text: outText,
+                             type: 'text',
+                             createdAt: new Date().toISOString()
+                         };
+                         await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                         io.to(room).emit('message:received', botMsg);
+                         if (botMsg.receiverId) io.to(`user:${botMsg.receiverId}`).emit('message:received', botMsg);
+                     }
+
+                  } else if (act.type === 'check_balance') {
+                     const curName = bot.currency?.name || 'валюты';
+                     const curSym = bot.currency?.symbol || '⭐';
+                     const balanceKey = `__currency_balance_${bot.id}`;
+                     const botVars = (global as any).userBotVariables?.get(`${bot.id}_${myUid}`) || {};
+                     let curBalance = botVars[balanceKey];
+                     if (curBalance === undefined) {
+                         curBalance = bot.currency?.initialBalance ?? 50;
+                         botVars[balanceKey] = curBalance;
+                         if (!(global as any).userBotVariables) (global as any).userBotVariables = new Map();
+                         (global as any).userBotVariables.set(`${bot.id}_${myUid}`, botVars);
+                     }
+
+                     let template = act.params?.text || `💰 Ваш текущий баланс: **{balance} ${curSym}** (${curName})`;
+                     let outText = template.replace(/{balance}/g, String(curBalance)).replace(/{currency_name}/g, curName).replace(/{symbol}/g, curSym);
+
+                     const inlineButtons = bot.currency?.paymentUrl ? [[{
+                         text: `💳 Пополнить баланс (${curSym})`,
+                         url: bot.currency.paymentUrl.replace(/{user_uid}/g, myUid)
+                     }]] : undefined;
+
+                     const botMsg: any = {
+                         id: uuidv4(),
+                         senderId: bot.id,
+                         receiverId: !isGroup ? myUid : undefined,
+                         groupId: isGroup ? data.chatId : undefined,
+                         chatId: historyId,
+                         text: outText,
+                         type: 'text',
+                         createdAt: new Date().toISOString(),
+                         inlineButtons
+                     };
+                     await pool.query('INSERT INTO messages (id, "chatId", data, "createdAt") VALUES ($1, $2, $3, $4)', [botMsg.id, historyId, JSON.stringify(botMsg), botMsg.createdAt]);
+                     io.to(room).emit('message:received', botMsg);
+                     if (botMsg.receiverId) io.to(`user:${botMsg.receiverId}`).emit('message:received', botMsg);
                   
                   } else if (act.type === 'daivinchik') {
                      // Daivinchik mode trigger

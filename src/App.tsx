@@ -3753,65 +3753,27 @@ function AppContent() {
       type: finalMsg.type || 'text'
     };
 
-    const connectionLevel = multiTierRouter.getConnectionLevel();
-    console.log(`[Dispatcher] Отправка сообщения в режиме: ${connectionLevel.toUpperCase()}`);
+    console.log('[Dispatcher] Dual-Send: отправка на сервер и в радиоэфир BLE');
 
-    // 7. Route via 4 Connection Levels
-    // -------------------------------------------------------------
-    // РЕЖИМ 1: ТОЛЬКО BLE (ОФЛАЙН РАЦИЯ)
-    // -------------------------------------------------------------
-    if (connectionLevel === 'ble') {
-      console.log('[Dispatcher] Режим BLE: принудительно глушим интернет и шлем только по Bluetooth');
-      MeshTransport.sendMeshMessage(chatId, blePacket).catch(err => {
-        console.warn('[BLE Send] Ошибка передачи:', err);
-      });
-      playSentMessageSound();
-      addToast('📡 Сообщение передано в радиоэфир (Режим BLE)', 'info');
-    }
-    // -------------------------------------------------------------
-    // РЕЖИМ 2: АВТО (ПАРАЛЛЕЛЬНАЯ ДУАЛЬНАЯ ОТПРАВКА: СЕРВЕР + BLE ОДНОВРЕМЕННО)
-    // -------------------------------------------------------------
-    else if (connectionLevel === 'auto') {
-      // 1. Если есть сокет сервера — пушим на сервер
-      if (isOnline && socket?.connected) {
+    // 1. ЕСЛИ ЕСТЬ ИНТЕРНЕТ И СОКЕТ — ОТПРАВЛЯЕМ НА СЕРВЕР
+    if (isOnline && socket?.connected) {
+      try {
         socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
+        console.log('[Send] Отправлено через сервер сокета');
+      } catch (err) {
+        console.warn('[Send] Ошибка отправки на сокет:', err);
       }
-      // 2. И ОДНОВРЕМЕННО передаем в эфир по BLE (для соседей без интернета!)
-      MeshTransport.sendMeshMessage(chatId, blePacket).catch(err => {
-        console.warn('[Dual-Send BLE] Ошибка радио-передачи:', err);
-      });
-
-      playSentMessageSound();
-      if (!isOnline) {
-        addToast('📡 Отправлено в офлайн BLE Mesh-сеть', 'info');
-      }
-    }
-    // -------------------------------------------------------------
-    // РЕЖИМ 3: P2P (Прямой WebRTC / Wi-Fi Hotspot / BLE)
-    // -------------------------------------------------------------
-    else if (connectionLevel === 'p2p') {
-      p2pManager.sendDirectP2P(chatId, finalMsg);
-      if (isOnline && socket?.connected) {
-        socket.emit('message:new', { chatId, message: cleanObject(finalMsg) });
-      }
-      MeshTransport.sendMeshMessage(chatId, blePacket).catch(() => {});
-      playSentMessageSound();
-    }
-    // -------------------------------------------------------------
-    // РЕЖИМ 4: АНТИ-DPI (Только защищенный сервер с обфускацией)
-    // -------------------------------------------------------------
-    else if (connectionLevel === 'antidpi') {
-      if (isOnline && socket?.connected) {
-        const masked = obfuscationEngine.maskPayload({ chatId, message: cleanObject(finalMsg) });
-        socket.emit('obfuscated:packet', masked);
-      } else {
-        obfuscationEngine.sendViaHttpBypass(chatId, finalMsg).catch(() => {});
-      }
-      playSentMessageSound();
     }
 
-    // Dispatch also to multi-tier router fallback
-    multiTierRouter.dispatchMessage(chatId, cleanObject(finalMsg)).catch(() => {});
+    // 2. ПАРАЛЛЕЛЬНО ВСЕГДА ШЛЕМ В ЭФИР BLE (для тех, кто рядом без интернета!)
+    MeshTransport.sendMeshMessage(chatId, blePacket).catch(err => {
+      console.warn('[Dual-Send BLE] Ошибка радио-передачи:', err);
+    });
+
+    playSentMessageSound();
+    if (!isOnline) {
+      addToast('📡 Отправлено в офлайн BLE Mesh-сеть', 'info');
+    }
 
     // 8. Update activeChats list if new chat
     if (selectedChat?.type === 'user' && profile && !(profile.activeChats || []).includes(chatId)) {
@@ -8534,7 +8496,10 @@ function AppContent() {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (btn.url) {
-                                        window.open(btn.url, '_blank');
+                                        const proceed = window.confirm(`⚠️ Внимание: вы переходите по внешней ссылке для оплаты:\n${btn.url}\n\nOrdina Mesh не хранит данные платёжных карт и не несёт ответственности за внешние шлюзы.\n\nПерейти на страницу оплаты?`);
+                                        if (proceed) {
+                                          window.open(btn.url, '_blank');
+                                        }
                                       } else if ((btn as any).action === 'copy' && (btn as any).actionData) {
                                         navigator.clipboard.writeText((btn as any).actionData).then(() => {
                                           if ((window as any).addToast) {

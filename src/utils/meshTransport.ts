@@ -1,416 +1,327 @@
 // src/utils/meshTransport.ts
-import { BleClient } from '@capacitor-community/bluetooth-le';
+import { BleClient, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { Capacitor } from '@capacitor/core';
+import { Preferences } from '@capacitor/preferences';
 import { saveMessage } from './localCache';
-import { Message } from '../types';
 
 export const ORDINA_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
 export const ORDINA_CHAR    = '0000ffe1-0000-1000-8000-00805f9b34fb';
 
 export interface DiscoveredPeer {
-  id: string;             // UID пользователя или MAC устройства
-  mac: string;            // Bluetooth MAC адрес устройства
-  deviceId?: string;      // Совместимость с deviceId
-  name: string;           // Имя пользователя или узла
+  id: string;        // UID пользователя (или MAC, пока не разрезолвлен)
+  mac: string;       // MAC-адрес узла
+  name: string;      // Имя для отображения
+  rssi: number;      // Сила сигнала
+  isResolved: boolean;
   transport?: 'ble' | 'lan' | 'relay';
-  rssi?: number;
   ip?: string;
   lastSeen?: number;
 }
 
-export class MeshTransport {
-  public static peers: Map<string, DiscoveredPeer> = new Map(); // MAC -> Peer
-  public static uidToMac: Map<string, string> = new Map();       // UID -> MAC
-  public static macToUid: Map<string, string> = new Map();       // MAC -> UID
-  
-  private static myUid = '';
-  private static isScanning = false;
-  private static isInitialized = false;
-  private static onPeersChanged: ((peers: DiscoveredPeer[]) => void) | null = null;
-  private static pingInterval: any = null;
-  private static pruneInterval: any = null;
-  private static broadcastChannel: BroadcastChannel | null = null;
+export interface MeshPacket {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  chatId: string;
+  text: string;
+  createdAt: string;
+  ttl?: number;
+  relayPath?: string[];
+}
 
-  public static setOnPeersChanged(cb: (peers: DiscoveredPeer[]) => void) {
-    this.onPeersChanged = cb;
-  }
+export class MeshTransport {
+  public static peers: Map<string, DiscoveredPeer> = new Map();
+  public static uidToMac: Map<string, string> = new Map();
+  public static macToUid: Map<string, string> = new Map();
+
+  private static myUid: string = '';
+  private static onPeersChanged: ((peers: DiscoveredPeer[]) => void) | null = null;
+  private static isInitialized = false;
+
+  // Очередь для защиты BLE от параллельных подключений (GATT Error 133 fix)
+  private static bleOperationQueue: Promise<any> = Promise.resolve();
+  private static resolvingMacs: Set<string> = new Set();
+  
+  // Кэш дедупликации (последние 500 сообщений)
+  private static seenPackets: Set<string> = new Set();
 
   public static setMyUid(uid: string) {
     this.myUid = uid;
     this.init(uid);
   }
 
-  public static init(myUid: string) {
+  public static async init(myUid: string) {
     if (myUid) {
       this.myUid = myUid;
       try {
+        Preferences.set({ key: 'last_auth_uid', value: myUid }).catch(() => {});
         localStorage.setItem('last_auth_uid', myUid);
       } catch (_) {}
     }
 
-    if (this.isInitialized) return;
+    if (this.isInitialized || !Capacitor.isNativePlatform()) return;
     this.isInitialized = true;
 
+    // Слушаем входящие из Java MainActivity
     if (typeof window !== 'undefined') {
-      // Прием входящих сырых сообщений из Java GATT-сервера
       window.addEventListener('mesh:incoming_raw', async (event: any) => {
-        const raw = event.detail?.raw !== undefined ? event.detail.raw : event.detail;
-        if (!raw) return;
-        await this.handleIncomingRawPacket(raw);
-      });
+        try {
+          const raw = event.detail?.raw !== undefined ? event.detail.raw : event.detail;
+          if (!raw) return;
+          const packet: MeshPacket = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (!packet || !packet.id || !packet.text) return;
 
-      window.addEventListener('mesh:directPacket', async (event: any) => {
-        const raw = event.detail?.raw !== undefined ? event.detail.raw : (event.data?.raw || event.detail);
-        if (!raw) return;
-        await this.handleIncomingRawPacket(raw);
+          await this.handleIncomingPacket(packet);
+        } catch (e) {
+          console.error('[Mesh] Ошибка разбора incoming_raw:', e);
+        }
       });
     }
 
-    // Запуск сканирования и фонового рукопожатия
-    this.startDiscovery(myUid);
+    // Запускаем сканирование эфира
+    await this.startDiscovery();
   }
 
-  /** Запуск гибридного прослушивания по всем каналам связи (для обратной совместимости) */
-  public static async startOmniListening(myUid: string, myName: string = 'Пользователь') {
-    this.init(myUid);
-    this.startSubnetPing(myUid, myName);
+  public static async startOmniListening(uid: string, _myName: string = 'User') {
+    await this.init(uid);
+    await this.startDiscovery();
+  }
+
+  public static setOnPeersChanged(cb: (peers: DiscoveredPeer[]) => void) {
+    this.onPeersChanged = cb;
   }
 
   /**
-   * Запуск BLE сканирования эфира с мгновенным тихим рукопожатием (Silent Handshake)
+   * СТАБИЛЬНОЕ СКАНИРОВАНИЕ БЕЗ ШТОРМА
    */
-  public static async startDiscovery(myUid?: string, myName?: string) {
-    if (myUid) this.myUid = myUid;
-
-    if (!Capacitor.isNativePlatform()) {
-      this.startSubnetPing(this.myUid, myName || 'Пользователь');
-      return;
-    }
-
-    if (this.isScanning) return;
+  public static async startDiscovery() {
+    if (!Capacitor.isNativePlatform()) return;
 
     try {
       await BleClient.initialize();
-      this.isScanning = true;
+      try { await BleClient.stopLEScan(); } catch (_) {}
 
-      try {
-        await BleClient.stopLEScan();
-      } catch (_) {}
-
+      // Фильтруем строго по нашему UUID и выключаем дубликаты!
       await BleClient.requestLEScan(
-        { services: [], allowDuplicates: true },
-        async (result) => {
-          const isOrdinaUuid = result.uuids && result.uuids.some((u: string) => u.toLowerCase().includes('ffe0'));
-          const devName = result.device?.name || result.localName || '';
-          const isOrdinaName = devName.startsWith('ORD_') || devName.toLowerCase().includes('ordina');
+        {
+          services: [ORDINA_SERVICE],
+          allowDuplicates: false // ЗАЩИТА: событие стреляет 1 раз при нахождении
+        },
+        (result) => {
+          const mac = result.device?.deviceId;
+          if (!mac) return;
 
-          if (isOrdinaUuid || isOrdinaName) {
-            const mac = result.device.deviceId;
-            let existing = this.peers.get(mac);
+          if (!this.peers.has(mac)) {
+            const newPeer: DiscoveredPeer = {
+              id: mac,
+              mac: mac,
+              name: `Узел [${mac.slice(-5)}]`,
+              rssi: result.rssi || -60,
+              isResolved: false,
+              transport: 'ble',
+              lastSeen: Date.now()
+            };
+            this.peers.set(mac, newPeer);
+            this.notifyPeers();
 
-            if (!existing) {
-              const newPeer: DiscoveredPeer = {
-                id: mac,
-                mac: mac,
-                deviceId: mac,
-                name: devName || `Узел [${mac.slice(-5)}]`,
-                transport: 'ble',
-                rssi: result.rssi || -50,
-                lastSeen: Date.now()
-              };
-              this.peers.set(mac, newPeer);
-
-              if (this.onPeersChanged) {
-                this.onPeersChanged(Array.from(this.peers.values()));
-              }
-
-              // Фоновое тихое рукопожатие: узнаем настоящий UID сразу при обнаружении в эфире!
-              this.resolvePeerUid(mac);
-            } else {
-              existing.rssi = result.rssi || existing.rssi;
-              existing.lastSeen = Date.now();
-            }
+            // Ставим в очередь на аккуратное тихое рукопожатие
+            this.queueResolvePeer(mac);
+          } else {
+            // Обновляем уровень сигнала
+            const existing = this.peers.get(mac)!;
+            existing.rssi = result.rssi || existing.rssi;
+            existing.lastSeen = Date.now();
           }
         }
       );
-
-      // Периодическая проверка узлов
-      if (!this.pruneInterval) {
-        this.pruneInterval = setInterval(() => {
-          const now = Date.now();
-          let changed = false;
-          this.peers.forEach((peer, mac) => {
-            if (peer.lastSeen && now - peer.lastSeen > 20000) {
-              this.peers.delete(mac);
-              changed = true;
-            }
-          });
-          if (changed && this.onPeersChanged) {
-            this.onPeersChanged(Array.from(this.peers.values()));
-          }
-        }, 5000);
-      }
+      console.log('[Mesh] BLE LE сканирование успешно запущено');
     } catch (e) {
-      console.error('[BLE Scan] Ошибка запуска сканера:', e);
-      this.isScanning = false;
+      console.error('[Mesh] Ошибка запуска сканера:', e);
+    }
+  }
+
+  private static notifyPeers() {
+    if (this.onPeersChanged) {
+      this.onPeersChanged(Array.from(this.peers.values()));
     }
   }
 
   /**
-   * Считывание реального UID соседа по BLE и связывание его с MAC-адресом
+   * Очередь на рукопожатие (строго по одному, без перегрузки чипа)
+   */
+  private static queueResolvePeer(mac: string) {
+    if (this.resolvingMacs.has(mac)) return;
+    this.resolvingMacs.add(mac);
+
+    this.bleOperationQueue = this.bleOperationQueue.then(async () => {
+      try {
+        await this.resolvePeerUid(mac);
+      } finally {
+        this.resolvingMacs.delete(mac);
+      }
+    });
+  }
+
+  /**
+   * Тихое рукопожатие по GATT: получаем UID собеседника
    */
   public static async resolvePeerUid(mac: string): Promise<string> {
-    if (!mac) return mac;
-
-    // Если уже не MAC, а готовый UID
-    if (!mac.includes(':') && mac.length > 8) {
-      return mac;
-    }
-
-    if (this.macToUid.has(mac)) {
-      return this.macToUid.get(mac)!;
-    }
-
-    if (!Capacitor.isNativePlatform()) {
-      return mac;
-    }
-
     try {
-      console.log(`[MeshTransport] Запрос реального UID у узла по BLE MAC: ${mac}...`);
       await BleClient.connect(mac);
       const dataView = await BleClient.read(mac, ORDINA_SERVICE, ORDINA_CHAR);
-      const realUid = new TextDecoder('utf-8').decode(dataView);
       await BleClient.disconnect(mac);
 
-      const cleanUid = realUid ? realUid.trim() : '';
-      if (cleanUid && cleanUid.length > 4 && !cleanUid.includes('unknown')) {
-        console.log(`[MeshTransport] Успешно получен реальный UID: ${cleanUid} вместо MAC ${mac}`);
-        this.uidToMac.set(cleanUid, mac);
-        this.macToUid.set(mac, cleanUid);
+      const decoder = new TextDecoder();
+      const bytes = new Uint8Array(dataView.buffer, dataView.byteOffset, dataView.byteLength);
+      const realUid = decoder.decode(bytes).trim();
+
+      if (realUid && realUid.length > 3 && !realUid.includes('unknown')) {
+        this.uidToMac.set(realUid, mac);
+        this.macToUid.set(mac, realUid);
 
         const peer = this.peers.get(mac);
         if (peer) {
-          peer.id = cleanUid;
-          peer.name = `Ордина [${cleanUid.slice(0, 5)}]`;
+          peer.id = realUid;
+          peer.name = `Ордина [${realUid.slice(0, 5)}]`;
+          peer.isResolved = true;
           peer.lastSeen = Date.now();
+          this.notifyPeers();
         }
-
-        if (this.onPeersChanged) {
-          this.onPeersChanged(Array.from(this.peers.values()));
-        }
-
-        return cleanUid;
+        console.log(`[Mesh] Успешное рукопожатие: MAC ${mac} -> UID ${realUid}`);
+        return realUid;
       }
     } catch (err) {
-      console.warn(`[MeshTransport] Не удалось считать UID по BLE у ${mac}:`, err);
-      try {
-        await BleClient.disconnect(mac);
-      } catch (_) {}
+      // Игнорируем штатные помехи
+      try { await BleClient.disconnect(mac); } catch (_) {}
     }
-
-    return this.macToUid.get(mac) || mac;
+    return mac;
   }
 
   /**
-   * УМНАЯ ОТПРАВКА: Прицельно по MAC или вещание всем соседям в эфир (Mesh Flooding)
+   * ОБРАБОТКА ВХОДЯЩЕГО ПАКЕТА И РЕТРАНСЛЯЦИЯ (MESH)
    */
-  public static async sendMeshMessage(targetUid: string, message: any): Promise<boolean> {
-    let targetMac = targetUid.includes(':') ? targetUid : this.uidToMac.get(targetUid);
-
-    if (!targetMac) {
-      // Проверяем сохраненные пиры
-      for (const [mac, peer] of this.peers.entries()) {
-        if (peer.id === targetUid || peer.mac === targetUid || peer.deviceId === targetUid) {
-          targetMac = mac;
-          this.uidToMac.set(targetUid, mac);
-          break;
-        }
-      }
-    }
-
-    // 1. Если знаем точный MAC-адрес собеседника — шлем прямо ему
-    if (targetMac) {
-      console.log(`[Mesh] Найден точный MAC ${targetMac} для UID ${targetUid}, прямая передача в GATT...`);
-      return await this.writeToGatt(targetMac, message);
-    }
-
-    // 2. Если точный MAC неизвестен (мы в сети, а он офлайн) — 
-    // РАССЫЛАЕМ ВО ВСЕ НАЙДЕННЫЕ В ЭФИРЕ ТЕЛЕФОНЫ (Mesh Flooding)!
-    console.log(`[Mesh] Точный MAC не найден для ${targetUid}, транслируем во все узлы эфира (Flooding)...`);
+  private static async handleIncomingPacket(packet: MeshPacket) {
+    // 1. Дедупликация: если пакет уже видели — отбрасываем
+    if (this.seenPackets.has(packet.id)) return;
     
-    // В браузере транслируем в broadcastChannel
-    if (!Capacitor.isNativePlatform()) {
-      this.broadcastChannel?.postMessage({
-        type: 'DIRECT_PACKET',
-        targetId: targetUid,
-        packet: message
-      });
-      return true;
+    if (this.seenPackets.size > 500) {
+      const oldest = this.seenPackets.keys().next().value;
+      if (oldest) this.seenPackets.delete(oldest);
     }
+    this.seenPackets.add(packet.id);
 
-    const allMacs = Array.from(this.peers.keys()).filter(m => m && m.includes(':'));
-    if (allMacs.length === 0) {
-      console.warn('[Mesh] В эфире нет доступных BLE-узлов для рассылки');
-      return false;
-    }
+    console.log('[Mesh] Обработка пакета:', packet);
 
-    let delivered = false;
-    for (const mac of allMacs) {
-      const ok = await this.writeToGatt(mac, message);
-      if (ok) delivered = true;
-    }
-
-    return delivered;
-  }
-
-  /** Совместимость со старыми вызовами */
-  public static async sendDirectMessage(targetDeviceIdOrUid: string, packet: any): Promise<boolean> {
-    return this.sendMeshMessage(targetDeviceIdOrUid, packet);
-  }
-
-  /** Запись пакета в GATT-характеристику устройства */
-  public static async writeToGatt(mac: string, message: any): Promise<boolean> {
-    if (!Capacitor.isNativePlatform()) {
-      this.broadcastChannel?.postMessage({
-        type: 'DIRECT_PACKET',
-        targetId: mac,
-        packet: message
-      });
-      return true;
-    }
-
-    try {
-      console.log(`[BLE Send] Подключение к MAC ${mac} для передачи пакета...`);
-      await BleClient.connect(mac);
-      
-      const jsonStr = typeof message === 'string' ? message : JSON.stringify(message);
-      const dataView = new DataView(new TextEncoder().encode(jsonStr).buffer);
-
-      await BleClient.write(mac, ORDINA_SERVICE, ORDINA_CHAR, dataView);
-      await BleClient.disconnect(mac);
-      console.log(`[BLE Send] Пакет успешно передан в GATT ${mac}`);
-      return true;
-    } catch (e) {
-      console.warn(`[BLE Send] Не удалось передать на ${mac}:`, e);
-      try {
-        await BleClient.disconnect(mac);
-      } catch (_) {}
-      return false;
-    }
-  }
-
-  /**
-   * Обработка входящего пакета из Java или прямого BLE соединения
-   */
-  public static async handleIncomingRawPacket(rawData: any) {
-    try {
-      const packet = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
-      if (!packet || (!packet.text && !packet.content)) return;
-
-      console.log('[MeshTransport] Входящий пакет принят:', packet);
-
-      // Запоминаем отправителя в таблицу маршрутов
-      if (packet.senderId && packet.senderMac) {
-        this.uidToMac.set(packet.senderId, packet.senderMac);
-        this.macToUid.set(packet.senderMac, packet.senderId);
-      }
-
-      const myUid = this.myUid || (typeof localStorage !== 'undefined' ? localStorage.getItem('last_auth_uid') : '') || '';
-      const senderId = packet.senderId || 'peer';
-      const receiverId = (packet.receiverId && !packet.receiverId.includes(':')) ? packet.receiverId : myUid;
-      const chatId = packet.chatId || [senderId, myUid].sort().join('_');
-      const text = packet.text || packet.content || '';
-
-      const normalized: Message = {
-        id: packet.id || `ble_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    // 2. Пакет предназначен МНЕ
+    const currentUid = this.myUid || (typeof localStorage !== 'undefined' ? localStorage.getItem('last_auth_uid') : '') || '';
+    if (packet.receiverId === currentUid || !packet.receiverId) {
+      const chatId = packet.chatId || [packet.senderId, currentUid].sort().join('_');
+      const normalized: any = {
+        id: packet.id,
         chatId: chatId,
-        senderId: senderId,
-        receiverId: receiverId,
-        text: text,
-        content: text,
-        type: packet.type || 'text',
+        senderId: packet.senderId,
+        receiverId: currentUid,
+        text: packet.text,
+        content: packet.text,
         createdAt: packet.createdAt || new Date().toISOString(),
         deliveryStatus: 'delivered',
         status: 'delivered',
         isMesh: true,
-        meshHops: 1
+        type: 'text'
       };
 
-      // 1. Сохраняем в локальную базу данных SQLite
+      // Сохраняем в локальный SQLite
       await saveMessage(normalized);
-      console.log('[MeshTransport] Сообщение успешно сохранено в SQLite базу:', normalized.id);
 
-      // 2. Оповещаем UI для мгновенного обновления открытого чата
+      // Обновляем экран открытого чата
       window.dispatchEvent(new CustomEvent('ordinamsg:new', { detail: normalized }));
-      window.dispatchEvent(new CustomEvent('mesh:incoming', { detail: normalized }));
-
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate([100, 50, 100]);
-        } catch (_) {}
+        try { navigator.vibrate([100, 50, 100]); } catch (_) {}
       }
-    } catch (err) {
-      console.error('[MeshTransport] Ошибка обработки входящего BLE пакета:', err);
+      return;
+    }
+
+    // 3. Пакет НЕ МНЕ: Ретрансляция (Relay Multi-hop)
+    const ttl = packet.ttl ?? 3;
+    const path = packet.relayPath || [];
+
+    if (ttl > 1 && !path.includes(currentUid)) {
+      console.log(`[Mesh] Ретранслируем пакет ${packet.id} дальше...`);
+      const relayPacket: MeshPacket = {
+        ...packet,
+        ttl: ttl - 1,
+        relayPath: [...path, currentUid]
+      };
+
+      // Случайная пауза (jitter) 100-250мс против коллизий эфира
+      setTimeout(() => {
+        this.sendMeshMessage(relayPacket.receiverId, relayPacket);
+      }, Math.floor(Math.random() * 150) + 100);
     }
   }
 
-  // --- КАНАЛ 2: Локальная подсеть (Hotspot / Wi-Fi / Browser Tabs) ---
-  private static startSubnetPing(myUid: string, myName: string) {
-    if (this.pingInterval) clearInterval(this.pingInterval);
-
-    if (!this.broadcastChannel && typeof window !== 'undefined' && 'BroadcastChannel' in window) {
-      this.broadcastChannel = new BroadcastChannel('ordina_local_mesh');
-      this.broadcastChannel.onmessage = (event) => {
-        if (!event.data) return;
-        if (event.data.type === 'PING' && event.data.uid && event.data.uid !== myUid) {
-          this.registerPeer({
-            id: event.data.uid,
-            mac: event.data.uid,
-            deviceId: event.data.uid,
-            name: event.data.name || `Ордина [${event.data.uid.slice(0, 4)}]`,
-            transport: 'lan',
-            lastSeen: Date.now()
-          });
-          try {
-            this.broadcastChannel?.postMessage({
-              type: 'PONG',
-              uid: myUid,
-              name: myName,
-              ts: Date.now()
-            });
-          } catch (e) {}
-        } else if (event.data.type === 'PONG' && event.data.uid && event.data.uid !== myUid) {
-          this.registerPeer({
-            id: event.data.uid,
-            mac: event.data.uid,
-            deviceId: event.data.uid,
-            name: event.data.name || `Ордина [${event.data.uid.slice(0, 4)}]`,
-            transport: 'lan',
-            lastSeen: Date.now()
-          });
-        }
-      };
-    }
-
-    const sendPing = () => {
-      try {
-        this.broadcastChannel?.postMessage({
-          type: 'PING',
-          uid: myUid,
-          name: myName,
-          ts: Date.now()
-        });
-      } catch (e) {}
+  /**
+   * ОТПРАВКА СООБЩЕНИЯ В РАДИОЭФИР
+   */
+  public static async sendMeshMessage(targetUid: string, message: any): Promise<boolean> {
+    const currentUid = this.myUid || (typeof localStorage !== 'undefined' ? localStorage.getItem('last_auth_uid') : '') || 'user';
+    const packet: MeshPacket = {
+      id: message.id || `${currentUid}_${Date.now()}`,
+      senderId: currentUid,
+      receiverId: targetUid,
+      chatId: message.chatId || [currentUid, targetUid].sort().join('_'),
+      text: message.text || message.content || '',
+      createdAt: message.createdAt || new Date().toISOString(),
+      ttl: message.ttl ?? 3,
+      relayPath: message.relayPath || [currentUid]
     };
 
-    sendPing();
-    this.pingInterval = setInterval(sendPing, 3000);
+    // Заносим в свой кэш, чтобы не обрабатывать эхо от соседей
+    this.seenPackets.add(packet.id);
+
+    return new Promise((resolve) => {
+      // Все операции записи выполняются строго последовательно через очередь
+      this.bleOperationQueue = this.bleOperationQueue.then(async () => {
+        let delivered = false;
+        const targetMac = this.uidToMac.get(targetUid);
+
+        // 1. Точечная отправка (если знаем точный MAC)
+        if (targetMac) {
+          delivered = await this.writeToGatt(targetMac, packet);
+        }
+
+        // 2. Если MAC неизвестен или передача сорвалась — веерная отправка (Flooding)
+        if (!delivered) {
+          const allPeers = Array.from(this.peers.keys());
+          for (const mac of allPeers) {
+            const ok = await this.writeToGatt(mac, packet);
+            if (ok) delivered = true;
+          }
+        }
+        resolve(delivered);
+      });
+    });
   }
 
-  public static registerPeer(peer: DiscoveredPeer) {
-    this.peers.set(peer.mac || peer.id, peer);
-    if (this.onPeersChanged) {
-      this.onPeersChanged(Array.from(this.peers.values()));
+  public static async sendDirectMessage(targetId: string, packet: any): Promise<boolean> {
+    return this.sendMeshMessage(targetId, packet);
+  }
+
+  private static async writeToGatt(mac: string, packet: MeshPacket): Promise<boolean> {
+    try {
+      await BleClient.connect(mac);
+      const jsonStr = JSON.stringify(packet);
+      const encoder = new TextEncoder();
+      const dataView = numbersToDataView(Array.from(encoder.encode(jsonStr)));
+
+      await BleClient.write(mac, ORDINA_SERVICE, ORDINA_CHAR, dataView);
+      await BleClient.disconnect(mac);
+      console.log(`[Mesh] Пакет успешно записан в узел ${mac}`);
+      return true;
+    } catch (e) {
+      try { await BleClient.disconnect(mac); } catch (_) {}
+      // Пакет не доставлен на этот узел
+      return false;
     }
   }
 
@@ -418,21 +329,8 @@ export class MeshTransport {
     return Array.from(this.peers.values());
   }
 
-  public static stop() {
-    if (this.pingInterval) {
-      clearInterval(this.pingInterval);
-      this.pingInterval = null;
-    }
-    if (this.pruneInterval) {
-      clearInterval(this.pruneInterval);
-      this.pruneInterval = null;
-    }
-    if (this.broadcastChannel) {
-      try {
-        this.broadcastChannel.close();
-      } catch (e) {}
-      this.broadcastChannel = null;
-    }
-    this.isScanning = false;
+  public static registerPeer(peer: DiscoveredPeer) {
+    this.peers.set(peer.mac || peer.id, peer);
+    this.notifyPeers();
   }
 }

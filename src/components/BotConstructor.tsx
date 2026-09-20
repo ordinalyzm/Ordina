@@ -1,7 +1,16 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check, Sparkles, Loader2 } from 'lucide-react';
+import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check, Sparkles, Loader2, Coins, CreditCard, AlertTriangle, ShieldCheck, DollarSign } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+
+export interface BotCurrencyConfig {
+  enabled: boolean;
+  name: string; // e.g. "Звёзды", "Кристаллы", "Монеты"
+  symbol: string; // e.g. "⭐", "💎", "🪙"
+  initialBalance: number; // e.g. 50
+  paymentUrl?: string; // Link to buy currency
+  paymentWarningText?: string; // Custom warning message before redirect
+}
 
 export interface BotConfig {
   avatarUrl?: string;
@@ -15,6 +24,7 @@ export interface BotConfig {
   actions: BotAction[];
   rules?: BotRule[];
   usersList?: string[];
+  currency?: BotCurrencyConfig;
 }
 
 export interface BotTrigger {
@@ -42,7 +52,7 @@ export interface BotAction {
   id: string;
   conditionId?: string; // If undefined, applies to trigger without conditions
   order: number;
-  type: 'send_message' | 'set_variable' | 'http_request' | 'moderate' | 'wait_feedback' | 'send_message_to_user' | 'fetch_random_user';
+  type: 'send_message' | 'set_variable' | 'http_request' | 'moderate' | 'wait_feedback' | 'send_message_to_user' | 'fetch_random_user' | 'charge_currency' | 'reward_currency' | 'check_balance';
   params: any;
 }
 
@@ -369,14 +379,41 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
 
 function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSave: (b: BotConfig) => void }) {
   // Complex node editor state could go here. For now it's a basic form.
-  const [activeTab, setActiveTab] = useState<'flow' | 'settings'>('flow');
+  const [activeTab, setActiveTab] = useState<'flow' | 'currency' | 'settings'>('flow');
+
+  const currencyConfig = bot.currency || {
+    enabled: false,
+    name: 'Звёзды',
+    symbol: '⭐',
+    initialBalance: 50,
+    paymentUrl: '',
+    paymentWarningText: 'Внимание: вы переходите на внешнюю страницу оплаты. Ordina Mesh не хранит данные ваших платежных карт и не несет ответственности за внешние шлюзы.'
+  };
+
+  const updateCurrency = (partial: Partial<BotCurrencyConfig>) => {
+    const updated = {
+      ...bot,
+      currency: {
+        ...currencyConfig,
+        ...partial
+      }
+    };
+    setBot(updated);
+  };
 
   return (
     <div className="h-full flex flex-col bg-white rounded-2xl shadow-sm border border-slate-200">
-      <div className="flex items-center justify-between p-4 border-b border-slate-100">
+      <div className="flex items-center justify-between p-4 border-b border-slate-100 flex-wrap gap-2">
          <div className="flex gap-2">
-           <button onClick={() => setActiveTab('flow')} className={`px-4 py-2 rounded-xl text-sm font-bold ${activeTab === 'flow' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>Flow</button>
-           <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-xl text-sm font-bold ${activeTab === 'settings' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>Настройки</button>
+           <button onClick={() => setActiveTab('flow')} className={`px-4 py-2 rounded-xl text-sm font-bold transition ${activeTab === 'flow' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>Flow</button>
+           <button onClick={() => setActiveTab('currency')} className={`px-4 py-2 rounded-xl text-sm font-bold flex items-center gap-1.5 transition ${activeTab === 'currency' ? 'bg-amber-50 text-amber-700 shadow-sm' : 'text-slate-500 hover:bg-slate-50'}`}>
+             <Coins size={16} className={activeTab === 'currency' ? 'text-amber-600' : 'text-slate-400'} />
+             <span>Валюта и Платежи</span>
+             {currencyConfig.enabled && (
+               <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+             )}
+           </button>
+           <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-xl text-sm font-bold transition ${activeTab === 'settings' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>Настройки</button>
          </div>
          <div className="flex items-center gap-4">
            <label className="flex items-center gap-2 cursor-pointer">
@@ -385,12 +422,152 @@ function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSav
                <div className={`w-4 h-4 bg-white rounded-full transition-transform ${bot.isActive ? 'translate-x-6' : ''}`} />
              </div>
            </label>
-           <button onClick={() => onSave(bot)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold transition-colors">
+           <button onClick={() => onSave(bot)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold transition-colors shadow-sm">
              <Save size={16} /> Сохранить
            </button>
          </div>
       </div>
-      <div className="flex-1 p-6 overflow-y-auto bg-slate-50">
+      <div className="flex-1 p-6 overflow-y-auto bg-slate-50 custom-scrollbar">
+        {activeTab === 'currency' && (
+          <div className="max-w-3xl mx-auto space-y-6 pb-20">
+            {/* Currency Banner Card */}
+            <div className="bg-gradient-to-br from-amber-500 via-amber-600 to-orange-600 text-white p-6 rounded-2xl shadow-md relative overflow-hidden">
+              <div className="relative z-10">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-10 h-10 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center font-bold text-xl">
+                    {currencyConfig.symbol || '⭐'}
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-xl">Внутренняя валюта бота</h3>
+                    <p className="text-amber-100 text-xs">Монетизация действий, покупка валюты и платный функционал</p>
+                  </div>
+                </div>
+              </div>
+              <Coins className="absolute -right-6 -bottom-6 w-36 h-36 text-white/10 pointer-events-none" />
+            </div>
+
+            {/* Currency Master Switch */}
+            <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-base">Включить экономику бота</h4>
+                  <p className="text-xs text-slate-500 mt-0.5">Позволяет пользователям копить, тратить и покупать валюту за реальные действия</p>
+                </div>
+                <div 
+                  className={`w-14 h-7 rounded-full p-1 transition-colors cursor-pointer ${currencyConfig.enabled ? 'bg-amber-500' : 'bg-slate-300'}`} 
+                  onClick={() => updateCurrency({ enabled: !currencyConfig.enabled })}
+                >
+                  <div className={`w-5 h-5 bg-white rounded-full transition-transform shadow ${currencyConfig.enabled ? 'translate-x-7' : ''}`} />
+                </div>
+              </div>
+
+              {currencyConfig.enabled && (
+                <div className="space-y-4 pt-4 border-t border-slate-100 animate-in fade-in duration-200">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Название валюты</label>
+                      <input 
+                        type="text" 
+                        className="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-2.5 mt-1 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition" 
+                        value={currencyConfig.name} 
+                        onChange={e => updateCurrency({ name: e.target.value })} 
+                        placeholder="например: Звёзды, Монеты, Кристаллы" 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Символ / Иконка валюты</label>
+                      <input 
+                        type="text" 
+                        className="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-2.5 mt-1 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition" 
+                        value={currencyConfig.symbol} 
+                        onChange={e => updateCurrency({ symbol: e.target.value })} 
+                        placeholder="например: ⭐, 💎, 🪙, 🔥" 
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Стартовый баланс для новых пользователей</label>
+                    <input 
+                      type="number" 
+                      className="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-2.5 mt-1 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition" 
+                      value={currencyConfig.initialBalance} 
+                      onChange={e => updateCurrency({ initialBalance: Number(e.target.value) || 0 })} 
+                      placeholder="50" 
+                    />
+                    <p className="text-[11px] text-slate-400 mt-1">Сколько единиц валюты бесплатно получает каждый новый пользователь при первом обращении к боту.</p>
+                  </div>
+
+                  {/* Payment link & warning configuration */}
+                  <div className="pt-4 border-t border-slate-100 space-y-4">
+                    <div className="flex items-center gap-2 text-slate-800 font-bold text-sm">
+                      <CreditCard size={18} className="text-amber-600" />
+                      <span>Привязка ссылки на платеж для покупки валюты</span>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">URL ссылки на оплату / пополнение</label>
+                      <input 
+                        type="text" 
+                        className="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-2.5 mt-1 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition font-mono" 
+                        value={currencyConfig.paymentUrl || ''} 
+                        onChange={e => updateCurrency({ paymentUrl: e.target.value })} 
+                        placeholder="https://pay.example.com/checkout?user={user_uid}" 
+                      />
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Ссылка на ваш сайт, шлюз оплаты (Stripe, CloudPayments, Tinkoff, ЮКасса и др.). Поддерживает макрос <code className="bg-slate-100 px-1 rounded text-slate-700">{'{user_uid}'}</code>.
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-600 uppercase tracking-wide">Текст предупреждения безопасности перед переходом</label>
+                      <textarea 
+                        className="w-full text-sm bg-slate-50 border border-slate-200 rounded-xl p-2.5 mt-1 resize-none h-20 outline-none focus:bg-white focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 transition" 
+                        value={currencyConfig.paymentWarningText || ''} 
+                        onChange={e => updateCurrency({ paymentWarningText: e.target.value })} 
+                        placeholder="Внимание: вы переходите на внешнюю страницу оплаты..." 
+                      />
+                      <div className="flex items-start gap-2 bg-amber-50 p-3 rounded-xl border border-amber-200/80 text-xs text-amber-800 mt-2">
+                        <AlertTriangle size={16} className="text-amber-600 shrink-0 mt-0.5" />
+                        <span>
+                          При нажатии на ссылку покупки валюты пользователю обязательно будет показано модальное окно с этим предупреждением и подтверждением перехода.
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Auto-generate helper rules */}
+                  <div className="pt-4 border-t border-slate-100">
+                    <button
+                      onClick={() => {
+                        const balanceRule: BotRule = {
+                          id: uuidv4(),
+                          trigger: { id: uuidv4(), type: 'command', params: { value: '/balance' } },
+                          actions: [{
+                            id: uuidv4(),
+                            order: 0,
+                            type: 'check_balance',
+                            params: { text: `💰 Ваш текущий баланс: {balance} ${currencyConfig.symbol || '⭐'} (${currencyConfig.name || 'валюты'})` }
+                          }]
+                        };
+                        setBot({
+                          ...bot,
+                          currency: { ...currencyConfig, enabled: true },
+                          rules: [...(bot.rules || []), balanceRule]
+                        });
+                        alert('Правило /balance успешно добавлено в Flow бота!');
+                      }}
+                      className="px-4 py-2.5 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-800 font-bold text-xs rounded-xl transition flex items-center gap-2"
+                    >
+                      <Sparkles size={15} className="text-amber-600" />
+                      <span>Добавить в Flow команду проверки баланса (/balance)</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
         {activeTab === 'settings' && (
            <div className="max-w-3xl mx-auto space-y-6 pb-20">
              <div className="flex flex-col gap-2 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
@@ -523,6 +700,9 @@ function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSav
                                   onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, type: e.target.value as any} : ac)} : r)})}
                                 >
                                   <option value="send_message">Отправить сообщение</option>
+                                  <option value="charge_currency">💰 Списать валюту бота (платное действие)</option>
+                                  <option value="reward_currency">🎉 Начислить валюту бота (награда)</option>
+                                  <option value="check_balance">💳 Проверить баланс пользователя</option>
                                   <option value="set_variable">Изменить состояние (переменную)</option>
                                   <option value="fetch_random_user">Найти случайную анкету</option>
                                   <option value="wait_feedback">Запросить ввод (Обратная связь)</option>
@@ -672,6 +852,82 @@ function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSav
                                     <option value="unban_reply">Снять бан (по реплаю)</option>
                                     
                                   </select>
+                                )}
+
+                                {a.type === 'charge_currency' && (
+                                  <div className="flex flex-col gap-2 bg-amber-50/50 p-3 rounded-xl border border-amber-200">
+                                    <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
+                                      <Coins size={14} className="text-amber-600" />
+                                      <span>Списание валюты за действие</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <label className="text-xs text-slate-600 whitespace-nowrap">Стоимость:</label>
+                                      <input 
+                                        type="number" 
+                                        placeholder="10" 
+                                        className="w-28 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold" 
+                                        value={a.params?.amount ?? 10} 
+                                        onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, amount: Number(e.target.value) || 0}} : ac)} : r)})}
+                                      />
+                                      <span className="text-xs text-slate-500 font-medium">{currencyConfig.symbol || '⭐'} ({currencyConfig.name || 'валюты'})</span>
+                                    </div>
+                                    <textarea 
+                                      placeholder="Текст при успешной оплате (например: 'Оплата принята! Вот ваш контент:...')" 
+                                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs resize-none h-14 mt-1" 
+                                      value={a.params?.text || ''} 
+                                      onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, text: e.target.value}} : ac)} : r)})}
+                                    />
+                                    <textarea 
+                                      placeholder="Текст при нехватке баланса (если пусто, бот автоматически предложит пополнить баланс по ссылке)" 
+                                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs resize-none h-14" 
+                                      value={a.params?.insufficientText || ''} 
+                                      onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, insufficientText: e.target.value}} : ac)} : r)})}
+                                    />
+                                  </div>
+                                )}
+
+                                {a.type === 'reward_currency' && (
+                                  <div className="flex flex-col gap-2 bg-emerald-50/50 p-3 rounded-xl border border-emerald-200">
+                                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-900">
+                                      <Sparkles size={14} className="text-emerald-600" />
+                                      <span>Начисление валюты (бонус/награда)</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <label className="text-xs text-slate-600 whitespace-nowrap">Сумма начисления:</label>
+                                      <input 
+                                        type="number" 
+                                        placeholder="5" 
+                                        className="w-28 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold" 
+                                        value={a.params?.amount ?? 5} 
+                                        onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, amount: Number(e.target.value) || 0}} : ac)} : r)})}
+                                      />
+                                      <span className="text-xs text-slate-500 font-medium">{currencyConfig.symbol || '⭐'}</span>
+                                    </div>
+                                    <textarea 
+                                      placeholder="Текст сообщения о награде (например: 'Поздравляем! Вам начислено {balance}...')" 
+                                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs resize-none h-14 mt-1" 
+                                      value={a.params?.text || ''} 
+                                      onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, text: e.target.value}} : ac)} : r)})}
+                                    />
+                                  </div>
+                                )}
+
+                                {a.type === 'check_balance' && (
+                                  <div className="flex flex-col gap-2 bg-blue-50/50 p-3 rounded-xl border border-blue-200">
+                                    <div className="flex items-center gap-2 text-xs font-bold text-blue-900">
+                                      <CreditCard size={14} className="text-blue-600" />
+                                      <span>Проверка баланса пользователя</span>
+                                    </div>
+                                    <textarea 
+                                      placeholder="Текст сообщения с балансом (поддерживает {balance})" 
+                                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs resize-none h-14" 
+                                      value={a.params?.text || ''} 
+                                      onChange={e => setBot({...bot, rules: bot.rules?.map(r => r.id === rule.id ? {...r, actions: r.actions.map(ac => ac.id === a.id ? {...ac, params: {...ac.params, text: e.target.value}} : ac)} : r)})}
+                                    />
+                                    <p className="text-[10px] text-slate-500">
+                                      Бот автоматически выведет инлайн-кнопку «Пополнить баланс» со ссылкой на оплату, если она указана во вкладке «Валюта и Платежи».
+                                    </p>
+                                  </div>
                                 )}
                               </div>
                            ))}
