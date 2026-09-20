@@ -200,6 +200,15 @@ export async function initLocalNotificationChannels() {
         vibration: true,
         sound: 'res://raw/notification_sound',
       });
+      await LocalNotifications.createChannel({
+        id: 'ordina_silent_messages',
+        name: 'Тихие сообщения Ordina',
+        description: 'Публикации в каналах без звука и вибрации',
+        importance: 2,
+        visibility: 1,
+        vibration: false,
+        sound: undefined,
+      });
     }
   } catch (e) {
     console.warn('LocalNotifications.createChannel error:', e);
@@ -215,6 +224,7 @@ export function showSystemNotification(
   options: {
     icon?: string;
     tag?: string;
+    silent?: boolean;
     onClick?: () => void;
   } = {}
 ) {
@@ -231,6 +241,8 @@ export function showSystemNotification(
     formattedBody = 'У вас новое уведомление';
   }
 
+  const isSilent = !!options.silent || !settings.soundEnabled;
+
   // 1. Try Capacitor LocalNotifications for native Android/iOS background push heads-up alerts
   try {
     if (typeof LocalNotifications !== 'undefined' && typeof LocalNotifications.schedule === 'function') {
@@ -240,8 +252,9 @@ export function showSystemNotification(
             title: title,
             body: formattedBody,
             id: Math.floor(Math.random() * 1000000),
-            schedule: { at: new Date(Date.now() + 1000) },
-            channelId: 'ordina_messages',
+            schedule: { at: new Date() },
+            channelId: isSilent ? 'ordina_silent_messages' : 'ordina_messages',
+            silent: isSilent,
             extra: {
               tag: options.tag,
             },
@@ -263,6 +276,7 @@ export function showSystemNotification(
           tag: options.tag || 'ordina-msg',
           badge: '/icon.png',
           renotify: true,
+          silent: isSilent,
         } as NotificationOptions);
 
         if (options.onClick) {

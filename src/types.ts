@@ -141,6 +141,7 @@ export interface Message {
   meshRoute?: string[];
   signature?: string;
   encryptedPayload?: string;
+  silent?: boolean; // Send without notification sound/alert (silent message)
 }
 
 export interface Chat {

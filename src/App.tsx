@@ -440,16 +440,35 @@ function AppContent() {
 
   const isUserOnline = (u: UserProfile | null | undefined): boolean => {
     if (!u) return false;
+    if (u.isBot) return true;
     if (user && u.uid === user.uid) return socketConnected;
-    return socketPresences?.some(p => p.uid === u.uid && (p.status === 'online' || !p.status)) || false;
+    const presence = socketPresences?.find(p => p.uid === u.uid);
+    if (presence) {
+      return presence.status !== 'offline';
+    }
+    return u.status === 'online' || u.status === 'away' || u.status === 'busy' || u.status === 'dnd';
+  };
+
+  const getUserStatusText = (u: UserProfile | null | undefined): string => {
+    if (!u) return 'оффлайн';
+    if (u.isBot) return 'бот';
+    if (isUserOnline(u)) {
+      const presence = socketPresences?.find(p => p.uid === u.uid);
+      const s = presence?.status || u.status;
+      if (s === 'busy') return 'Занят';
+      if (s === 'away') return 'Нет на месте';
+      if (s === 'dnd') return 'Не беспокоить';
+      return 'в сети';
+    }
+    return formatLastSeen(u);
   };
 
   const formatLastSeen = (u: UserProfile | null | undefined): string => {
     if (!u) return 'оффлайн';
     if (isUserOnline(u)) return 'в сети';
-    if (!u.lastSeen) return 'оффлайн';
+    if (!u.lastSeen) return 'был(а) недавно';
     const d = new Date(u.lastSeen);
-    if (isNaN(d.getTime())) return 'оффлайн';
+    if (isNaN(d.getTime())) return 'был(а) недавно';
 
     const now = new Date();
     const diffMs = now.getTime() - d.getTime();
@@ -479,6 +498,7 @@ function AppContent() {
     return `был(а) ${d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' })} в ${hours}:${minutes}`;
   };
   const [inputText, setInputText] = useState('');
+  const [isSilentSend, setIsSilentSend] = useState(false);
   const [mutedChats, setMutedChats] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('ordina_muted_chats') || '[]');
@@ -1436,43 +1456,66 @@ function AppContent() {
       } else if (!chatId) {
         chatId = msg.senderId;
       }
+      const peerId = (!msg.groupId && chatId !== 'global_channel')
+        ? (msg.senderId === user?.uid ? msg.receiverId : msg.senderId)
+        : null;
+
       const confirmedMsg: Message = { ...msg, status: 'delivered', deliveryStatus: 'delivered' };
 
-      // 1. Save to local weekly cache
+      // 1. Save to local durable cache for all keys
       saveMessageToLocalCache(chatId, confirmedMsg);
+      if (peerId && peerId !== chatId) {
+        saveMessageToLocalCache(peerId, confirmedMsg);
+      }
 
-      // 2. Update recent previews
-      setRecentPreviews(prev => ({
-        ...prev,
-        [chatId]: confirmedMsg
-      }));
-
-      // Automatically add peer to activeChats if it's a 1-to-1 conversation so they never disappear
-      if (!msg.groupId && chatId && chatId !== 'global_channel' && chatId !== user?.uid) {
-        const peerId = msg.senderId === user?.uid ? msg.receiverId : msg.senderId;
-        if (peerId && peerId !== user?.uid) {
-          setProfile(prev => {
-            if (!prev) return prev;
-            const currentActive = prev.activeChats || [];
-            if (!currentActive.includes(peerId)) {
-              const updatedActive = [peerId, ...currentActive.filter(id => id !== peerId)];
-              return { ...prev, activeChats: updatedActive };
-            }
-            return prev;
-          });
+      // 2. Update in-memory messageCacheRef so opening chat later instantly finds the message
+      if (peerId) {
+        const existingPeerCache = messageCacheRef.current[peerId] || [];
+        if (!existingPeerCache.some(m => m.id === confirmedMsg.id)) {
+          messageCacheRef.current[peerId] = [...existingPeerCache, confirmedMsg].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
+        }
+      }
+      if (chatId) {
+        const existingChatCache = messageCacheRef.current[chatId] || [];
+        if (!existingChatCache.some(m => m.id === confirmedMsg.id)) {
+          messageCacheRef.current[chatId] = [...existingChatCache, confirmedMsg].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+          );
         }
       }
 
-      // 3. Play incoming sound
-      playIncomingMessageSound();
+      // 3. Update recent previews
+      setRecentPreviews(prev => ({
+        ...prev,
+        [chatId]: confirmedMsg,
+        ...(peerId ? { [peerId]: confirmedMsg } : {})
+      }));
 
-      // 4. Update messages in state if viewing this chat
+      // Automatically add peer to activeChats if it's a 1-to-1 conversation so they never disappear
+      if (peerId && peerId !== user?.uid) {
+        setProfile(prev => {
+          if (!prev) return prev;
+          const currentActive = prev.activeChats || [];
+          if (!currentActive.includes(peerId)) {
+            const updatedActive = [peerId, ...currentActive.filter(id => id !== peerId)];
+            return { ...prev, activeChats: updatedActive };
+          }
+          return prev;
+        });
+      }
+
+      // 4. Update messages in state if viewing this chat, or increment unread counter
       const currentChat = selectedChatRef.current;
-      if (
+      const isViewingChat = (
         (currentChat?.id === chatId) || 
+        (peerId && currentChat?.id === peerId) ||
         (currentChat?.type === 'user' && (currentChat?.id === msg.senderId || currentChat?.id === msg.receiverId)) ||
         (currentChat?.id === 'global_channel' && msg.groupId === 'global_channel')
-      ) {
+      );
+
+      if (isViewingChat) {
         setMessages(prev => {
           const existingIdx = prev.findIndex(m => m.id === msg.id);
           if (existingIdx !== -1) {
@@ -1482,7 +1525,33 @@ function AppContent() {
           }
           return [...prev, confirmedMsg].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
         });
+      } else {
+        const unreadTargetId = peerId || chatId;
+        if (unreadTargetId) {
+          setNotifications(prev => ({
+            ...prev,
+            [unreadTargetId]: (prev[unreadTargetId] || 0) + 1
+          }));
+        }
       }
+
+      // 5. Sound & System Notifications (respecting silent mode)
+      const isSilent = !!msg.silent;
+      if (!isSilent) {
+        playIncomingMessageSound();
+        triggerHapticFeedback([120, 80, 120]);
+      }
+
+      const senderUser = usersRef.current.find(u => u.uid === msg.senderId);
+      const senderTitle = senderUser?.displayName 
+        ? `${senderUser.displayName}${transportLabel ? ` (${transportLabel})` : ''}` 
+        : `Ordina Mesh${transportLabel ? ` [${transportLabel}]` : ''}`;
+      const previewBody = msg.text || (msg.type === 'file' ? 'Вам прислан файл' : 'Новое сообщение');
+
+      showSystemNotification(senderTitle, previewBody, {
+        tag: `mesh-msg-${peerId || chatId}`,
+        silent: isSilent
+      });
     };
 
     // 0. Mesh Network (WebRTC DataChannel, Epidemic Gossip & E2EE)
@@ -3863,6 +3932,7 @@ function AppContent() {
         createdAt: new Date().toISOString(),
         isEncrypted: !!shouldEncrypt,
         asChannel: isChannelSend,
+        silent: !!isSilentSend,
       };
 
       if (replyTo && replyTo.id) newMessage.replyToId = replyTo.id;
@@ -5965,23 +6035,29 @@ function AppContent() {
                 </button>
               </div>
               <div className="p-6 overflow-y-auto text-sm text-slate-600 space-y-4">
-                <p><strong>1. Сбор данных и Идеология Свободной Связи</strong></p>
-                <p>Ордина: Мессенджер Свободы собирает минимально необходимое количество данных для обеспечения вашей приватной связи. Ваша анонимность и безопасность — наш высший приоритет.</p>
+                <p><strong>1. Идеология Свободной Связи и Минимизация Данных</strong></p>
+                <p>Ордина: Мессенджер Свободы спроектирован по принципу приватности по умолчанию. Мы не собираем номера телефонов, метаданные слежения или рекламные идентификаторы. Ваша связь принадлежит только вам.</p>
                 
-                <p><strong>2. Использование данных</strong></p>
-                <p>Ваши данные используются исключительно для идентификации в приложении и обеспечения связи с собеседниками. Мы не передаем ваши данные третьим лицам.</p>
+                <p><strong>2. Сквозное E2EE и Zero-Knowledge Шифрование</strong></p>
+                <p>Все персональные сообщения, медиафайлы и сеансы связи шифруются непосредственно на вашем устройстве. Ни интернет-серверы, ни промежуточные ретрансляторы не имеют математической возможности прочитать содержимое ваших диалогов.</p>
                 
-                <p><strong>3. Децентрализованная Mesh P2P Сеть и Режим Почтальона</strong></p>
-                <p>При отсутствии интернет-соединения ваши сообщения передаются напрямую между устройствами по защищенной Mesh P2P сети (Bluetooth LE & WebRTC). Если адресат находится вне зоны прямого радиосигнала, зашифрованный пакет передается через промежуточные узлы ("Почтальоны"), которые сохраняют его исключительно до момента сближения с адресатом без доступа к содержимому.</p>
+                <p><strong>3. Автономная BLE Mesh & DTN Сеть и Оффлайн-Уведомления</strong></p>
+                <p>При отключении мобильного интернета или блокировках приложение автоматически переходит в режим автономной ячеистой сети (Bluetooth Low Energy & Local Subnet). Сообщения передаются напрямую между устройствами по радиоканалу, а встроенная локальная служба гарантирует мгновенные уведомления о доставке даже при заблокированном экране без подключения к серверам.</p>
 
-                <p><strong>4. Локальная Сохранность Данных</strong></p>
-                <p>История сообщений, профили и ключи шифрования дублируются в надежном локальном хранилище вашего устройства (LocalStorage & IndexedDB), что защищает ваши данные от сброса при обновлениях или перезапусках.</p>
-                
-                <p><strong>5. Права и Ограничения</strong></p>
-                <p>Пользователи могут управлять своими правами в группах и каналах. Мы ограничиваем возможность отправки спам-сообщений и медиа от незнакомых отправителей для вашей защиты.</p>
+                <p><strong>4. Режим Почтальона (Store-and-Forward)</strong></p>
+                <p>Если адресат находится вне зоны прямого радиосигнала, зашифрованный пакет передается через доверенные транзитные узлы-почтальоны в режиме Zero-Knowledge: узел хранит криптоконтейнер до встречи с адресатом и передает его, не зная содержания.</p>
 
-                <p><strong>6. Изменения в политике</strong></p>
-                <p>Мы оставляем за собой право вносить изменения в данную политику конфиденциальности. Актуальная версия всегда доступна в этом разделе.</p>
+                <p><strong>5. Тихие Сообщения и Контроль Внимания</strong></p>
+                <p>В каналах и группах доступна отправка тихих сообщений (без звука и вибрации). Такие сообщения доставляются участникам ненавязчиво, не нарушая их покой.</p>
+
+                <p><strong>6. Прозрачность Статусов и Присутствия</strong></p>
+                <p>Статус «В сети» и время последнего посещения обновляются в реальном времени на основе активных подключений сокета. Пользователи могут настраивать свои кастомные статусы и видимость.</p>
+
+                <p><strong>7. Локальная Сохранность Данных (SQLite)</strong></p>
+                <p>История сообщений, ключи и контакты кэшируются в защищенном локальном SQLite-хранилище устройства, что исключает потерю данных при обновлениях приложения или перебоях связи.</p>
+
+                <p><strong>8. Права Пользователя и Полное Удаление</strong></p>
+                <p>Вы имеете полный контроль над своими данными: доступна очистка локального кэша, удаление сообщений для всех участников и завершение удаленных сеансов на любых устройствах.</p>
               </div>
               <div className="p-4 bg-slate-50 flex justify-end shrink-0">
                 <button
@@ -7597,18 +7673,13 @@ function AppContent() {
                             "text-[10px] font-medium",
                             typingUsersText ? 'text-blue-500 animate-pulse' :
                             selectedChat.type === 'user' 
-                              ? ((activeChatData as UserProfile)?.status === 'online' ? 'text-emerald-500' : 
-                                 (activeChatData as UserProfile)?.status === 'busy' ? 'text-red-500' : 
-                                 (activeChatData as UserProfile)?.status === 'away' ? 'text-amber-500' : 'text-slate-400')
+                              ? (isUserOnline(activeChatData as UserProfile) ? 'text-emerald-600 font-semibold' : 'text-slate-400')
                               : 'text-slate-400'
                           )}>
                             {typingUsersText ? typingUsersText :
                              selectedChat.type === 'user' 
                               ? ((activeChatData as UserProfile)?.isBot ? `Пользователей: ${(activeChatData as UserProfile).usersList?.length || 0}` :
-                                 (activeChatData as UserProfile)?.status === 'online' ? 'В сети' : 
-                                 (activeChatData as UserProfile)?.status === 'busy' ? 'Занят' : 
-                                 (activeChatData as UserProfile)?.status === 'away' ? 'Нет на месте' : 
-                                 (activeChatData as UserProfile)?.status === 'dnd' ? 'Не беспокоить' : formatLastSeen(activeChatData as UserProfile))
+                                 getUserStatusText(activeChatData as UserProfile))
                               : (selectedChat.id === 'global_channel' ? 'Глобальный канал Ордины' : 
                                  ((activeChatData as Group)?.members?.length ? `${(activeChatData as Group).members.length} участников` : 'Группа'))}
                           </p>
@@ -9055,6 +9126,28 @@ function AppContent() {
                         </button>
                       </motion.div>
                     )}
+
+                    {isSilentSend && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 5 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: 5 }}
+                        className="mb-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between text-xs text-amber-800"
+                      >
+                        <div className="flex items-center gap-2">
+                          <BellOff size={14} className="text-amber-600 shrink-0" />
+                          <span><strong>Без звука:</strong> сообщение будет доставлено без звукового уведомления</span>
+                        </div>
+                        <button 
+                          type="button" 
+                          onClick={() => setIsSilentSend(false)} 
+                          className="text-amber-600 hover:text-amber-800 p-0.5 rounded ml-2"
+                          title="Выключить тихий режим"
+                        >
+                          <X size={14} />
+                        </button>
+                      </motion.div>
+                    )}
                     </AnimatePresence>
 
                     <form onSubmit={handleSendMessage} className="flex items-end gap-2 min-w-0 px-2 pb-2">
@@ -9086,6 +9179,24 @@ function AppContent() {
                               title={postAsMe ? "Публикация: От моего лица" : "Публикация: От лица канала"}
                             >
                               <UserIcon size={20} />
+                            </button>
+                          )}
+
+                          {(selectedChat.type === 'channel' || (activeChatData as Group)?.type === 'channel' || selectedChat.id === 'global_channel') && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsSilentSend(!isSilentSend);
+                                triggerHapticFeedback();
+                                addToast(!isSilentSend ? 'Тихое сообщение: участники получат публикацию без звука' : 'Обычное сообщение: со звуком', 'info');
+                              }}
+                              className={cn(
+                                "p-2 rounded-xl transition-all",
+                                isSilentSend ? "bg-amber-500 text-white shadow-sm" : "hover:bg-slate-200 text-slate-500"
+                              )}
+                              title={isSilentSend ? "Тихое сообщение (без звука) активно" : "Отправка со звуком (нажмите для тихого сообщения)"}
+                            >
+                              {isSilentSend ? <BellOff size={20} /> : <Bell size={20} />}
                             </button>
                           )}
 
@@ -9196,21 +9307,39 @@ function AppContent() {
                           <button 
                             type="button"
                             onClick={() => {
+                              setIsSilentSend(!isSilentSend);
+                              triggerHapticFeedback();
+                              addToast(!isSilentSend ? 'Тихое сообщение: получатели увидят без звука' : 'Обычное сообщение: со звуком', 'info');
+                            }}
+                            className={cn(
+                              "p-2.5 rounded-2xl transition-all flex items-center justify-center",
+                              isSilentSend 
+                                ? "bg-amber-500 text-white shadow-md shadow-amber-200" 
+                                : "bg-slate-100 hover:bg-slate-200 text-slate-500"
+                            )}
+                            title={isSilentSend ? "Тихое сообщение (без звука) включено" : "Отправить без звука (как в Telegram)"}
+                          >
+                            {isSilentSend ? <BellOff size={18} /> : <Bell size={18} />}
+                          </button>
+                          <button 
+                            type="button"
+                            onClick={() => {
                               setScheduleDate('');
                               setShowScheduleModal(true);
                             }}
-                            className="p-3 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-2xl transition-all"
+                            className="p-2.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-2xl transition-all flex items-center justify-center"
                             title="Отложенная отправка"
                           >
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                           </button>
                           <button 
                             type="submit"
                             disabled={isSending || !canSendMessages}
                             className={cn(
                               "p-3 text-white rounded-2xl transition-all shadow-lg flex items-center justify-center min-h-[44px]",
-                              isSending ? "bg-slate-400 animate-pulse" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
+                              isSending ? "bg-slate-400 animate-pulse" : (isSilentSend ? "bg-amber-600 hover:bg-amber-700 shadow-amber-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100")
                             )}
+                            title={isSilentSend ? "Отправить без звука" : "Отправить"}
                           >
                             {isSending ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Send size={20} />}
                           </button>

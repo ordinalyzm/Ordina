@@ -630,7 +630,16 @@ async function startServer() {
   app.get('/api/users', async (req, res) => {
     try {
       const { rows } = await pool.query('SELECT data FROM users');
-      const users = rows.map((r: any) => JSON.parse(r.data));
+      const users = rows.map((r: any) => {
+        const u = JSON.parse(r.data);
+        if (onlineUsers.has(u.uid)) {
+          const inf = onlineUsers.get(u.uid);
+          u.status = (inf?.status && inf.status !== 'auto') ? inf.status : 'online';
+        } else {
+          u.status = 'offline';
+        }
+        return u;
+      });
       res.json({ total: users.length, users });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
@@ -1107,7 +1116,7 @@ io.on('connection', (socket) => {
         
         await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2) ON CONFLICT (uid) DO UPDATE SET data = EXCLUDED.data', [uid, JSON.stringify(finalData)]);
         
-        finalData.status = finalData.status || 'online';
+        finalData.status = (finalData.status === 'auto' || !finalData.status) ? 'online' : finalData.status;
         onlineUsers.set(uid, { socketId: socket.id, status: finalData.status, customStatus: finalData.customStatus });
         socket.join(`user:${uid}`);
         
@@ -1128,10 +1137,19 @@ io.on('connection', (socket) => {
         // Always broadcast user update so multi-user clients see everyone online
         io.emit('user:updated', finalData);
 
-        // Send latest users list to connecting socket immediately
+        // Send latest users list to connecting socket immediately with accurate presence
         try {
           const { rows: uRows } = await pool.query('SELECT data FROM users');
-          const allUsersList = uRows.map((r: any) => JSON.parse(r.data));
+          const allUsersList = uRows.map((r: any) => {
+            const u = JSON.parse(r.data);
+            if (onlineUsers.has(u.uid)) {
+              const inf = onlineUsers.get(u.uid);
+              u.status = (inf?.status && inf.status !== 'auto') ? inf.status : 'online';
+            } else {
+              u.status = 'offline';
+            }
+            return u;
+          });
           const { rows: bRows } = await pool.query('SELECT data FROM bots');
           const botsAsUsers = bRows.map((r: any) => {
              const b = JSON.parse(r.data);
@@ -1156,11 +1174,13 @@ io.on('connection', (socket) => {
           }
         }
         
-        io.emit('presence:update', Array.from(onlineUsers.entries()).map(([u, info]) => ({
+        const currentPresences = Array.from(onlineUsers.entries()).map(([u, info]) => ({
           uid: u,
-          status: info.status,
+          status: (info.status && info.status !== 'auto') ? info.status : 'online',
           customStatus: info.customStatus
-        })));
+        }));
+        socket.emit('presence:update', currentPresences);
+        io.emit('presence:update', currentPresences);
       } catch (err) {
         console.error('Error during auth:sync:', err);
         socket.emit('auth:sync_error', { error: 'Failed to sync profile' });
@@ -1169,17 +1189,18 @@ io.on('connection', (socket) => {
 
     socket.on('user:online', (data: { uid: string, status: string, customStatus?: string }) => {
       (socket as any).uid = data.uid;
+      const effectiveStatus = (data.status === 'auto' || !data.status) ? 'online' : data.status;
       const info = onlineUsers.get(data.uid);
       if (info) {
-        onlineUsers.set(data.uid, { ...info, status: data.status, customStatus: data.customStatus });
+        onlineUsers.set(data.uid, { ...info, status: effectiveStatus, customStatus: data.customStatus });
       } else {
-        onlineUsers.set(data.uid, { socketId: socket.id, status: data.status, customStatus: data.customStatus });
+        onlineUsers.set(data.uid, { socketId: socket.id, status: effectiveStatus, customStatus: data.customStatus });
       }
       socket.join(`user:${data.uid}`);
-      io.emit('presence:update', Array.from(onlineUsers.entries()).map(([uid, info]) => ({
+      io.emit('presence:update', Array.from(onlineUsers.entries()).map(([uid, inf]) => ({
         uid,
-        status: info.status,
-        customStatus: info.customStatus
+        status: (inf.status && inf.status !== 'auto') ? inf.status : 'online',
+        customStatus: inf.customStatus
       })));
     });
 
@@ -2951,16 +2972,18 @@ io.on('connection', (socket) => {
 
       if (disconnectedUid) {
         onlineUsers.delete(disconnectedUid);
+        const lastSeenIso = new Date().toISOString();
         io.emit('presence:update', Array.from(onlineUsers.entries()).map(([uid, info]) => ({
           uid,
-          status: info.status,
+          status: (info.status && info.status !== 'auto') ? info.status : 'online',
           customStatus: info.customStatus
         })));
         try {
           const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [disconnectedUid]);
           if (rows[0]) {
              const u = JSON.parse(rows[0].data);
-             u.lastSeen = new Date().toISOString();
+             u.status = 'offline';
+             u.lastSeen = lastSeenIso;
              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), disconnectedUid]);
              io.emit('user:updated', u);
           }

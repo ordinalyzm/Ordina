@@ -339,16 +339,26 @@ export async function mergeDelta(chats: Chat[] = [], messages: Message[] = []): 
 /**
  * Loads all cached messages for a given chat.
  */
-export async function getMessagesForChat(chatId: string): Promise<Message[]> {
+export async function getMessagesForChat(chatId: string, currentUserId?: string): Promise<Message[]> {
   try {
     await initDatabase();
     if (dbInstance) {
-      const res = await dbInstance.query(
-        `SELECT rawJson FROM messages 
-         WHERE groupId = ? OR receiverId = ? OR senderId = ? 
-         ORDER BY createdAt ASC;`,
-        [chatId, chatId, chatId]
-      );
+      let query = '';
+      let params: any[] = [];
+      if (currentUserId && currentUserId !== chatId) {
+        query = `SELECT rawJson FROM messages 
+                 WHERE groupId = ? 
+                    OR (senderId = ? AND receiverId = ?) 
+                    OR (senderId = ? AND receiverId = ?)
+                 ORDER BY createdAt ASC;`;
+        params = [chatId, currentUserId, chatId, chatId, currentUserId];
+      } else {
+        query = `SELECT rawJson FROM messages 
+                 WHERE groupId = ? OR receiverId = ? OR senderId = ? 
+                 ORDER BY createdAt ASC;`;
+        params = [chatId, chatId, chatId];
+      }
+      const res = await dbInstance.query(query, params);
       if (res.values && res.values.length > 0) {
         return res.values.map(v => JSON.parse(v.rawJson));
       }
@@ -365,10 +375,9 @@ export async function getMessagesForChat(chatId: string): Promise<Message[]> {
 // Legacy & Flat LocalStorage Helpers (for backwards compatibility)
 // -------------------------------------------------------------
 
-function saveMessageToLocalStorage(chatId: string, msg: Message): void {
+function appendToStorageKey(key: string, msg: Message): void {
   try {
-    const flatKey = `ordina_cache_${chatId}`;
-    const flatRaw = localStorage.getItem(flatKey);
+    const flatRaw = localStorage.getItem(key);
     let flatMsgs: Message[] = flatRaw ? JSON.parse(flatRaw) : [];
     if (!Array.isArray(flatMsgs)) flatMsgs = [];
     const flatIdx = flatMsgs.findIndex(m => m.id === msg.id);
@@ -377,9 +386,23 @@ function saveMessageToLocalStorage(chatId: string, msg: Message): void {
     } else {
       flatMsgs.push(msg);
     }
-    if (flatMsgs.length > 200) flatMsgs = flatMsgs.slice(-200);
-    localStorage.setItem(flatKey, JSON.stringify(flatMsgs));
+    if (flatMsgs.length > 300) flatMsgs = flatMsgs.slice(-300);
+    localStorage.setItem(key, JSON.stringify(flatMsgs));
   } catch (e) {}
+}
+
+function saveMessageToLocalStorage(chatId: string, msg: Message): void {
+  appendToStorageKey(`ordina_cache_${chatId}`, msg);
+
+  // If this is a direct 1-on-1 message, cross-index under both participants so it always loads
+  if (!msg.groupId && msg.senderId && msg.receiverId) {
+    appendToStorageKey(`ordina_cache_${msg.senderId}`, msg);
+    appendToStorageKey(`ordina_cache_${msg.receiverId}`, msg);
+    const compoundKey = [msg.senderId, msg.receiverId].sort().join('_');
+    if (compoundKey !== chatId) {
+      appendToStorageKey(`ordina_cache_${compoundKey}`, msg);
+    }
+  }
 }
 
 export function saveMessageToLocalCache(chatId: string, msg: Message): void {
@@ -392,13 +415,47 @@ export function saveMessagesToLocalCache(chatId: string, messages: Message[]): v
 
 export function loadMessagesFromLocalCache(chatId: string): Message[] {
   try {
-    const flatKey = `ordina_cache_${chatId}`;
-    const flatRaw = localStorage.getItem(flatKey);
-    if (flatRaw) {
-      const flatMsgs = JSON.parse(flatRaw);
-      if (Array.isArray(flatMsgs)) {
-        return flatMsgs.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    const foundMap = new Map<string, Message>();
+    const keysToCheck = [`ordina_cache_${chatId}`];
+
+    // Check all related keys for this chat or peer
+    if (typeof localStorage !== 'undefined') {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('ordina_cache_') && k.includes(chatId)) {
+          if (!keysToCheck.includes(k)) {
+            keysToCheck.push(k);
+          }
+        }
       }
+    }
+
+    for (const key of keysToCheck) {
+      const flatRaw = localStorage.getItem(key);
+      if (flatRaw) {
+        try {
+          const arr = JSON.parse(flatRaw);
+          if (Array.isArray(arr)) {
+            for (const m of arr) {
+              if (m && m.id) {
+                if (chatId.startsWith('group_') || chatId.startsWith('channel_') || chatId === 'global_channel') {
+                  if (m.groupId === chatId) foundMap.set(m.id, m);
+                } else {
+                  if (m.groupId === chatId || m.senderId === chatId || m.receiverId === chatId) {
+                    foundMap.set(m.id, m);
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    if (foundMap.size > 0) {
+      return Array.from(foundMap.values()).sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
     }
   } catch (e) {}
   return [];
