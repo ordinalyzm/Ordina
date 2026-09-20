@@ -6337,27 +6337,6 @@ function AppContent() {
 
                 <button 
                   onClick={() => {
-                    setShowSettings(false);
-                    setShowMeshInspectorModal(true);
-                  }}
-                  className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
-                >
-                  <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center text-purple-600">
-                    <Radio size={20} />
-                  </div>
-                  <div className="text-left flex-1">
-                    <p className="font-bold text-sm">Mesh-сеть & Инспектор P2P</p>
-                    <p className="text-xs text-slate-500">
-                      Диагностика узлов, пинг, топология и буфер
-                    </p>
-                  </div>
-                </button>
-                <div className="h-px w-full bg-slate-100 my-2" />
-                
-
-
-                <button 
-                  onClick={() => {
                     if (user?.isAnonymous) {
                       (window as any).addToast?.('Гости не могут создавать или управлять ботами', 'error');
                       return;
@@ -7645,46 +7624,6 @@ function AppContent() {
                 </div>
               </div>
               <div className="flex items-center gap-2 relative">
-                {/* 4-Tier Network Transport Badge (only for real network chats) */}
-                {selectedChat.id !== user?.uid && (
-                  <button 
-                    onClick={() => setShowMeshInspectorModal(true)}
-                    className={cn(
-                      "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border transition-all cursor-pointer",
-                      multiTierRouter.getConnectionLevel() === 'auto'
-                        ? "bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100"
-                        : multiTierRouter.getConnectionLevel() === 'p2p'
-                        ? (isDirectP2PActive ? "bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100" : "bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100")
-                        : multiTierRouter.getConnectionLevel() === 'antidpi'
-                        ? "bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100 animate-pulse"
-                        : "bg-purple-50 text-purple-700 border-purple-200 hover:bg-purple-100"
-                    )}
-                    title="4 Уровня связи: Авто (Dual), Ур. 1 P2P, Ур. 2 Anti-DPI, Ур. 3 BLE. Нажмите для открытия инспектора связи."
-                  >
-                    {multiTierRouter.getConnectionLevel() === 'auto' ? (
-                      <>
-                        <Zap size={13} className="text-indigo-600 fill-indigo-500" />
-                        <span className="hidden md:inline">Авто (Dual)</span>
-                      </>
-                    ) : multiTierRouter.getConnectionLevel() === 'p2p' ? (
-                      <>
-                        <Zap size={13} className={isDirectP2PActive ? "text-emerald-600 fill-emerald-500" : "text-blue-600"} />
-                        <span className="hidden md:inline">{isDirectP2PActive ? "P2P Прямой" : "Ур. 1 P2P"}</span>
-                      </>
-                    ) : multiTierRouter.getConnectionLevel() === 'antidpi' ? (
-                      <>
-                        <ShieldAlert size={13} className="text-amber-600" />
-                        <span className="hidden md:inline">Ур. 2 Anti-DPI</span>
-                      </>
-                    ) : (
-                      <>
-                        <Radio size={13} className="text-purple-600 animate-pulse" />
-                        <span className="hidden md:inline">Ур. 3 BLE</span>
-                      </>
-                    )}
-                  </button>
-                )}
-
                 {selectedChat.type !== 'user' && isGroupAdmin && (
                   <button 
                     onClick={() => setShowGroupSettings(true)}
@@ -9347,7 +9286,7 @@ function AppContent() {
             window.innerWidth >= 1024 && "inset-y-0 right-0 left-auto w-[620px] max-w-[95vw] border-l border-slate-800 shadow-2xl pt-0 pb-0"
           )}
         >
-          {/* Header & Tabs */}
+          {/* Header */}
           <div className="h-16 border-b border-white/10 flex items-center justify-between px-4 sm:px-6 bg-slate-900 text-white shrink-0">
             <div className="flex items-center gap-3">
               <button 
@@ -9355,30 +9294,17 @@ function AppContent() {
                   setShowRadar(false);
                   setMobileView('list');
                 }} 
-                className="p-3 pl-3 -ml-2 rounded-xl hover:bg-white/10 active:bg-white/20 transition-all flex items-center gap-1 active:scale-95 text-white"
+                className="p-3 pl-3 -ml-2 rounded-xl hover:bg-white/10 active:bg-white/20 transition-all flex items-center gap-1 active:scale-95 text-white cursor-pointer"
                 title="Назад"
               >
                 <ArrowLeft size={22} />
               </button>
-              <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800">
-                <button
-                  onClick={() => setRadarViewTab('mesh')}
-                  className={cn(
-                    "px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5",
-                    radarViewTab === 'mesh' ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
-                  )}
-                >
-                  <Radio size={14} /> P2P Mesh
-                </button>
-                <button
-                  onClick={() => setRadarViewTab('geo')}
-                  className={cn(
-                    "px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5",
-                    radarViewTab === 'geo' ? "bg-cyan-600 text-white shadow" : "text-slate-400 hover:text-slate-200"
-                  )}
-                >
-                  <RadarIcon size={14} /> Гео-Радар
-                </button>
+              <div className="flex items-center gap-2">
+                <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
+                <div>
+                  <h3 className="font-bold text-sm tracking-wide text-cyan-100">DTN MESH РАДАР</h3>
+                  <p className="text-[10px] text-cyan-400/80 font-mono">1 ХОП • 2 ХОПА • ДАЛЬНИЙ МЕШ</p>
+                </div>
               </div>
             </div>
             <button 
@@ -9386,138 +9312,34 @@ function AppContent() {
                 e.stopPropagation();
                 setShowSettings(true);
               }}
-              className="p-2.5 hover:bg-white/10 rounded-xl transition-colors active:scale-95"
+              className="p-2.5 hover:bg-white/10 rounded-xl transition-colors active:scale-95 cursor-pointer"
               title="Настройки"
             >
               <Settings size={20} />
             </button>
           </div>
           
-          {radarViewTab === 'mesh' ? (
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <MeshRadar
-                currentUser={{
-                  uid: user?.uid || profile?.uid || 'me',
-                  displayName: profile?.displayName || user?.displayName || 'User'
-                }}
-                socket={socket}
-                onClose={() => {
-                  setShowRadar(false);
-                  setMobileView('list');
-                }}
-                onOpenInspector={() => setShowMeshInspectorModal(true)}
-                onOpenChat={(chatId, participant) => {
-                  setShowRadar(false);
-                  setSelectedChat({
-                    id: participant.uid,
-                    type: 'user'
-                  });
-                  setMobileView('chat');
-                }}
-              />
-            </div>
-          ) : (
-            <>
-              <div className="p-6 bg-slate-900/50 border-b border-white/5 flex flex-col gap-3">
-                <button 
-                  onClick={() => {
-                    const nextState = !isRadarActive;
-                    setIsRadarActive(nextState);
-                    if (nextState) {
-                      if ('geolocation' in navigator) {
-                        navigator.geolocation.getCurrentPosition(
-                          (pos) => {
-                            addToast(`Геолокация определена: ${pos.coords.latitude.toFixed(3)}, ${pos.coords.longitude.toFixed(3)}`, 'success');
-                          },
-                          (err) => {
-                            console.warn('Geolocation denied:', err);
-                            addToast('Доступ к геолокации отклонен. Открываем настройки...', 'error');
-                            openAppSettings();
-                          },
-                          { enableHighAccuracy: true, timeout: 8000 }
-                        );
-                      } else {
-                        addToast('Геолокация не поддерживается устройством', 'error');
-                      }
-                    }
-                  }}
-                  className={cn(
-                    "w-full py-4 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all shadow-lg border",
-                    isRadarActive 
-                      ? "bg-red-500/20 text-red-400 border-red-500/30 hover:bg-red-500/30" 
-                      : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/30"
-                  )}
-                >
-                  <RadarIcon size={20} className={cn(isRadarActive && "animate-pulse")} />
-                  {isRadarActive ? "ОСТАНОВИТЬ СКАНИРОВАНИЕ (Гео)" : "ЗАПУСТИТЬ СКАНИРОВАНИЕ (Гео)"}
-                </button>
-
-                <button 
-                  onClick={() => setShowMeshInspectorModal(true)}
-                  className="w-full py-3 rounded-2xl flex items-center justify-center gap-3 font-bold transition-all bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30"
-                >
-                  <Radio size={18} />
-                  ИНСПЕКТОР И ДИАГНОСТИКА MESH
-                </button>
-              </div>
-              
-              <div className="flex-1 relative bg-[#020617] overflow-hidden">
-                {(() => {
-                  try {
-                    if (!isRadarActive) {
-                      return (
-                        <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#020617] text-slate-500 gap-6 p-8 text-center">
-                          <div className="relative">
-                            <div className="w-32 h-32 rounded-full bg-slate-900/50 flex items-center justify-center border-2 border-dashed border-slate-800">
-                              <RadarIcon size={64} className="text-slate-700" />
-                            </div>
-                            <div className="absolute -inset-4 border border-blue-500/10 rounded-full animate-[ping_4s_linear_infinite]" />
-                          </div>
-                          <div className="space-y-2">
-                            <p className="text-xl font-bold text-slate-300 uppercase tracking-[0.2em]">MESH_OFFLINE</p>
-                            <p className="text-[10px] text-slate-500 font-mono">Активируйте сканирование для поиска узлов</p>
-                          </div>
-                        </div>
-                      );
-                    }
-                    
-                    return (
-                      <div className="w-full h-full relative bg-[#020617]">
-                        <Radar 
-                          nodes={radarNodes}
-                          currentUserNodeId={user?.uid || profile?.uid || 'local_me'}
-                          onNodeClick={(node) => {
-                            selectChat({ type: 'user', id: node.id });
-                            setShowRadar(false);
-                          }}
-                        />
-                      </div>
-                    );
-                  } catch (e) {
-                    return <div className="p-8 text-red-400 text-xs font-mono bg-[#020617] h-full flex items-center justify-center text-center">
-                      CRITICAL_UI_ERROR:<br/>{String(e)}
-                    </div>;
-                  }
-                })()}
-              </div>
-
-              <div className="p-6 bg-slate-900 border-t border-white/5 shrink-0">
-                <h3 className="font-bold text-blue-400 text-[10px] mb-3 uppercase tracking-widest flex items-center gap-2">
-                  <Shield size={12} /> СТАТУС ВАШЕГО УЗЛА (NODE_ID: {user?.uid?.substring(0, 8)})
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="bg-black/40 p-3 rounded-xl border border-white/5">
-                    <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Соседи (Direct)</p>
-                    <p className="text-lg font-mono text-emerald-400">{users.filter(u => u.status === 'online').length}</p>
-                  </div>
-                  <div className="bg-black/40 p-3 rounded-xl border border-white/5">
-                    <p className="text-[8px] text-slate-500 uppercase font-bold mb-1">Режим работы</p>
-                    <p className="text-xs font-bold text-blue-400 uppercase">{isRadarActive ? 'Активен' : 'Спящий'}</p>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
+          <div className="flex-1 flex flex-col overflow-y-auto p-4 justify-center items-center">
+            <MeshRadar
+              currentUser={{
+                uid: user?.uid || profile?.uid || 'me',
+                displayName: profile?.displayName || user?.displayName || 'User'
+              }}
+              socket={socket}
+              onClose={() => {
+                setShowRadar(false);
+                setMobileView('list');
+              }}
+              onOpenChat={(chatId, participant) => {
+                setShowRadar(false);
+                setSelectedChat({
+                  id: participant.uid,
+                  type: 'user'
+                });
+                setMobileView('chat');
+              }}
+            />
+          </div>
         </div>
       )}
       <AnimatePresence>

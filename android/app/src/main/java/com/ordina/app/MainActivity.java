@@ -140,10 +140,13 @@ public class MainActivity extends BridgeActivity {
                 public void onCharacteristicReadRequest(BluetoothDevice device, int requestId, int offset, BluetoothGattCharacteristic characteristic) {
                     super.onCharacteristicReadRequest(device, requestId, offset, characteristic);
                     if (CHAR_UUID.equals(characteristic.getUuid())) {
-                        // Считываем сохраненный UID
                         android.content.SharedPreferences prefs = getSharedPreferences("CapacitorStorage", Context.MODE_PRIVATE);
-                        String myInfo = prefs.getString("last_auth_uid", "unknown_peer");
-                        byte[] responseBytes = myInfo.getBytes(StandardCharsets.UTF_8);
+                        String myUid = prefs.getString("last_auth_uid", "unknown_peer");
+                        String myName = prefs.getString("last_auth_name", "Узел");
+
+                        // Отдаем JSON-визитку узла
+                        String handshakeJson = "{\"uid\":\"" + myUid + "\",\"name\":\"" + myName + "\"}";
+                        byte[] responseBytes = handshakeJson.getBytes(StandardCharsets.UTF_8);
                         gattServer.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, responseBytes);
                     }
                 }

@@ -1183,6 +1183,20 @@ io.on('connection', (socket) => {
       })));
     });
 
+    // Гибридный интернет-шлюз для DTN BLE Mesh
+    socket.on('mesh:relay_to_cloud', async (packet: any) => {
+      try {
+        if (!packet || !packet.receiverId) return;
+        console.log(`[Cloud Bridge] Ретрансляция меш-пакета ${packet.id} для адресата ${packet.receiverId} через интернет`);
+        io.to(`user:${packet.receiverId}`).emit('mesh:cloud_bridge', {
+          ...packet,
+          isInternetBridge: true
+        });
+      } catch (err) {
+        console.error('[Cloud Bridge] Ошибка ретрансляции пакета:', err);
+      }
+    });
+
     socket.on('chat:join', async (data: any) => {
       const chatId = typeof data === 'string' ? data : data.id;
       const limit = (typeof data === 'object' && data.limit) ? data.limit : 100;
