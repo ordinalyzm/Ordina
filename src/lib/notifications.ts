@@ -266,15 +266,64 @@ export function showSystemNotification(
     console.warn('LocalNotifications schedule catch error:', e);
   }
 
-  // 2. Try standard Web Notification API as fallback
+  // 2. Try ServiceWorkerRegistration.showNotification (works reliably in background and when page is minimized/hidden)
+  let swNotificationShown = false;
+  if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+    try {
+      if (Notification.permission === 'granted') {
+        navigator.serviceWorker.ready.then((reg) => {
+          if (reg && typeof reg.showNotification === 'function') {
+            swNotificationShown = true;
+            reg.showNotification(title, {
+              body: formattedBody,
+              icon: options.icon || '/icon.svg',
+              badge: '/icon.svg',
+              tag: options.tag || 'ordina-msg',
+              renotify: true,
+              silent: isSilent,
+              data: {
+                tag: options.tag,
+                url: window.location.pathname || '/'
+              }
+            } as NotificationOptions).catch((err) => {
+              console.warn('[ServiceWorker] showNotification failed, using fallback:', err);
+              showWebNotificationFallback(title, formattedBody, options, isSilent);
+            });
+          }
+        }).catch(() => {
+          showWebNotificationFallback(title, formattedBody, options, isSilent);
+        });
+      }
+    } catch (e) {
+      console.warn('ServiceWorker notification error:', e);
+    }
+  }
+
+  // 3. Try standard Web Notification API as fallback if Service Worker not ready
+  if (!swNotificationShown) {
+    showWebNotificationFallback(title, formattedBody, options, isSilent);
+  }
+}
+
+function showWebNotificationFallback(
+  title: string,
+  formattedBody: string,
+  options: {
+    icon?: string;
+    tag?: string;
+    silent?: boolean;
+    onClick?: () => void;
+  },
+  isSilent: boolean
+) {
   if (isNotificationSupported()) {
     try {
       if (Notification.permission === 'granted') {
         const notification = new Notification(title, {
           body: formattedBody,
-          icon: options.icon || '/icon.png',
+          icon: options.icon || '/icon.svg',
           tag: options.tag || 'ordina-msg',
-          badge: '/icon.png',
+          badge: '/icon.svg',
           renotify: true,
           silent: isSilent,
         } as NotificationOptions);

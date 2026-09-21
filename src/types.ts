@@ -68,8 +68,62 @@ export interface UserProfile {
   isVerified?: boolean;
   role?: string;
   isAdmin?: boolean;
+  isModerator?: boolean;
   usersList?: string[];
   devices?: UserDevice[]; // Registered devices tracking
+  cannotInitiateDmsUntil?: string; // Ban on initiating new DMs until timestamp (ISO)
+  cannotInitiateReason?: string;
+  warnings?: UserWarning[];
+}
+
+export interface UserWarning {
+  id: string;
+  text: string;
+  reason?: string;
+  createdAt: string;
+  moderatorName?: string;
+  targetType?: 'message' | 'user' | 'group';
+}
+
+export type ReportCategory = 
+  | 'extremism'
+  | 'harassment'
+  | 'doxxing'
+  | 'fraud'
+  | 'spam'
+  | 'csam'
+  | 'violence_suicide'
+  | 'drugs'
+  | 'copyright'
+  | 'other';
+
+export interface Report {
+  id: string;
+  reporterId: string;
+  reporterName: string;
+  reporterEmail?: string;
+  targetType: 'message' | 'user' | 'group';
+  targetId: string;
+  targetName?: string;
+  chatId?: string;
+  messageContext?: {
+    id?: string;
+    text?: string;
+    type?: string;
+    fileUrl?: string;
+    senderId: string;
+    senderName?: string;
+    createdAt?: string;
+  };
+  reasonCategory: ReportCategory;
+  reasonCategoryTitle: string;
+  description?: string;
+  status: 'pending' | 'resolved' | 'dismissed';
+  createdAt: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  resolvedByName?: string;
+  resolutionAction?: string;
 }
 
 export type GroupRole = 'owner' | 'admin' | 'member';
@@ -142,6 +196,9 @@ export interface Message {
   signature?: string;
   encryptedPayload?: string;
   silent?: boolean; // Send without notification sound/alert (silent message)
+  isPinned?: boolean; // Whether message is pinned in chat
+  pinnedAt?: string;
+  pinnedBy?: string;
 }
 
 export interface Chat {
@@ -193,6 +250,7 @@ export interface Group {
     admin: GroupPermissions;
   };
   createdTitles?: UserTitle[]; // Global titles created by the owner
+  pinnedMessageIds?: string[]; // IDs of pinned messages in this group/channel
 }
 
 export const DEFAULT_GLOBAL_CHANNEL: Group = {

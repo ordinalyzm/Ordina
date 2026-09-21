@@ -27,13 +27,14 @@ import {
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw, RefreshCw,
   ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
-  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles, Zap
+  Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles, Zap,
+  Pin, Flag
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { QRCodeSVG } from 'qrcode.react';
-import { UserProfile, Message, Group, MeshNode, GroupPermissions, StickerPack, UserDevice, DEFAULT_GLOBAL_CHANNEL } from './types';
+import { UserProfile, Message, Group, MeshNode, GroupPermissions, StickerPack, UserDevice, DEFAULT_GLOBAL_CHANNEL, Report } from './types';
 import { 
   saveMessage,
   updateMessageStatus,
@@ -91,6 +92,10 @@ import { MessageItem } from './components/MessageItem';
 import { OnboardingModal } from './components/OnboardingModal';
 import { SavedNotebookModal } from './components/SavedNotebookModal';
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal';
+import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
+import { ReportModal } from './components/ReportModal';
+import { ModerationModal } from './components/ModerationModal';
+import { PinnedMessageBanner } from './components/PinnedMessageBanner';
 import { MeshRouter } from './utils/meshRouter';
 
 function cn(...inputs: ClassValue[]) {
@@ -557,6 +562,38 @@ function AppContent() {
   }, [user, profile?.username, profile?.displayName, groups, isAdminState]);
 
   const [isAdminAssessed, setIsAdminAssessed] = useState(false);
+  
+  // Moderation, Reporting & Privacy states
+  const [showPrivacyModal, setShowPrivacyModal] = useState(false);
+  const [showModerationModal, setShowModerationModal] = useState(false);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [moderatorsList, setModeratorsList] = useState<string[]>([]);
+  const [reportModal, setReportModal] = useState<{
+    isOpen: boolean;
+    targetType: 'message' | 'user' | 'group';
+    targetId: string;
+    targetName?: string;
+    chatId?: string;
+    messageContext?: {
+      text?: string;
+      senderId?: string;
+      senderName?: string;
+      fileUrl?: string;
+      createdAt?: string;
+    };
+  }>({
+    isOpen: false,
+    targetType: 'message',
+    targetId: ''
+  });
+
+  const isUserModerator = useMemo(() => {
+    if (!user) return false;
+    if (isGlobalAdmin) return true;
+    if (profile?.isModerator) return true;
+    if (moderatorsList.includes(user.uid)) return true;
+    return false;
+  }, [user, isGlobalAdmin, profile?.isModerator, moderatorsList]);
   
   const canDeleteForEveryoneState = (msg: Message) => {
     if (selectedChat?.type === 'user') return msg.senderId === user?.uid;
@@ -1208,6 +1245,8 @@ function AppContent() {
       newSocket.emit('groups:fetch');
       newSocket.emit('stickers:list');
       newSocket.emit('bots:list', syncedProfile.uid);
+      newSocket.emit('reports:get', { userId: syncedProfile.uid });
+      newSocket.emit('moderators:get');
 
       // DeltaSync initialization
       getDeltaSyncVersion().then((ver) => {
@@ -1369,6 +1408,62 @@ function AppContent() {
         }
         return next;
       });
+    });
+
+    // Pinned messages socket event
+    newSocket.on('message:pinned', (data: { id: string; chatId: string; isPinned: boolean; message?: Message }) => {
+      setMessages(prev => prev.map(m => m.id === data.id ? { 
+        ...m, 
+        isPinned: data.isPinned, 
+        pinnedAt: data.message?.pinnedAt || (data.isPinned ? new Date().toISOString() : undefined),
+        pinnedBy: data.message?.pinnedBy || (data.isPinned ? user?.uid : undefined)
+      } : m));
+
+      // Also update in groups list if group chat
+      setGroups(prev => prev.map(g => {
+        if (g.id === data.chatId) {
+          const pinnedList = g.pinnedMessageIds || [];
+          const updatedPinned = data.isPinned
+            ? Array.from(new Set([...pinnedList, data.id]))
+            : pinnedList.filter(pid => pid !== data.id);
+          return { ...g, pinnedMessageIds: updatedPinned };
+        }
+        return g;
+      }));
+
+      addToast(data.isPinned ? 'Сообщение закреплено' : 'Сообщение откреплено', 'info');
+    });
+
+    // Moderation & Reports socket events
+    newSocket.on('reports:list', (list: Report[]) => {
+      setReports(list || []);
+    });
+
+    newSocket.on('report:new', (newReport: Report) => {
+      setReports(prev => [newReport, ...prev.filter(r => r.id !== newReport.id)]);
+      if (isGlobalAdmin || profile?.isModerator || moderatorsList.includes(user?.uid || '')) {
+        addToast(`Новая жалоба: ${newReport.reasonCategoryTitle}`, 'info');
+      }
+    });
+
+    newSocket.on('report:updated', (upd: Report) => {
+      setReports(prev => prev.map(r => r.id === upd.id ? upd : r));
+    });
+
+    newSocket.on('moderators:list', (mods: string[]) => {
+      setModeratorsList(mods || []);
+    });
+
+    newSocket.on('moderation:warning', (warning: { text: string; actionId?: string }) => {
+      addToast(`⚠️ Официальное предупреждение: ${warning.text}`, 'error');
+      try { triggerHapticFeedback(); } catch (e) {}
+    });
+
+    newSocket.on('auth:deleted', (data: { reason?: string }) => {
+      addToast(data?.reason || 'Аккаунт удален администрацией за нарушение правил платформы', 'error');
+      setTimeout(() => {
+        handleLogout();
+      }, 2500);
     });
 
     return () => {
@@ -1903,16 +1998,6 @@ function AppContent() {
   const [contextMenuTimer, setContextMenuTimer] = useState(5);
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
 
-  const scrollToMessage = (id: string) => {
-    if (!id) return;
-    const el = document.getElementById(`msg-${id}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setHighlightedMsgId(id);
-      setTimeout(() => setHighlightedMsgId(null), 3000);
-    }
-  };
-
   // Close context menu on outside click
   useEffect(() => {
     const handleClickOutside = () => { setContextMenu(null); setChatContextMenu(null); };
@@ -1944,6 +2029,75 @@ function AppContent() {
       addToast('Не удалось скопировать текст', 'error');
     });
   };
+
+  const handlePinMessage = (msg: Message, pin: boolean) => {
+    if (!selectedChat || !user) return;
+    socket?.emit('message:pin', {
+      messageId: msg.id,
+      chatId: selectedChat.id,
+      pinned: pin,
+      pinnedBy: user.uid
+    });
+  };
+
+  const handleOpenReport = (
+    targetType: 'message' | 'user' | 'group',
+    targetId: string,
+    targetName?: string,
+    chatId?: string,
+    messageContext?: any
+  ) => {
+    setReportModal({
+      isOpen: true,
+      targetType,
+      targetId,
+      targetName,
+      chatId: chatId || selectedChat?.id,
+      messageContext
+    });
+  };
+
+  const handleReportSubmit = (data: {
+    targetType: 'message' | 'user' | 'group';
+    targetId: string;
+    targetName?: string;
+    chatId?: string;
+    reasonCategory: string;
+    reasonCategoryTitle: string;
+    description: string;
+    messageContext?: any;
+  }) => {
+    if (!user) return;
+    socket?.emit('report:create', {
+      ...data,
+      reporterId: user.uid,
+      reporterName: profile?.displayName || user.displayName || 'Пользователь'
+    });
+    addToast('Жалоба передана в службу безопасности Ордины', 'success');
+  };
+
+  const handleModerationAction = (actionData: any) => {
+    if (!user) return;
+    socket?.emit('moderation:action', {
+      ...actionData,
+      executorId: user.uid,
+      executorRole: isGlobalAdmin ? 'superadmin' : 'moderator'
+    });
+  };
+
+  const handleAssignModerator = (targetUid: string, isMod: boolean) => {
+    if (!user || !isGlobalAdmin) return;
+    socket?.emit('moderator:assign', {
+      adminId: user.uid,
+      targetUid,
+      isModerator: isMod
+    });
+  };
+
+  const currentPinnedMessage = useMemo(() => {
+    if (!selectedChat) return null;
+    return messages.slice().reverse().find(m => m.isPinned) || null;
+  }, [messages, selectedChat]);
 
   const [floatingHeartMsgId, setFloatingHeartMsgId] = useState<string | null>(null);
   const msgPressStartRef = useRef<{ msgId: string; time: number; x: number; y: number }>({ msgId: '', time: 0, x: 0, y: 0 });
@@ -2346,6 +2500,22 @@ function AppContent() {
 
   useEffect(() => {
     (window as any).addToast = addToast;
+  }, [addToast]);
+
+  const scrollToMessage = useCallback((id: string) => {
+    if (!id) return;
+    const el = document.getElementById(`msg-${id}`);
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setHighlightedMsgId(id);
+      el.classList.add('ring-2', 'ring-amber-500', 'bg-amber-50/40');
+      setTimeout(() => {
+        setHighlightedMsgId(null);
+        el.classList.remove('ring-2', 'ring-amber-500', 'bg-amber-50/40');
+      }, 2500);
+    } else {
+      addToast('Сообщение находится выше в истории', 'info');
+    }
   }, [addToast]);
 
   const [pollQuestion, setPollQuestion] = useState('');
@@ -4273,8 +4443,8 @@ function AppContent() {
             let newWidth = img.width * cos + img.height * sin;
             let newHeight = img.width * sin + img.height * cos;
 
-            // Scale down if too large (max 1280px to keep size small)
-            const MAX_DIMENSION = 1280;
+            // Telegram HD standard: up to 2048px to preserve crystal-clear text and details
+            const MAX_DIMENSION = 2048;
             let scale = 1;
             if (newWidth > MAX_DIMENSION || newHeight > MAX_DIMENSION) {
               scale = Math.min(MAX_DIMENSION / newWidth, MAX_DIMENSION / newHeight);
@@ -4285,19 +4455,23 @@ function AppContent() {
             canvas.width = newWidth;
             canvas.height = newHeight;
 
+            // High-quality bicubic interpolation
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+
             ctx.translate(newWidth / 2, newHeight / 2);
             ctx.rotate(rad);
             ctx.scale(scale, scale);
             ctx.drawImage(img, -img.width / 2, -img.height / 2);
 
-            // Compress to JPEG to save space
+            // Compress with high fidelity (0.85 quality)
             canvas.toBlob((blob) => {
               if (blob) {
                 resolve(new File([blob], currentPendingFile.file.name.replace(/\.[^/.]+$/, "") + ".jpg", { type: 'image/jpeg' }));
               } else {
                 resolve(currentPendingFile.file);
               }
-            }, 'image/jpeg', 0.7);
+            }, 'image/jpeg', 0.85);
           };
           img.src = currentPendingFile.previewUrl;
         });
@@ -5768,6 +5942,25 @@ function AppContent() {
                       </div>
                     </div>
 
+                    {viewedProfile && viewedProfile.uid !== user?.uid && (
+                      <div className="pt-2">
+                        <button
+                          onClick={() => {
+                            handleOpenReport(
+                              'user',
+                              viewedProfile.uid,
+                              viewedProfile.displayName || viewedProfile.username || 'Пользователь'
+                            );
+                            setShowProfile(false);
+                          }}
+                          className="w-full py-3 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-sm flex items-center justify-center gap-2 border border-rose-200 transition-colors"
+                        >
+                          <Flag size={18} />
+                          Пожаловаться на пользователя
+                        </button>
+                      </div>
+                    )}
+
                       {/* Removed data safety block */}
 
 
@@ -6018,59 +6211,13 @@ function AppContent() {
 
 
       {/* Privacy Policy Modal */}
-      <AnimatePresence>
-        {showPrivacyPolicy && (
-          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" onClick={() => setShowPrivacyPolicy(false)}>
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden max-h-[90vh] flex flex-col"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between shrink-0">
-                <h3 className="text-xl font-bold text-slate-900">Политика конфиденциальности</h3>
-                <button onClick={() => setShowPrivacyPolicy(false)} className="p-2 hover:bg-slate-100 rounded-xl">
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="p-6 overflow-y-auto text-sm text-slate-600 space-y-4">
-                <p><strong>1. Идеология Свободной Связи и Минимизация Данных</strong></p>
-                <p>Ордина: Мессенджер Свободы спроектирован по принципу приватности по умолчанию. Мы не собираем номера телефонов, метаданные слежения или рекламные идентификаторы. Ваша связь принадлежит только вам.</p>
-                
-                <p><strong>2. Сквозное E2EE и Zero-Knowledge Шифрование</strong></p>
-                <p>Все персональные сообщения, медиафайлы и сеансы связи шифруются непосредственно на вашем устройстве. Ни интернет-серверы, ни промежуточные ретрансляторы не имеют математической возможности прочитать содержимое ваших диалогов.</p>
-                
-                <p><strong>3. Автономная BLE Mesh & DTN Сеть и Оффлайн-Уведомления</strong></p>
-                <p>При отключении мобильного интернета или блокировках приложение автоматически переходит в режим автономной ячеистой сети (Bluetooth Low Energy & Local Subnet). Сообщения передаются напрямую между устройствами по радиоканалу, а встроенная локальная служба гарантирует мгновенные уведомления о доставке даже при заблокированном экране без подключения к серверам.</p>
-
-                <p><strong>4. Режим Почтальона (Store-and-Forward)</strong></p>
-                <p>Если адресат находится вне зоны прямого радиосигнала, зашифрованный пакет передается через доверенные транзитные узлы-почтальоны в режиме Zero-Knowledge: узел хранит криптоконтейнер до встречи с адресатом и передает его, не зная содержания.</p>
-
-                <p><strong>5. Тихие Сообщения и Контроль Внимания</strong></p>
-                <p>В каналах и группах доступна отправка тихих сообщений (без звука и вибрации). Такие сообщения доставляются участникам ненавязчиво, не нарушая их покой.</p>
-
-                <p><strong>6. Прозрачность Статусов и Присутствия</strong></p>
-                <p>Статус «В сети» и время последнего посещения обновляются в реальном времени на основе активных подключений сокета. Пользователи могут настраивать свои кастомные статусы и видимость.</p>
-
-                <p><strong>7. Локальная Сохранность Данных (SQLite)</strong></p>
-                <p>История сообщений, ключи и контакты кэшируются в защищенном локальном SQLite-хранилище устройства, что исключает потерю данных при обновлениях приложения или перебоях связи.</p>
-
-                <p><strong>8. Права Пользователя и Полное Удаление</strong></p>
-                <p>Вы имеете полный контроль над своими данными: доступна очистка локального кэша, удаление сообщений для всех участников и завершение удаленных сеансов на любых устройствах.</p>
-              </div>
-              <div className="p-4 bg-slate-50 flex justify-end shrink-0">
-                <button
-                  onClick={() => setShowPrivacyPolicy(false)}
-                  className="py-2.5 px-6 rounded-xl bg-blue-600 text-white font-bold text-sm hover:bg-blue-700 transition-all"
-                >
-                  Понятно
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      <PrivacyPolicyModal 
+        isOpen={showPrivacyPolicy || showPrivacyModal} 
+        onClose={() => { 
+          setShowPrivacyPolicy(false); 
+          setShowPrivacyModal(false); 
+        }} 
+      />
 
       {/* Devices Modal */}
       <AnimatePresence>
@@ -6468,6 +6615,33 @@ function AppContent() {
                     </p>
                   </div>
                 </button>
+
+                {isUserModerator && (
+                  <button 
+                    onClick={() => {
+                      setShowSettings(false);
+                      setShowModerationModal(true);
+                    }}
+                    className="w-full flex items-center gap-4 p-4 hover:bg-rose-50/70 rounded-2xl transition-all border border-rose-200/70 bg-rose-50/30"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-rose-600 text-white flex items-center justify-center shadow-md shadow-rose-500/20">
+                      <ShieldAlert size={20} />
+                    </div>
+                    <div className="text-left flex-1">
+                      <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        Центр модерации 
+                        {reports.filter(r => r.status === 'pending').length > 0 && (
+                          <span className="text-[11px] font-bold px-2 py-0.5 bg-rose-600 text-white rounded-full">
+                            {reports.filter(r => r.status === 'pending').length}
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        {isGlobalAdmin ? 'Жалобы, назначение модераторов и санкции' : 'Просмотр жалоб и модерация нарушений'}
+                      </p>
+                    </div>
+                  </button>
+                )}
 
                 <button 
                   onClick={() => {
@@ -7032,6 +7206,23 @@ function AppContent() {
                         );
                       })}
                     </div>
+                  </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={() => {
+                        handleOpenReport(
+                          'group',
+                          (activeChatData as Group).id,
+                          (activeChatData as Group).name
+                        );
+                        setShowGroupInfo(false);
+                      }}
+                      className="w-full py-3 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-sm flex items-center justify-center gap-2 border border-rose-200 transition-colors"
+                    >
+                      <Flag size={18} />
+                      Пожаловаться на {(activeChatData as Group).type === 'group' ? 'группу' : 'канал'}
+                    </button>
                   </div>
                 </div>
               </div>
@@ -7875,6 +8066,26 @@ function AppContent() {
                             </button>
                             </>
                           )}
+
+                          {selectedChat.id !== user?.uid && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowChatMenu(false);
+                                handleOpenReport(
+                                  selectedChat.type === 'user' ? 'user' : 'group',
+                                  selectedChat.id,
+                                  selectedChat.type === 'user'
+                                    ? (users.find(u => u.uid === selectedChat.id)?.displayName || 'Пользователь')
+                                    : ((activeChatData as Group)?.name || 'Группа'),
+                                  selectedChat.id
+                                );
+                              }}
+                              className="w-full flex items-center gap-3 p-3 text-amber-600 hover:bg-amber-50 rounded-xl transition-all font-semibold text-sm"
+                            >
+                              <Flag size={18} /> Пожаловаться
+                            </button>
+                          )}
                         </div>
                       </motion.div>
                     )}
@@ -7884,6 +8095,21 @@ function AppContent() {
               </>
               )}
             </div>
+
+            {/* Pinned Message Banner */}
+            <PinnedMessageBanner
+              pinnedMessage={currentPinnedMessage}
+              users={users}
+              onUnpin={() => currentPinnedMessage && handlePinMessage(currentPinnedMessage, false)}
+              onScrollTo={(msgId) => scrollToMessage(msgId)}
+              canUnpin={Boolean(
+                isGlobalAdmin ||
+                (selectedChat.type === 'user') ||
+                ((activeChatData as Group)?.ownerId === user?.uid) ||
+                ((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'admin') ||
+                ((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'owner')
+              )}
+            />
 
             {/* Messages */}
             <div 
@@ -8772,6 +8998,18 @@ function AppContent() {
                 >
                   <Reply size={16} className="text-slate-400" /> Ответить
                 </button>
+
+                {/* Pin / Unpin message */}
+                <button
+                  onClick={() => {
+                    handlePinMessage(contextMenu.msg, !contextMenu.msg.isPinned);
+                    setContextMenu(null);
+                  }}
+                  className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
+                >
+                  <Pin size={16} className={contextMenu.msg.isPinned ? "text-amber-500 fill-amber-500" : "text-slate-400"} />
+                  {contextMenu.msg.isPinned ? 'Открепить сообщение' : 'Закрепить сообщение'}
+                </button>
                 
                 {/* Copy text - strictly disallowed for voice, stickers, images, and files */}
                 {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
@@ -8927,6 +9165,36 @@ function AppContent() {
                     <Trash2 size={16} className="text-red-400" /> 
                     Удалить для всех
                   </button>
+                )}
+
+                {/* Report message */}
+                {contextMenu.msg.senderId !== user?.uid && (
+                  <>
+                    <div className="h-px bg-slate-100 my-1"></div>
+                    <button
+                      onClick={() => {
+                        const sender = users.find(u => u.uid === contextMenu.msg.senderId);
+                        handleOpenReport(
+                          'message',
+                          contextMenu.msg.id,
+                          sender?.displayName || 'Пользователь',
+                          selectedChat?.id,
+                          {
+                            text: contextMenu.msg.text,
+                            senderId: contextMenu.msg.senderId,
+                            senderName: sender?.displayName,
+                            fileUrl: contextMenu.msg.fileUrl,
+                            createdAt: contextMenu.msg.createdAt
+                          }
+                        );
+                        setContextMenu(null);
+                      }}
+                      className="w-full text-left px-4 py-2.5 text-sm hover:bg-amber-50 text-amber-700 flex items-center gap-3 transition-colors font-medium"
+                    >
+                      <Flag size={16} className="text-amber-500" />
+                      Пожаловаться
+                    </button>
+                  </>
                 )}
               </motion.div>
             )}
@@ -10042,6 +10310,33 @@ function AppContent() {
           }}
         />
       )}
+
+      {/* Report Modal */}
+      <ReportModal
+        isOpen={reportModal.isOpen}
+        onClose={() => setReportModal(prev => ({ ...prev, isOpen: false }))}
+        targetType={reportModal.targetType}
+        targetId={reportModal.targetId}
+        targetName={reportModal.targetName}
+        chatId={reportModal.chatId}
+        messageContext={reportModal.messageContext}
+        onSubmit={handleReportSubmit}
+      />
+
+      {/* Moderation Modal */}
+      <ModerationModal
+        isOpen={showModerationModal}
+        onClose={() => setShowModerationModal(false)}
+        currentUser={profile || ({ uid: user?.uid || '', displayName: 'Администратор', status: 'online', lastSeen: new Date().toISOString() } as UserProfile)}
+        isSuperAdmin={isGlobalAdmin}
+        reports={reports}
+        moderators={moderatorsList}
+        moderatorsList={moderatorsList}
+        allUsers={users}
+        onAction={handleModerationAction}
+        onAssignModerator={handleAssignModerator}
+        onRefreshReports={() => socket?.emit('reports:get', { userId: user?.uid })}
+      />
 
       {/* Highest priority Toasts container on top of all modals and overlays */}
       <ToastsContainer toasts={toasts} />

@@ -24,7 +24,10 @@ let localDb = {
   groups: {} as Record<string, { id: string, data: string }>,
   sticker_packs: {} as Record<string, { id: string, data: string }>,
   scheduled_messages: {} as Record<string, { id: string, chatId: string, data: string, sendAt: string }>,
-  bots: {} as Record<string, { id: string, owner_id: string, data: string }>
+  bots: {} as Record<string, { id: string, owner_id: string, data: string }>,
+  reports: {} as Record<string, { id: string, data: string, status: string, createdAt: string }>,
+  moderators: [] as string[],
+  banned_emails: {} as Record<string, { email: string, reason: string, bannedAt: string, moderatorUid: string }>
 };
 
 const DB_FILE = path.join(process.cwd(), 'local_database.json');
@@ -361,6 +364,37 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
     return { rows: [], rowCount: 1 };
   }
 
+  if (normalized.includes('INSERT INTO reports')) {
+    const id = params[0];
+    const data = params[1];
+    const status = params[2];
+    const createdAt = params[3];
+    localDb.reports = localDb.reports || {};
+    localDb.reports[id] = { id, data, status, createdAt };
+    saveLocalDb();
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (normalized.includes('UPDATE reports SET')) {
+    const data = params[0];
+    const status = params[1];
+    const id = params[2];
+    if (localDb.reports && localDb.reports[id]) {
+      localDb.reports[id].data = data;
+      localDb.reports[id].status = status;
+      saveLocalDb();
+    }
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (normalized.includes('FROM reports')) {
+    localDb.reports = localDb.reports || {};
+    const rows = Object.values(localDb.reports)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .map(r => ({ id: r.id, data: r.data, status: r.status, createdAt: r.createdAt }));
+    return { rows, rowCount: rows.length };
+  }
+
   if (normalized.includes('DELETE FROM groups WHERE data LIKE')) {
     const p1 = params[0]?.replace(/%/g, '');
     Object.keys(localDb.groups).forEach(id => {
@@ -438,6 +472,18 @@ async function initDb() {
         id TEXT PRIMARY KEY,
         owner_id TEXT NOT NULL,
         data TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS reports (
+        id TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        status TEXT NOT NULL,
+        "createdAt" TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS banned_emails (
+        email TEXT PRIMARY KEY,
+        reason TEXT NOT NULL,
+        "bannedAt" TEXT NOT NULL,
+        "moderatorUid" TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_messages_chatid ON messages ("chatId");
       CREATE INDEX IF NOT EXISTS idx_messages_createdat ON messages ("createdAt");
@@ -607,6 +653,23 @@ async function startServer() {
   });
   app.get('/api/ping', (req, res) => {
     res.send('pong');
+  });
+
+  // Check if an email is blacklisted/banned from creating accounts
+  app.get('/api/moderation/check-email', async (req, res) => {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    if (!email) return res.json({ banned: false });
+    
+    if (localDb.banned_emails && localDb.banned_emails[email]) {
+      return res.json({ banned: true, reason: localDb.banned_emails[email].reason });
+    }
+    try {
+      const { rows } = await pool.query('SELECT reason FROM banned_emails WHERE LOWER(email) = $1', [email]);
+      if (rows[0]) {
+        return res.json({ banned: true, reason: rows[0].reason });
+      }
+    } catch (e) {}
+    res.json({ banned: false });
   });
 
   // REST endpoints for persisted data & stats
@@ -1037,6 +1100,12 @@ io.on('connection', (socket) => {
         const uid = userData.uid;
         (socket as any).uid = uid;
         
+        const checkEmail = (userData.email || '').toLowerCase().trim();
+        if (checkEmail && localDb.banned_emails && localDb.banned_emails[checkEmail]) {
+          socket.emit('auth:error', { banned: true, message: 'Этот email заблокирован модератором: ' + localDb.banned_emails[checkEmail].reason });
+          return;
+        }
+
         const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [uid]);
         const row = rows[0];
         
@@ -1119,6 +1188,27 @@ io.on('connection', (socket) => {
         finalData.status = (finalData.status === 'auto' || !finalData.status) ? 'online' : finalData.status;
         onlineUsers.set(uid, { socketId: socket.id, status: finalData.status, customStatus: finalData.customStatus });
         socket.join(`user:${uid}`);
+
+        // Check if user is SuperAdmin or Moderator
+        const isSuperAdmin = uid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' || 
+          finalData.email === 'ordinalyzm25@gmail.com' || 
+          finalData.username === 'MEGAKPYIIIuTeJIb' || 
+          finalData.role === 'admin' || 
+          finalData.isAdmin === true;
+        const isModerator = isSuperAdmin || 
+          (Array.isArray(localDb.moderators) && localDb.moderators.includes(uid)) || 
+          finalData.isModerator === true;
+
+        if (isSuperAdmin) {
+          finalData.isAdmin = true;
+          finalData.isModerator = true;
+        } else if (isModerator) {
+          finalData.isModerator = true;
+        }
+
+        if (isModerator) {
+          socket.join('role:moderators');
+        }
         
         // Emit synced early to prevent UI block
         socket.emit('auth:synced', finalData);
@@ -1550,12 +1640,28 @@ io.on('connection', (socket) => {
         const myMessagesToThem = msgs.filter((m: any) => m.senderId === myUid && m.receiverId === data.message.receiverId);
         const theirMessagesToMe = msgs.filter((m: any) => m.senderId === data.message.receiverId && m.receiverId === myUid);
         
+        // Moderation restriction: ban on writing first (cannot initiate DMs)
+        if (theirMessagesToMe.length === 0) {
+          try {
+            const { rows: senderRows } = await pool.query('SELECT data FROM users WHERE uid = $1', [myUid]);
+            if (senderRows[0]) {
+              const senderUser = JSON.parse(senderRows[0].data);
+              if (senderUser.cannotInitiateDmsUntil && new Date(senderUser.cannotInitiateDmsUntil).getTime() > Date.now()) {
+                const untilStr = new Date(senderUser.cannotInitiateDmsUntil).toLocaleString('ru-RU');
+                const reasonText = senderUser.cannotInitiateReason ? ` Причина: ${senderUser.cannotInitiateReason}.` : '';
+                socket.emit('message:error', {
+                  error: `Вам временно ограничена отправка сообщений новым контактам до ${untilStr}.${reasonText}`
+                });
+                return;
+              }
+            }
+          } catch (e) {}
+        }
         
-         const isBotReceiver = (await pool.query('SELECT id FROM bots WHERE id = $1', [data.message.receiverId])).rowCount > 0;
-         if (!isBotReceiver && theirMessagesToMe.length === 0 && myMessagesToThem.length >= 3) {
-           return; // Block silent spam on server
-         }
-  
+        const isBotReceiver = (await pool.query('SELECT id FROM bots WHERE id = $1', [data.message.receiverId])).rowCount > 0;
+        if (!isBotReceiver && theirMessagesToMe.length === 0 && myMessagesToThem.length >= 3) {
+          return; // Block silent spam on server
+        }
       }
 
       const msg = { 
@@ -2958,6 +3064,491 @@ io.on('connection', (socket) => {
         }
       } catch (e) {
         console.error('[Anti-DPI Socket] Error:', e);
+      }
+    });
+
+    // Pinned messages handler
+    socket.on('message:pin', async (data: { id: string, chatId: string, isPinned: boolean }) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid || !data.id) return;
+
+        const { rows } = await pool.query('SELECT data FROM messages WHERE id = $1', [data.id]);
+        if (!rows[0]) return;
+        const msg = JSON.parse(rows[0].data);
+
+        const isGroup = !!msg.groupId || data.chatId === 'global_channel';
+        let canPin = false;
+
+        if (!isGroup) {
+          canPin = (msg.senderId === myUid || msg.receiverId === myUid);
+        } else {
+          // Check if admin or moderator or group owner/admin
+          const isSuperAdmin = myUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2';
+          const isMod = isSuperAdmin || (Array.isArray(localDb.moderators) && localDb.moderators.includes(myUid));
+          if (isMod) {
+            canPin = true;
+          } else {
+            const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.chatId]);
+            if (gRows[0]) {
+              const g = JSON.parse(gRows[0].data);
+              const role = g.memberRoles?.[myUid] || 'member';
+              if (role === 'owner' || role === 'admin' || g.ownerId === myUid) {
+                canPin = true;
+              }
+            }
+          }
+        }
+
+        if (!canPin) return;
+
+        msg.isPinned = data.isPinned;
+        msg.pinnedAt = data.isPinned ? new Date().toISOString() : undefined;
+        msg.pinnedBy = data.isPinned ? myUid : undefined;
+
+        await pool.query('UPDATE messages SET data = $1 WHERE id = $2', [JSON.stringify(msg), data.id]);
+
+        let room = `chat:${data.chatId}`;
+        if (!isGroup && data.chatId !== 'global_channel' && msg.receiverId) {
+          let historyId = msg.senderId === msg.receiverId ? msg.senderId : [msg.senderId, msg.receiverId].sort().join('_');
+          room = `chat:${historyId}`;
+        }
+
+        // If group, update group.pinnedMessageIds
+        if (isGroup) {
+          const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.chatId]);
+          if (gRows[0]) {
+            const g = JSON.parse(gRows[0].data);
+            g.pinnedMessageIds = g.pinnedMessageIds || [];
+            if (data.isPinned) {
+              if (!g.pinnedMessageIds.includes(data.id)) g.pinnedMessageIds.push(data.id);
+            } else {
+              g.pinnedMessageIds = g.pinnedMessageIds.filter((mId: string) => mId !== data.id);
+            }
+            await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(g), data.chatId]);
+            io.emit('group:updated', g);
+          }
+        }
+
+        io.to(room).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
+        io.to(room).emit('message:received', msg);
+        if (msg.receiverId) io.to(`user:${msg.receiverId}`).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
+        if (msg.senderId) io.to(`user:${msg.senderId}`).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
+      } catch (err) {
+        console.error('Error in message:pin:', err);
+      }
+    });
+
+    // Create Report handler
+    socket.on('report:create', async (reportData: any) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid) return;
+
+        const reportId = uuidv4();
+        const newReport = {
+          id: reportId,
+          reporterId: myUid,
+          reporterName: reportData.reporterName || 'Пользователь',
+          reporterEmail: reportData.reporterEmail || '',
+          targetType: reportData.targetType, // 'message' | 'user' | 'group'
+          targetId: reportData.targetId,
+          targetName: reportData.targetName || '',
+          chatId: reportData.chatId || '',
+          messageContext: reportData.messageContext || null,
+          reasonCategory: reportData.reasonCategory,
+          reasonCategoryTitle: reportData.reasonCategoryTitle,
+          description: reportData.description || '',
+          status: 'pending',
+          createdAt: new Date().toISOString()
+        };
+
+        localDb.reports = localDb.reports || {};
+        localDb.reports[reportId] = {
+          id: reportId,
+          data: JSON.stringify(newReport),
+          status: 'pending',
+          createdAt: newReport.createdAt
+        };
+        saveLocalDb();
+
+        try {
+          await pool.query('INSERT INTO reports (id, data, status, "createdAt") VALUES ($1, $2, $3, $4)', [
+            reportId, JSON.stringify(newReport), 'pending', newReport.createdAt
+          ]);
+        } catch (e) {}
+
+        // Broadcast to all active moderators/admins
+        io.to('role:moderators').emit('report:new', newReport);
+        socket.emit('report:submitted', { success: true, reportId });
+      } catch (err) {
+        console.error('Error in report:create:', err);
+        socket.emit('report:submitted', { success: false, error: 'Ошибка отправки жалобы' });
+      }
+    });
+
+    // Get reports list (admins & moderators only)
+    socket.on('reports:get', async () => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid) return;
+        
+        let reportsList: any[] = [];
+        try {
+          const { rows } = await pool.query('SELECT data FROM reports ORDER BY "createdAt" DESC LIMIT 200');
+          reportsList = rows.map((r: any) => JSON.parse(r.data));
+        } catch (e) {
+          reportsList = Object.values(localDb.reports || {}).map((r: any) => JSON.parse(r.data));
+        }
+        socket.emit('reports:list', reportsList);
+      } catch (err) {
+        console.error('Error in reports:get:', err);
+      }
+    });
+
+    // SuperAdmin assigns or removes a moderator
+    socket.on('moderator:assign', async (data: { targetUid: string, isModerator: boolean }) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid) return;
+        
+        // Only SuperAdmin can manage moderators
+        let isSuperAdmin = myUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2';
+        if (!isSuperAdmin) {
+          const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [myUid]);
+          if (rows[0]) {
+            const u = JSON.parse(rows[0].data);
+            if (u.role === 'admin' || u.isAdmin || u.email === 'ordinalyzm25@gmail.com' || u.username === 'MEGAKPYIIIuTeJIb') {
+              isSuperAdmin = true;
+            }
+          }
+        }
+
+        if (!isSuperAdmin) {
+          return socket.emit('moderator:error', { error: 'Только администратор Ордины может назначать модераторов' });
+        }
+
+        localDb.moderators = localDb.moderators || [];
+        if (data.isModerator) {
+          if (!localDb.moderators.includes(data.targetUid)) {
+            localDb.moderators.push(data.targetUid);
+          }
+        } else {
+          localDb.moderators = localDb.moderators.filter(u => u !== data.targetUid);
+        }
+        saveLocalDb();
+
+        // Update target user profile
+        try {
+          const { rows: tRows } = await pool.query('SELECT data FROM users WHERE uid = $1', [data.targetUid]);
+          if (tRows[0]) {
+            const targetProfile = JSON.parse(tRows[0].data);
+            targetProfile.isModerator = data.isModerator;
+            await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(targetProfile), data.targetUid]);
+            io.to(`user:${data.targetUid}`).emit('auth:synced', targetProfile);
+            io.emit('user:updated', targetProfile);
+          }
+        } catch (e) {}
+
+        io.emit('moderators:list', localDb.moderators);
+        socket.emit('moderator:assigned', { targetUid: data.targetUid, isModerator: data.isModerator });
+      } catch (err) {
+        console.error('Error in moderator:assign:', err);
+      }
+    });
+
+    // Get list of moderators
+    socket.on('moderators:get', async () => {
+      socket.emit('moderators:list', localDb.moderators || []);
+    });
+
+    // Execute Moderation Action
+    socket.on('moderation:action', async (actionData: {
+      action: 'ban_dms_temporary' | 'warning' | 'delete_message_with_warning' | 'delete_group_with_warning' | 'delete_account_with_warning' | 'ban_account_email' | 'dismiss',
+      reportId?: string,
+      targetUid?: string,
+      targetEmail?: string,
+      targetGroupId?: string,
+      targetMessageId?: string,
+      chatId?: string,
+      durationHours?: number,
+      warningText?: string,
+      reason?: string
+    }) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid) return;
+
+        // Check if executor is admin or moderator
+        let isSuperAdmin = myUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2';
+        let executorName = 'Модератор';
+        try {
+          const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [myUid]);
+          if (rows[0]) {
+            const u = JSON.parse(rows[0].data);
+            if (u.role === 'admin' || u.isAdmin || u.email === 'ordinalyzm25@gmail.com' || u.username === 'MEGAKPYIIIuTeJIb') {
+              isSuperAdmin = true;
+            }
+            executorName = u.displayName || u.name || executorName;
+          }
+        } catch (e) {}
+
+        const isMod = isSuperAdmin || (Array.isArray(localDb.moderators) && localDb.moderators.includes(myUid));
+        if (!isMod) {
+          return socket.emit('moderation:error', { error: 'Недостаточно прав для выполнения модерации' });
+        }
+
+        let actionDescription = '';
+
+        // 1. Ban writing first for duration
+        if (actionData.action === 'ban_dms_temporary' && actionData.targetUid) {
+          const hours = actionData.durationHours || 24;
+          const untilDate = new Date(Date.now() + hours * 3600 * 1000).toISOString();
+          const reasonText = actionData.reason || 'Нарушение правил общения';
+          
+          try {
+            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+            if (rows[0]) {
+              const u = JSON.parse(rows[0].data);
+              u.cannotInitiateDmsUntil = untilDate;
+              u.cannotInitiateReason = reasonText;
+              
+              const newWarn = {
+                id: uuidv4(),
+                text: `Вам ограничен доступ: запрещено писать первым до ${new Date(untilDate).toLocaleString('ru-RU')}. Причина: ${reasonText}`,
+                reason: reasonText,
+                createdAt: new Date().toISOString(),
+                moderatorName: executorName,
+                targetType: 'user' as const
+              };
+              u.warnings = u.warnings || [];
+              u.warnings.unshift(newWarn);
+
+              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+              io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+              io.to(`user:${actionData.targetUid}`).emit('moderation:warning', newWarn);
+              io.emit('user:updated', u);
+            }
+          } catch (e) {}
+          actionDescription = `Запрет писать первым на ${hours} ч. (${reasonText})`;
+        }
+
+        // 2. Issue official warning
+        else if (actionData.action === 'warning' && actionData.targetUid) {
+          const warnText = actionData.warningText || 'Официальное предупреждение от администрации.';
+          const warnReason = actionData.reason || 'Нарушение регламента платформы';
+          const newWarn = {
+            id: uuidv4(),
+            text: warnText,
+            reason: warnReason,
+            createdAt: new Date().toISOString(),
+            moderatorName: executorName,
+            targetType: 'user' as const
+          };
+
+          try {
+            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+            if (rows[0]) {
+              const u = JSON.parse(rows[0].data);
+              u.warnings = u.warnings || [];
+              u.warnings.unshift(newWarn);
+              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+              io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+              io.emit('user:updated', u);
+            }
+          } catch (e) {}
+
+          io.to(`user:${actionData.targetUid}`).emit('moderation:warning', newWarn);
+          actionDescription = `Вынесено предупреждение: "${warnText}"`;
+        }
+
+        // 3. Delete message with warning
+        else if (actionData.action === 'delete_message_with_warning' && actionData.targetMessageId) {
+          const msgId = actionData.targetMessageId;
+          const chatId = actionData.chatId || '';
+          
+          await pool.query('DELETE FROM messages WHERE id = $1', [msgId]);
+          delete localDb.messages[msgId];
+          saveLocalDb();
+
+          io.emit('message:deleted', msgId);
+          if (chatId) io.to(`chat:${chatId}`).emit('message:deleted', msgId);
+
+          if (actionData.targetUid) {
+            const warnText = actionData.warningText || 'Ваше сообщение было удалено модератором за нарушение правил платформы.';
+            const warnReason = actionData.reason || 'Недопустимый контент в сообщении';
+            const newWarn = {
+              id: uuidv4(),
+              text: warnText,
+              reason: warnReason,
+              createdAt: new Date().toISOString(),
+              moderatorName: executorName,
+              targetType: 'message' as const
+            };
+
+            try {
+              const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+              if (rows[0]) {
+                const u = JSON.parse(rows[0].data);
+                u.warnings = u.warnings || [];
+                u.warnings.unshift(newWarn);
+                await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+                io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+                io.emit('user:updated', u);
+              }
+            } catch (e) {}
+
+            io.to(`user:${actionData.targetUid}`).emit('moderation:warning', newWarn);
+          }
+          actionDescription = `Удалено сообщение ${msgId} и вынесено предупреждение`;
+        }
+
+        // 4. Delete group with warning
+        else if (actionData.action === 'delete_group_with_warning' && actionData.targetGroupId) {
+          const gId = actionData.targetGroupId;
+          if (gId !== 'global_channel') {
+            await pool.query('DELETE FROM groups WHERE id = $1', [gId]);
+            delete localDb.groups[gId];
+            saveLocalDb();
+
+            io.emit('group:deleted', gId);
+
+            if (actionData.targetUid) {
+              const warnText = actionData.warningText || 'Созданная вами группа/канал удалены модератором за грубое нарушение правил.';
+              const newWarn = {
+                id: uuidv4(),
+                text: warnText,
+                reason: actionData.reason || 'Нарушение правил для публичных сообществ',
+                createdAt: new Date().toISOString(),
+                moderatorName: executorName,
+                targetType: 'group' as const
+              };
+              try {
+                const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+                if (rows[0]) {
+                  const u = JSON.parse(rows[0].data);
+                  u.warnings = u.warnings || [];
+                  u.warnings.unshift(newWarn);
+                  await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+                  io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+                  io.emit('user:updated', u);
+                }
+              } catch (e) {}
+              io.to(`user:${actionData.targetUid}`).emit('moderation:warning', newWarn);
+            }
+          }
+          actionDescription = `Удалена группа/канал ${gId}`;
+        }
+
+        // 5. Delete account with warning
+        else if (actionData.action === 'delete_account_with_warning' && actionData.targetUid) {
+          const targetUid = actionData.targetUid;
+          await pool.query('DELETE FROM users WHERE uid = $1', [targetUid]);
+          delete localDb.users[targetUid];
+          saveLocalDb();
+
+          io.to(`user:${targetUid}`).emit('auth:deleted', {
+            reason: actionData.reason || 'Ваш аккаунт удален администрацией за систематические нарушения.'
+          });
+          io.emit('user:deleted', targetUid);
+          actionDescription = `Аккаунт пользователя ${targetUid} удален`;
+        }
+
+        // 6. Delete account and permanently ban email
+        else if (actionData.action === 'ban_account_email') {
+          const targetUid = actionData.targetUid;
+          let email = actionData.targetEmail ? actionData.targetEmail.toLowerCase().trim() : '';
+          
+          if (!email && targetUid) {
+            try {
+              const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [targetUid]);
+              if (rows[0]) {
+                const u = JSON.parse(rows[0].data);
+                email = (u.email || '').toLowerCase().trim();
+              }
+            } catch (e) {}
+          }
+
+          if (email) {
+            const reason = actionData.reason || 'Грубое нарушение законодательства и условий сервиса';
+            localDb.banned_emails = localDb.banned_emails || {};
+            localDb.banned_emails[email] = {
+              email,
+              reason,
+              bannedAt: new Date().toISOString(),
+              moderatorUid: myUid
+            };
+            saveLocalDb();
+
+            try {
+              await pool.query('INSERT INTO banned_emails (email, reason, "bannedAt", "moderatorUid") VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO UPDATE SET reason = $2', [
+                email, reason, new Date().toISOString(), myUid
+              ]);
+            } catch (e) {}
+          }
+
+          if (targetUid) {
+            await pool.query('DELETE FROM users WHERE uid = $1', [targetUid]);
+            delete localDb.users[targetUid];
+            saveLocalDb();
+
+            io.to(`user:${targetUid}`).emit('auth:deleted', {
+              reason: 'Ваш аккаунт и email заблокированы навсегда за грубое нарушение правил сервиса.'
+            });
+            io.emit('user:deleted', targetUid);
+          }
+          actionDescription = `Аккаунт удален и email ${email} заблокирован навсегда`;
+        }
+
+        // 7. Dismiss report
+        else if (actionData.action === 'dismiss') {
+          actionDescription = 'Жалоба отклонена модератором (нарушений не выявлено)';
+        }
+
+        // Update Report record if reportId was provided
+        if (actionData.reportId) {
+          const rId = actionData.reportId;
+          let currentReport: any = null;
+
+          try {
+            const { rows } = await pool.query('SELECT data FROM reports WHERE id = $1', [rId]);
+            if (rows[0]) currentReport = JSON.parse(rows[0].data);
+          } catch (e) {}
+
+          if (!currentReport && localDb.reports?.[rId]) {
+            currentReport = JSON.parse(localDb.reports[rId].data);
+          }
+
+          if (currentReport) {
+            currentReport.status = actionData.action === 'dismiss' ? 'dismissed' : 'resolved';
+            currentReport.resolvedAt = new Date().toISOString();
+            currentReport.resolvedBy = myUid;
+            currentReport.resolvedByName = executorName;
+            currentReport.resolutionAction = actionDescription;
+
+            localDb.reports = localDb.reports || {};
+            localDb.reports[rId] = {
+              id: rId,
+              data: JSON.stringify(currentReport),
+              status: currentReport.status,
+              createdAt: currentReport.createdAt
+            };
+            saveLocalDb();
+
+            try {
+              await pool.query('UPDATE reports SET data = $1, status = $2 WHERE id = $3', [
+                JSON.stringify(currentReport), currentReport.status, rId
+              ]);
+            } catch (e) {}
+
+            io.to('role:moderators').emit('report:updated', currentReport);
+          }
+        }
+
+        socket.emit('moderation:success', { action: actionData.action, description: actionDescription });
+      } catch (err) {
+        console.error('Error in moderation:action:', err);
+        socket.emit('moderation:error', { error: 'Не удалось выполнить действие модерации' });
       }
     });
 
