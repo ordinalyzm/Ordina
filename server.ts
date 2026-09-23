@@ -1039,6 +1039,7 @@ async function startServer() {
 
   const PORT = Number(process.env.PORT) || 3000;
   const onlineUsers = new Map<string, { socketId: string, status: string, customStatus?: string }>();
+  const socketFloodMap = new Map<string, { count: number, windowStart: number }>();
 
   function getBotAsUser(b: any) {
   return {
@@ -1320,12 +1321,15 @@ io.on('connection', (socket) => {
       let historyId = chatId;
 
       if (!isGroup) {
-        const otherUid = chatId;
-        if (myUid && otherUid) {
-          if (myUid === otherUid) historyId = myUid;
-          else historyId = [myUid, otherUid].sort().join('_');
-          room = `chat:${historyId}`;
+        if (!myUid) {
+          // Unauthenticated socket cannot join or read direct chats
+          socket.emit('chat:history', { chatId, messages: [] });
+          return;
         }
+        const otherUid = chatId;
+        if (myUid === otherUid) historyId = myUid;
+        else historyId = [myUid, otherUid].sort().join('_');
+        room = `chat:${historyId}`;
       }
 
       socket.join(room);
@@ -1333,13 +1337,21 @@ io.on('connection', (socket) => {
       
       try {
         let messages = [];
-        if (myUid === chatId) {
+        if (isGroup) {
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [chatId, limit]);
+          messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+        } else if (myUid === chatId) {
           const oldId = `${myUid}_${myUid}`;
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2) ORDER BY "createdAt" DESC LIMIT $3', [myUid, oldId, limit]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [historyId, limit]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && (
+            (m.senderId === myUid && m.receiverId === chatId) ||
+            (m.senderId === chatId && m.receiverId === myUid)
+          ));
         }
         socket.emit('chat:history', { chatId, messages });
       } catch (err) {
@@ -1356,21 +1368,31 @@ io.on('connection', (socket) => {
         let historyId = chatId;
 
         if (!isGroup && chatId !== 'global_channel') {
-          const otherUid = chatId;
-          if (myUid) {
-            if (myUid === otherUid) historyId = myUid;
-            else historyId = [myUid, otherUid].sort().join('_');
+          if (!myUid) {
+            socket.emit('chat:history', { chatId, messages: [] });
+            return;
           }
+          const otherUid = chatId;
+          if (myUid === otherUid) historyId = myUid;
+          else historyId = [myUid, otherUid].sort().join('_');
         }
 
         let messages = [];
-        if (myUid === chatId) {
+        if (isGroup) {
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [chatId, data.limit || 100]);
+          messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+        } else if (myUid === chatId) {
           const oldId = `${myUid}_${myUid}`;
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2) ORDER BY "createdAt" DESC LIMIT $3', [myUid, oldId, data.limit || 100]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [historyId, data.limit || 100]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && (
+            (m.senderId === myUid && m.receiverId === chatId) ||
+            (m.senderId === chatId && m.receiverId === myUid)
+          ));
         }
         socket.emit('chat:history', { chatId, messages });
       } catch (err) {
@@ -1382,24 +1404,35 @@ io.on('connection', (socket) => {
     socket.on('chat:history:fetch', async (chatId: string) => {
       try {
         const myUid = (socket as any).uid;
-        let historyId = chatId;
-        
         const { rowCount: gCount } = await pool.query('SELECT id FROM groups WHERE id = $1', [chatId]);
         const isGroup = chatId === 'global_channel' || gCount > 0;
+        let historyId = chatId;
         
-        if (!isGroup && myUid) {
+        if (!isGroup) {
+          if (!myUid) {
+            socket.emit('chat:history', { chatId, messages: [] });
+            return;
+          }
           if (myUid === chatId) historyId = myUid;
           else historyId = [myUid, chatId].sort().join('_');
         }
 
         let messages = [];
-        if (myUid === chatId) {
+        if (isGroup) {
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT 100', [chatId]);
+          messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+        } else if (myUid === chatId) {
           const oldId = `${myUid}_${myUid}`;
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2) ORDER BY "createdAt" DESC LIMIT 100', [myUid, oldId]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
           const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT 100', [historyId]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
+          messages = messages.filter((m: any) => !m.groupId && (
+            (m.senderId === myUid && m.receiverId === chatId) ||
+            (m.senderId === chatId && m.receiverId === myUid)
+          ));
         }
         socket.emit('chat:history', { chatId, messages });
       } catch (err) {
@@ -1608,7 +1641,24 @@ io.on('connection', (socket) => {
 
     socket.on('message:new', async (data: { chatId: string, message: any, _uid?: string }) => {
       const myUid = (socket as any).uid || data._uid;
-      if (!myUid) return;
+      if (!myUid || !data?.message) return;
+
+      // Fortress Anti-Flood & Rate Limiting Protection
+      const now = Date.now();
+      const floodRecord = socketFloodMap.get(socket.id) || { count: 0, windowStart: now };
+      if (now - floodRecord.windowStart > 5000) {
+        floodRecord.count = 0;
+        floodRecord.windowStart = now;
+      }
+      floodRecord.count++;
+      socketFloodMap.set(socket.id, floodRecord);
+      if (floodRecord.count > 25) {
+        socket.emit('message:error', { error: 'Слишком частая отправка сообщений. Защита Ордины от флуда активна. Подождите 5 секунд.' });
+        return;
+      }
+
+      // Enforce senderId on server
+      data.message.senderId = myUid;
       
       const { rowCount: gCount } = await pool.query('SELECT id FROM groups WHERE id = $1', [data.chatId]);
       const isGroup = !!data.message.groupId || data.chatId === 'global_channel' || gCount > 0;
@@ -2799,6 +2849,16 @@ io.on('connection', (socket) => {
         }
 
         // 2. Fetch updated messages where version > clientVersion
+        const userGroupIds = new Set<string>();
+        for (const r of groupRows) {
+          try {
+            const g = JSON.parse(r.data);
+            if (isAdmin || g.id === 'global_channel' || g.isPublic || (myUid && Array.isArray(g.members) && g.members.includes(myUid)) || (myUid && g.ownerId === myUid)) {
+              userGroupIds.add(g.id);
+            }
+          } catch (e) {}
+        }
+
         const { rows: msgRows } = await pool.query('SELECT id, "chatId", data, "createdAt" FROM messages ORDER BY "createdAt" DESC LIMIT 500');
         const updatedMessages: any[] = [];
         for (const r of msgRows) {
@@ -2807,10 +2867,10 @@ io.on('connection', (socket) => {
             const ver = m.version || 1;
             if (ver > clientVersion) {
               const isGlobal = r.chatId === 'global_channel' || m.groupId === 'global_channel';
-              const isUserInDirect = !m.groupId && (m.senderId === myUid || m.receiverId === myUid);
-              const isUserInGroup = m.groupId && m.groupId !== 'global_channel';
+              const isUserInDirect = !!myUid && !m.groupId && (m.senderId === myUid || m.receiverId === myUid);
+              const isUserInGroup = !!myUid && !!m.groupId && m.groupId !== 'global_channel' && userGroupIds.has(m.groupId);
 
-              if (isAdmin || isGlobal || isUserInDirect || isUserInGroup || !myUid) {
+              if (isAdmin || isGlobal || isUserInDirect || isUserInGroup) {
                 updatedMessages.push(m);
               }
             }
@@ -3264,7 +3324,7 @@ io.on('connection', (socket) => {
 
     // Execute Moderation Action
     socket.on('moderation:action', async (actionData: {
-      action: 'ban_dms_temporary' | 'warning' | 'delete_message_with_warning' | 'delete_group_with_warning' | 'delete_account_with_warning' | 'ban_account_email' | 'dismiss',
+      action: 'ban_dms_temporary' | 'warning' | 'delete_message_with_warning' | 'delete_group_with_warning' | 'delete_account_with_warning' | 'ban_account_email' | 'dismiss' | 'lift_restriction' | 'pardon_warnings',
       reportId?: string,
       targetUid?: string,
       targetEmail?: string,
@@ -3503,6 +3563,49 @@ io.on('connection', (socket) => {
         // 7. Dismiss report
         else if (actionData.action === 'dismiss') {
           actionDescription = 'Жалоба отклонена модератором (нарушений не выявлено)';
+        }
+
+        // 8. Lift DM restriction (Amnesty)
+        else if (actionData.action === 'lift_restriction' && actionData.targetUid) {
+          try {
+            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+            if (rows[0]) {
+              const u = JSON.parse(rows[0].data);
+              u.cannotInitiateDmsUntil = null;
+              u.cannotInitiateReason = null;
+              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+              if (localDb.users?.[actionData.targetUid]) {
+                localDb.users[actionData.targetUid].data = JSON.stringify(u);
+                saveLocalDb();
+              }
+              io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+              io.emit('user:updated', u);
+            }
+          } catch (e) {
+            console.error('Failed to lift restriction:', e);
+          }
+          actionDescription = `Ограничение на отправку сообщений досрочно снято модератором ${executorName}`;
+        }
+
+        // 9. Pardon warnings
+        else if (actionData.action === 'pardon_warnings' && actionData.targetUid) {
+          try {
+            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [actionData.targetUid]);
+            if (rows[0]) {
+              const u = JSON.parse(rows[0].data);
+              u.warnings = [];
+              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(u), actionData.targetUid]);
+              if (localDb.users?.[actionData.targetUid]) {
+                localDb.users[actionData.targetUid].data = JSON.stringify(u);
+                saveLocalDb();
+              }
+              io.to(`user:${actionData.targetUid}`).emit('auth:synced', u);
+              io.emit('user:updated', u);
+            }
+          } catch (e) {
+            console.error('Failed to pardon warnings:', e);
+          }
+          actionDescription = `Все предупреждения пользователя аннулированы модератором ${executorName}`;
         }
 
         // Update Report record if reportId was provided

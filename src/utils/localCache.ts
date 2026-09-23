@@ -8,6 +8,24 @@ let dbInstance: SQLiteDBConnection | null = null;
 let isInitialized = false;
 
 /**
+ * Helper to compute a canonical, isolated storage key for any chat.
+ */
+export function getCanonicalChatKey(chatId: string, currentUserId?: string): string {
+  if (!chatId) return 'unknown';
+  if (chatId === 'global_channel' || chatId.startsWith('group_') || chatId.startsWith('channel_')) {
+    return chatId;
+  }
+  // Direct chat or self-notebook
+  if (currentUserId) {
+    if (chatId === currentUserId || chatId === 'notebook') {
+      return `notebook_${currentUserId}`;
+    }
+    return `dm_${[currentUserId, chatId].sort().join('_')}`;
+  }
+  return chatId;
+}
+
+/**
  * Initializes the SQLite Database and creates tables if they don't exist.
  * Safe across APK updates with CREATE TABLE IF NOT EXISTS.
  */
@@ -75,7 +93,6 @@ export async function initDatabase(): Promise<void> {
       isInitialized = true;
       console.log('[SQLite] ordina_main.db initialized successfully');
     } else {
-      // Web fallback
       isInitialized = true;
       console.log('[SQLite Web Fallback] In-memory & local fallback active');
     }
@@ -85,9 +102,9 @@ export async function initDatabase(): Promise<void> {
   }
 }
 
-// Auto-trigger init
+// Auto-trigger init & legacy cleanup
 if (typeof window !== 'undefined') {
-  initDatabase().catch(e => console.error('[SQLite] Auto-init error:', e));
+  initDatabase().then(() => purgeContaminatedLegacyCaches()).catch(e => console.error('[SQLite] Auto-init error:', e));
 }
 
 // Write-deduplication map to prevent multiple redundant writes within milliseconds
@@ -96,7 +113,7 @@ const recentWritesMap = new Map<string, string>();
 /**
  * Saves a single message to SQLite database and local cache.
  */
-export async function saveMessage(msg: Message): Promise<void> {
+export async function saveMessage(msg: Message, currentUserId?: string): Promise<void> {
   if (!msg || !msg.id) return;
 
   const textValue = (typeof msg.text === 'string' && msg.text.length > 0)
@@ -120,10 +137,10 @@ export async function saveMessage(msg: Message): Promise<void> {
     fileName: fileNameValue || undefined
   };
 
-  // Check deduplication signature to eliminate 8+ duplicate SQLite operations within milliseconds
+  // Check deduplication signature
   const writeSig = `${normalizedMsg.id}:${normalizedMsg.status}:${normalizedMsg.deliveryStatus}:${normalizedMsg.updatedAt || ''}:${(normalizedMsg as any).readBy?.length || 0}`;
   if (recentWritesMap.get(normalizedMsg.id) === writeSig) {
-    return; // Already written with identical state
+    return;
   }
   recentWritesMap.set(normalizedMsg.id, writeSig);
   if (recentWritesMap.size > 500) {
@@ -131,15 +148,22 @@ export async function saveMessage(msg: Message): Promise<void> {
     if (firstKey) recentWritesMap.delete(firstKey);
   }
   
-  // Also keep in localStorage for immediate sync access
-  let chatId = normalizedMsg.groupId || normalizedMsg.chatId;
-  if (!chatId && normalizedMsg.senderId && normalizedMsg.receiverId) {
-    chatId = [normalizedMsg.senderId, normalizedMsg.receiverId].sort().join('_');
-  } else if (!chatId) {
-    chatId = normalizedMsg.receiverId || normalizedMsg.senderId;
+  // Calculate strict canonical chat key
+  let canonicalChatId = normalizedMsg.groupId;
+  if (!canonicalChatId) {
+    if (normalizedMsg.senderId && normalizedMsg.receiverId) {
+      if (normalizedMsg.senderId === normalizedMsg.receiverId) {
+        canonicalChatId = `notebook_${normalizedMsg.senderId}`;
+      } else {
+        canonicalChatId = `dm_${[normalizedMsg.senderId, normalizedMsg.receiverId].sort().join('_')}`;
+      }
+    } else {
+      canonicalChatId = normalizedMsg.chatId;
+    }
   }
-  if (chatId) {
-    saveMessageToLocalStorage(chatId, normalizedMsg);
+
+  if (canonicalChatId) {
+    saveMessageToLocalStorage(canonicalChatId, normalizedMsg);
   }
 
   try {
@@ -244,7 +268,6 @@ export async function getDeltaSyncVersion(): Promise<number> {
     console.error('[SQLite] getDeltaSyncVersion error:', err);
   }
 
-  // Check localStorage delta marker
   const localSavedVer = parseInt(localStorage.getItem('ordina_delta_version') || '0', 10);
   return Math.max(maxMsgVersion, maxChatVersion, localSavedVer, 0);
 }
@@ -291,19 +314,16 @@ export async function getLocalSetting(key: string): Promise<string | null> {
 /**
  * Merges delta sync data (incremental chats and messages from server) into SQLite.
  */
-export async function mergeDelta(chats: Chat[] = [], messages: Message[] = []): Promise<void> {
+export async function mergeDelta(chats: Chat[] = [], messages: Message[], currentUserId?: string): Promise<void> {
   try {
-    // ЗАЩИТА: Если с сервера пришел пустой массив — 
-    // НИ В КОЕМ СЛУЧАЕ НЕ ОЧИЩАЙТЕ И НЕ ПЕРЕЗАПИСЫВАЙТЕ ПУСТОТОЙ ЛОКАЛЬНУЮ БАЗУ!
     if ((!chats || chats.length === 0) && (!messages || messages.length === 0)) {
-      console.log('[DeltaSync] Сервер вернул 0 обновлений. Локальная база сохранена.');
       return;
     }
 
     await initDatabase();
     let maxVer = await getDeltaSyncVersion();
 
-    // 1. Merge chats (UPSERT only - never delete existing chats)
+    // 1. Merge chats
     if (Array.isArray(chats)) {
       for (const chat of chats) {
         if (!chat || !chat.id) continue;
@@ -319,25 +339,35 @@ export async function mergeDelta(chats: Chat[] = [], messages: Message[] = []): 
       }
     }
 
-    // 2. Merge messages (UPSERT only)
+    // 2. Merge messages (Only save messages that are relevant to current user)
     if (Array.isArray(messages)) {
       for (const msg of messages) {
         if (!msg || !msg.id) continue;
         const ver = msg.version || 1;
         if (ver > maxVer) maxVer = ver;
-        await saveMessage(msg);
+
+        // Strict isolation: if currentUserId is known, only store messages for user's direct chats or groups
+        if (currentUserId) {
+          const isGlobal = msg.groupId === 'global_channel';
+          const isDirect = !msg.groupId && (msg.senderId === currentUserId || msg.receiverId === currentUserId);
+          const isGroup = !!msg.groupId;
+          if (!isGlobal && !isDirect && !isGroup) {
+            continue; // Skip foreign messages
+          }
+        }
+
+        await saveMessage(msg, currentUserId);
       }
     }
 
     localStorage.setItem('ordina_delta_version', maxVer.toString());
-    console.log(`[SQLite] Merged delta: ${chats?.length || 0} chats, ${messages?.length || 0} messages. New max version: ${maxVer}`);
   } catch (err) {
     console.error('[SQLite] mergeDelta error:', err);
   }
 }
 
 /**
- * Loads all cached messages for a given chat.
+ * Loads all cached messages for a given chat with STRICT isolation.
  */
 export async function getMessagesForChat(chatId: string, currentUserId?: string): Promise<Message[]> {
   try {
@@ -345,19 +375,29 @@ export async function getMessagesForChat(chatId: string, currentUserId?: string)
     if (dbInstance) {
       let query = '';
       let params: any[] = [];
-      if (currentUserId && currentUserId !== chatId) {
+
+      const isGroup = chatId === 'global_channel' || chatId.startsWith('group_') || chatId.startsWith('channel_');
+
+      if (isGroup) {
+        query = `SELECT rawJson FROM messages WHERE groupId = ? ORDER BY createdAt ASC;`;
+        params = [chatId];
+      } else if (currentUserId && (chatId === currentUserId || chatId === 'notebook')) {
+        // User's private Notebook: only messages where senderId === receiverId === currentUserId
+        query = `SELECT rawJson FROM messages WHERE groupId IS NULL AND senderId = ? AND receiverId = ? ORDER BY createdAt ASC;`;
+        params = [currentUserId, currentUserId];
+      } else if (currentUserId && chatId !== currentUserId) {
+        // Direct chat between currentUserId and chatId: strictly messages between these two
         query = `SELECT rawJson FROM messages 
-                 WHERE groupId = ? 
-                    OR (senderId = ? AND receiverId = ?) 
-                    OR (senderId = ? AND receiverId = ?)
+                 WHERE groupId IS NULL 
+                   AND ((senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?))
                  ORDER BY createdAt ASC;`;
-        params = [chatId, currentUserId, chatId, chatId, currentUserId];
+        params = [currentUserId, chatId, chatId, currentUserId];
       } else {
-        query = `SELECT rawJson FROM messages 
-                 WHERE groupId = ? OR receiverId = ? OR senderId = ? 
-                 ORDER BY createdAt ASC;`;
-        params = [chatId, chatId, chatId];
+        // Fallback: group or single target
+        query = `SELECT rawJson FROM messages WHERE groupId = ? ORDER BY createdAt ASC;`;
+        params = [chatId];
       }
+
       const res = await dbInstance.query(query, params);
       if (res.values && res.values.length > 0) {
         return res.values.map(v => JSON.parse(v.rawJson));
@@ -368,11 +408,11 @@ export async function getMessagesForChat(chatId: string, currentUserId?: string)
   }
 
   // Fallback to localStorage
-  return loadMessagesFromLocalCache(chatId);
+  return loadMessagesFromLocalCache(chatId, currentUserId);
 }
 
 // -------------------------------------------------------------
-// Legacy & Flat LocalStorage Helpers (for backwards compatibility)
+// Isolated LocalStorage Helpers
 // -------------------------------------------------------------
 
 function appendToStorageKey(key: string, msg: Message): void {
@@ -391,43 +431,34 @@ function appendToStorageKey(key: string, msg: Message): void {
   } catch (e) {}
 }
 
-function saveMessageToLocalStorage(chatId: string, msg: Message): void {
-  appendToStorageKey(`ordina_cache_${chatId}`, msg);
-
-  // If this is a direct 1-on-1 message, cross-index under both participants so it always loads
-  if (!msg.groupId && msg.senderId && msg.receiverId) {
-    appendToStorageKey(`ordina_cache_${msg.senderId}`, msg);
-    appendToStorageKey(`ordina_cache_${msg.receiverId}`, msg);
-    const compoundKey = [msg.senderId, msg.receiverId].sort().join('_');
-    if (compoundKey !== chatId) {
-      appendToStorageKey(`ordina_cache_${compoundKey}`, msg);
-    }
-  }
+function saveMessageToLocalStorage(canonicalKey: string, msg: Message): void {
+  // Save under isolated canonical key
+  appendToStorageKey(`ordina_cache_${canonicalKey}`, msg);
 }
 
-export function saveMessageToLocalCache(chatId: string, msg: Message): void {
-  saveMessage(msg).catch(() => {});
+export function saveMessageToLocalCache(chatId: string, msg: Message, currentUserId?: string): void {
+  saveMessage(msg, currentUserId).catch(() => {});
 }
 
-export function saveMessagesToLocalCache(chatId: string, messages: Message[]): void {
-  messages.forEach(msg => saveMessage(msg).catch(() => {}));
+export function saveMessagesToLocalCache(chatId: string, messages: Message[], currentUserId?: string): void {
+  messages.forEach(msg => saveMessage(msg, currentUserId).catch(() => {}));
 }
 
-export function loadMessagesFromLocalCache(chatId: string): Message[] {
+/**
+ * Loads cached messages from localStorage with STRICT sender/receiver validation.
+ * Eliminates bug where foreign chat messages leak into empty chats!
+ */
+export function loadMessagesFromLocalCache(chatId: string, currentUserId?: string): Message[] {
   try {
     const foundMap = new Map<string, Message>();
-    const keysToCheck = [`ordina_cache_${chatId}`];
+    const isGroup = chatId === 'global_channel' || chatId.startsWith('group_') || chatId.startsWith('channel_');
 
-    // Check all related keys for this chat or peer
-    if (typeof localStorage !== 'undefined') {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith('ordina_cache_') && k.includes(chatId)) {
-          if (!keysToCheck.includes(k)) {
-            keysToCheck.push(k);
-          }
-        }
-      }
+    const canonicalKey = getCanonicalChatKey(chatId, currentUserId);
+    const keysToCheck = [`ordina_cache_${canonicalKey}`];
+    
+    // Also check raw chatId key for groups
+    if (isGroup && !keysToCheck.includes(`ordina_cache_${chatId}`)) {
+      keysToCheck.push(`ordina_cache_${chatId}`);
     }
 
     for (const key of keysToCheck) {
@@ -437,14 +468,28 @@ export function loadMessagesFromLocalCache(chatId: string): Message[] {
           const arr = JSON.parse(flatRaw);
           if (Array.isArray(arr)) {
             for (const m of arr) {
-              if (m && m.id) {
-                if (chatId.startsWith('group_') || chatId.startsWith('channel_') || chatId === 'global_channel') {
-                  if (m.groupId === chatId) foundMap.set(m.id, m);
-                } else {
-                  if (m.groupId === chatId || m.senderId === chatId || m.receiverId === chatId) {
-                    foundMap.set(m.id, m);
-                  }
+              if (!m || !m.id) continue;
+
+              // STRICT ISOLATION FILTER
+              if (isGroup) {
+                if (m.groupId === chatId) foundMap.set(m.id, m);
+              } else if (currentUserId && (chatId === currentUserId || chatId === 'notebook')) {
+                // Notebook: sender must be me, receiver must be me, no groupId
+                if (!m.groupId && m.senderId === currentUserId && m.receiverId === currentUserId) {
+                  foundMap.set(m.id, m);
                 }
+              } else if (currentUserId && chatId !== currentUserId) {
+                // DM: strictly between currentUserId and chatId
+                const isBetweenUs = !m.groupId && (
+                  (m.senderId === currentUserId && m.receiverId === chatId) ||
+                  (m.senderId === chatId && m.receiverId === currentUserId)
+                );
+                if (isBetweenUs) {
+                  foundMap.set(m.id, m);
+                }
+              } else {
+                // If currentUserId not known yet, accept only if message matches chatId exactly
+                if (m.groupId === chatId) foundMap.set(m.id, m);
               }
             }
           }
@@ -461,19 +506,59 @@ export function loadMessagesFromLocalCache(chatId: string): Message[] {
   return [];
 }
 
+/**
+ * Purges legacy contaminated caches where messages were incorrectly keyed by single user IDs.
+ */
+export function purgeContaminatedLegacyCaches(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ordina_cache_')) {
+        const suffix = k.replace('ordina_cache_', '');
+        // If it's a raw user ID without dm_ or notebook_ prefix and not a group/channel:
+        if (!suffix.startsWith('dm_') && !suffix.startsWith('notebook_') && !suffix.startsWith('group_') && !suffix.startsWith('channel_') && suffix !== 'global_channel') {
+          // Check if it has contaminated mixed messages
+          const raw = localStorage.getItem(k);
+          if (raw) {
+            try {
+              const msgs: Message[] = JSON.parse(raw);
+              if (Array.isArray(msgs)) {
+                // If messages have differing receivers or senders, it's contaminated
+                const receivers = new Set(msgs.map(m => m.receiverId).filter(Boolean));
+                if (receivers.size > 1) {
+                  keysToRemove.push(k);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    }
+    keysToRemove.forEach(k => {
+      console.log('[SQLite Cache] Purging contaminated legacy key:', k);
+      localStorage.removeItem(k);
+    });
+  } catch (e) {}
+}
+
 export function clearChatLocalCache(chatId: string, currentUserId?: string): void {
   try {
+    const canonicalKey = getCanonicalChatKey(chatId, currentUserId);
+    localStorage.removeItem(`ordina_cache_${canonicalKey}`);
     localStorage.removeItem(`ordina_cache_${chatId}`);
+
     if (dbInstance) {
-      if (currentUserId && currentUserId !== chatId) {
+      const isGroup = chatId === 'global_channel' || chatId.startsWith('group_') || chatId.startsWith('channel_');
+      if (isGroup) {
+        dbInstance.run('DELETE FROM messages WHERE groupId = ?;', [chatId]).catch(() => {});
+      } else if (currentUserId && (chatId === currentUserId || chatId === 'notebook')) {
+        dbInstance.run('DELETE FROM messages WHERE groupId IS NULL AND senderId = ? AND receiverId = ?;', [currentUserId, currentUserId]).catch(() => {});
+      } else if (currentUserId && chatId !== currentUserId) {
         dbInstance.run(
-          'DELETE FROM messages WHERE groupId = ? OR (senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?);',
-          [chatId, chatId, currentUserId, currentUserId, chatId]
-        ).catch(() => {});
-      } else {
-        dbInstance.run(
-          'DELETE FROM messages WHERE groupId = ? OR (receiverId = ? AND groupId IS NULL);',
-          [chatId, chatId]
+          'DELETE FROM messages WHERE groupId IS NULL AND ((senderId = ? AND receiverId = ?) OR (senderId = ? AND receiverId = ?));',
+          [currentUserId, chatId, chatId, currentUserId]
         ).catch(() => {});
       }
     }

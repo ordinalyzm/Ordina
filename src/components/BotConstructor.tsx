@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check, Sparkles, Loader2, Coins, CreditCard, AlertTriangle, ShieldCheck, DollarSign } from 'lucide-react';
+import { Bot, Plus, X, Settings2, Trash2, ArrowLeft, Play, Save, Check, Sparkles, Loader2, Coins, CreditCard, AlertTriangle, ShieldCheck, DollarSign, FileCode, Upload, Download } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+import { BotCodeModal } from './BotCodeModal';
 
 export interface BotCurrencyConfig {
   enabled: boolean;
@@ -69,6 +70,11 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
   const [showAiModal, setShowAiModal] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [isAiGenerating, setIsAiGenerating] = useState(false);
+  const [codeModalState, setCodeModalState] = useState<{ open: boolean; mode: 'export' | 'import'; targetBot: BotConfig | null }>({
+    open: false,
+    mode: 'export',
+    targetBot: null
+  });
 
   useEffect(() => {
     if (!isOpen || !socket || !user) return;
@@ -240,7 +246,7 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
         <div className="flex-1 overflow-y-auto bg-slate-50 p-6">
           {!editingBot ? (
             <div className="max-w-2xl mx-auto space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <button 
                   onClick={() => {
                     setEditingBot({
@@ -249,21 +255,32 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
                       isActive: true,
                       triggers: [],
                       conditions: [],
-                      actions: [], rules: [] });
+                      actions: [], 
+                      rules: [] 
+                    });
                   }}
                   className="h-28 border-2 border-dashed border-slate-300 hover:border-blue-400 hover:bg-blue-50/50 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-600 transition-all font-medium"
                 >
                   <Plus size={24} className="text-blue-600" />
-                  <span>Создать бота с нуля</span>
+                  <span className="text-xs font-bold">Создать с нуля</span>
                 </button>
 
                 <button 
                   onClick={() => setShowAiModal(true)}
-                  className="h-28 bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500 text-white hover:opacity-95 rounded-2xl flex flex-col items-center justify-center gap-2 transition-all font-bold shadow-lg p-4"
+                  className="h-28 bg-gradient-to-br from-indigo-600 via-purple-600 to-pink-500 text-white hover:opacity-95 rounded-2xl flex flex-col items-center justify-center gap-1.5 transition-all font-bold shadow-lg p-3 text-center"
                 >
-                  <Sparkles size={24} />
-                  <span>Написать бота через ИИ</span>
-                  <span className="text-[10px] opacity-90 font-normal">Бесплатная автогенерация логики</span>
+                  <Sparkles size={22} />
+                  <span className="text-xs">Написать через ИИ</span>
+                  <span className="text-[9px] opacity-90 font-normal">Бесплатная генерация</span>
+                </button>
+
+                <button 
+                  onClick={() => setCodeModalState({ open: true, mode: 'import', targetBot: null })}
+                  className="h-28 bg-white border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50/40 rounded-2xl flex flex-col items-center justify-center gap-1.5 text-slate-700 transition-all font-bold shadow-xs p-3 text-center"
+                >
+                  <Upload size={22} className="text-indigo-600" />
+                  <span className="text-xs text-indigo-900">Импорт из TG / Кода</span>
+                  <span className="text-[9px] text-slate-500 font-normal">Python, JSON, BotFather</span>
                 </button>
               </div>
               
@@ -286,9 +303,36 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
               </div>
             </div>
           ) : (
-            <BotEditor bot={editingBot} setBot={setEditingBot} onSave={handleSaveBot} />
+            <BotEditor 
+              bot={editingBot} 
+              setBot={setEditingBot} 
+              onSave={handleSaveBot} 
+              onOpenExport={() => setCodeModalState({ open: true, mode: 'export', targetBot: editingBot })}
+              onOpenImport={() => setCodeModalState({ open: true, mode: 'import', targetBot: editingBot })}
+            />
           )}
         </div>
+
+        {/* Code Import / Export Modal */}
+        <BotCodeModal
+          isOpen={codeModalState.open}
+          mode={codeModalState.mode}
+          bot={codeModalState.targetBot || editingBot}
+          onClose={() => setCodeModalState(prev => ({ ...prev, open: false }))}
+          onImport={(importedBot) => {
+            if (editingBot) {
+              const merged = {
+                ...editingBot,
+                rules: [...(editingBot.rules || []), ...(importedBot.rules || [])]
+              };
+              setEditingBot(merged);
+              handleSaveBot(merged);
+            } else {
+              setEditingBot(importedBot);
+              handleSaveBot(importedBot);
+            }
+          }}
+        />
 
         {/* AI Bot Generation Modal */}
         <AnimatePresence>
@@ -377,7 +421,19 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
   );
 }
 
-function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSave: (b: BotConfig) => void }) {
+function BotEditor({ 
+  bot, 
+  setBot, 
+  onSave, 
+  onOpenExport, 
+  onOpenImport 
+}: { 
+  bot: BotConfig; 
+  setBot: any; 
+  onSave: (b: BotConfig) => void; 
+  onOpenExport?: () => void;
+  onOpenImport?: () => void;
+}) {
   // Complex node editor state could go here. For now it's a basic form.
   const [activeTab, setActiveTab] = useState<'flow' | 'currency' | 'settings'>('flow');
 
@@ -415,7 +471,30 @@ function BotEditor({ bot, setBot, onSave }: { bot: BotConfig, setBot: any, onSav
            </button>
            <button onClick={() => setActiveTab('settings')} className={`px-4 py-2 rounded-xl text-sm font-bold transition ${activeTab === 'settings' ? 'bg-blue-50 text-blue-600' : 'text-slate-500 hover:bg-slate-50'}`}>Настройки</button>
          </div>
-         <div className="flex items-center gap-4">
+         <div className="flex items-center gap-3">
+           {onOpenExport && (
+             <button 
+               type="button" 
+               onClick={onOpenExport} 
+               className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors"
+               title="Скачать код бота (Python, TypeScript, JSON)"
+             >
+               <Download size={14} /> 
+               <span className="hidden sm:inline">Скачать код</span>
+             </button>
+           )}
+           {onOpenImport && (
+             <button 
+               type="button" 
+               onClick={onOpenImport} 
+               className="flex items-center gap-1.5 px-3 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-bold transition-colors"
+               title="Импортировать правила из TG или кода"
+             >
+               <Upload size={14} /> 
+               <span className="hidden sm:inline">Импорт</span>
+             </button>
+           )}
+
            <label className="flex items-center gap-2 cursor-pointer">
              <span className="text-sm font-medium text-slate-600">Активен:</span>
              <div className={`w-12 h-6 rounded-full p-1 transition-colors ${bot.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`} onClick={() => { const updated = { ...bot, isActive: !bot.isActive }; setBot(updated); onSave(updated); }}>

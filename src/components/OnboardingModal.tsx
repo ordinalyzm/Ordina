@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Radio, ShieldCheck, Zap, MessageSquare, Cpu, Sparkles, ChevronRight, ChevronLeft, CheckCircle2, X, Settings, Lock, Search, Heart, CornerUpLeft } from 'lucide-react';
+import { Radio, ShieldCheck, Zap, MessageSquare, Cpu, Sparkles, ChevronRight, ChevronLeft, CheckCircle2, X, Settings, Lock, Search, Heart, CornerUpLeft, ShieldAlert, Bot, FileCode } from 'lucide-react';
 
 interface OnboardingModalProps {
   isOpen: boolean;
@@ -166,6 +166,77 @@ const SLIDES = [
             <Search size={14} className="text-slate-600" /> Лупа в шапке чата
           </span>
           <span className="text-slate-600 font-medium">Поиск по истории переписки</span>
+        </div>
+      </div>
+    )
+  },
+  {
+    id: 'legal_shield',
+    title: 'Правовой Щит и «Соучастник»',
+    subtitle: 'Локальная защита от случайных нарушений законов РФ',
+    icon: ShieldAlert,
+    color: 'from-rose-600 to-amber-600',
+    accentColor: 'text-rose-500',
+    bgBadge: 'bg-rose-500/10 text-rose-600',
+    content: (
+      <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+        <div className="p-3 bg-rose-50/80 border border-rose-200/80 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-rose-600/20 font-bold">
+            <ShieldAlert size={20} />
+          </div>
+          <div className="text-xs text-rose-950">
+            <strong className="block text-slate-900 font-bold">Безопасность вашего общения</strong>
+            Встроенный помощник анализирует набираемый текст на предмет риска нарушения УК и КоАП РФ (ст. 205.2, 228, 159, 128.1 и др.).
+          </div>
+        </div>
+
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5">
+          <div className="font-bold text-slate-800 flex items-center gap-1.5">
+            <ShieldCheck className="w-4 h-4 text-emerald-600" /> 100% Локально и Приватно:
+          </div>
+          <p className="text-slate-600">
+            Сканирование происходит исключительно на вашем устройстве в реальном времени. Набранный текст <strong>никогда и никуда не отправляется</strong> на внешние серверы.
+          </p>
+          <p className="text-slate-500 text-[11px]">
+            Вы всегда можете отключить или включить этот режим в Меню ➔ Настройки ➔ «Правовой щит РФ».
+          </p>
+        </div>
+      </div>
+    )
+  },
+  {
+    id: 'bots_export',
+    title: 'Конструктор Ботов и Telegram',
+    subtitle: 'Создание, перенос и экспорт готового кода',
+    icon: Bot,
+    color: 'from-indigo-600 to-purple-600',
+    accentColor: 'text-indigo-500',
+    bgBadge: 'bg-indigo-500/10 text-indigo-600',
+    content: (
+      <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+        <div className="p-3 bg-indigo-50/80 border border-indigo-200/80 rounded-2xl flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-indigo-600/20">
+            <Bot size={20} />
+          </div>
+          <div className="text-xs text-indigo-950">
+            <strong className="block text-slate-900 font-bold">Умные боты без ограничений</strong>
+            Создавайте сценарии, автоответчики и внутреннюю валюту ботов с помощью визуального конструктора или бесплатного ИИ.
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+            <span className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
+              <FileCode className="w-3.5 h-3.5 text-blue-600" /> Экспорт кода
+            </span>
+            Скачивайте исходный код вашего бота на Python (aiogram 3.x), TypeScript или JSON для запуска на любом сервере.
+          </div>
+          <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+            <span className="font-bold text-slate-800 flex items-center gap-1.5 mb-1">
+              <Sparkles className="w-3.5 h-3.5 text-purple-600" /> Импорт из Telegram
+            </span>
+            Вставьте код существующего TG-бота или список команд BotFather для мгновенного переноса в Ордину!
+          </div>
         </div>
       </div>
     )

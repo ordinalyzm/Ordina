@@ -16,7 +16,7 @@ interface ModerationModalProps {
   moderators?: string[];
   allUsers?: UserProfile[];
   onAction: (data: {
-    action: 'ban_dms_temporary' | 'warning' | 'delete_message_with_warning' | 'delete_group_with_warning' | 'delete_account_with_warning' | 'ban_account_email' | 'dismiss';
+    action: 'ban_dms_temporary' | 'warning' | 'delete_message_with_warning' | 'delete_group_with_warning' | 'delete_account_with_warning' | 'ban_account_email' | 'dismiss' | 'lift_restriction' | 'pardon_warnings';
     reportId?: string;
     targetUid?: string;
     targetEmail?: string;
@@ -45,7 +45,7 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
   onRefreshReports
 }) => {
   const effectiveModerators = moderatorsList || moderators || [];
-  const [activeTab, setActiveTab] = useState<'reports' | 'moderators'>('reports');
+  const [activeTab, setActiveTab] = useState<'reports' | 'restrictions' | 'moderators'>('reports');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'resolved' | 'dismissed'>('pending');
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
 
@@ -227,6 +227,24 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
               </span>
             )}
           </button>
+
+          <button
+            onClick={() => setActiveTab('restrictions')}
+            className={`py-3 px-4 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${
+              activeTab === 'restrictions'
+                ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-200'
+            }`}
+          >
+            <Clock className="w-4 h-4" />
+            Ограничения и Амнистия
+            {allUsers.filter(u => (u.cannotInitiateDmsUntil && new Date(u.cannotInitiateDmsUntil).getTime() > Date.now()) || (u.warnings && u.warnings.length > 0)).length > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500 text-white">
+                {allUsers.filter(u => (u.cannotInitiateDmsUntil && new Date(u.cannotInitiateDmsUntil).getTime() > Date.now()) || (u.warnings && u.warnings.length > 0)).length}
+              </span>
+            )}
+          </button>
+
           {isSuperAdmin && (
             <button
               onClick={() => setActiveTab('moderators')}
@@ -244,7 +262,7 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
 
         {/* Main Body */}
         <div className="flex-1 overflow-hidden flex">
-          {activeTab === 'reports' ? (
+          {activeTab === 'reports' && (
             <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
               {/* Reports List */}
               <div className="w-full md:w-1/2 border-r border-zinc-200 dark:border-zinc-800 flex flex-col overflow-hidden">
@@ -477,7 +495,111 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
                 )}
               </div>
             </div>
-          ) : (
+          )}
+
+          {activeTab === 'restrictions' && (
+            <div className="flex-1 p-6 overflow-y-auto space-y-6">
+              <div className="max-w-2xl">
+                <h3 className="text-base font-semibold text-zinc-900 dark:text-white flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-amber-500" />
+                  Активные ограничения и амнистия
+                </h3>
+                <p className="text-xs text-zinc-500 mt-1">
+                  Список пользователей, имеющих временный запрет на отправку сообщений первым или официальные предупреждения. Модератор может досрочно восстановить полный доступ или амнистировать нарушителя.
+                </p>
+              </div>
+
+              {/* List of restricted users */}
+              <div className="space-y-3">
+                {allUsers.filter(u => (u.cannotInitiateDmsUntil && new Date(u.cannotInitiateDmsUntil).getTime() > Date.now()) || (u.warnings && u.warnings.length > 0)).length === 0 ? (
+                  <div className="p-8 text-center text-zinc-400 text-sm bg-zinc-50 dark:bg-zinc-800/40 rounded-2xl border border-zinc-200 dark:border-zinc-800">
+                    <ShieldCheck className="w-10 h-10 mb-2 mx-auto text-emerald-500 opacity-60" />
+                    Сейчас нет пользователей с действующими ограничениями или предупреждениями. Все пользователи чисты! ✨
+                  </div>
+                ) : (
+                  allUsers
+                    .filter(u => (u.cannotInitiateDmsUntil && new Date(u.cannotInitiateDmsUntil).getTime() > Date.now()) || (u.warnings && u.warnings.length > 0))
+                    .map(u => {
+                      const isDmsRestricted = !!u.cannotInitiateDmsUntil && new Date(u.cannotInitiateDmsUntil).getTime() > Date.now();
+                      const untilStr = isDmsRestricted ? new Date(u.cannotInitiateDmsUntil!).toLocaleString('ru-RU') : '';
+                      const warningsCount = u.warnings?.length || 0;
+                      const latestWarning = u.warnings?.[0];
+                      const issuedBy = latestWarning?.moderatorName || 'Администрация';
+
+                      return (
+                        <div key={u.uid} className="p-4 bg-white dark:bg-zinc-800/60 border border-zinc-200 dark:border-zinc-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
+                          <div className="flex items-start gap-3">
+                            <img
+                              src={u.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${u.uid}`}
+                              alt=""
+                              className="w-10 h-10 rounded-full object-cover shrink-0 border border-zinc-200 dark:border-zinc-700 mt-0.5"
+                            />
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-sm text-zinc-900 dark:text-white">
+                                  {u.displayName || 'Пользователь'}
+                                </span>
+                                <span className="text-xs text-zinc-400">@{u.username || u.uid.slice(0, 8)}</span>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2 text-xs">
+                                {isDmsRestricted && (
+                                  <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 font-medium flex items-center gap-1">
+                                    <Clock className="w-3 h-3" />
+                                    Запрет писать первым до: {untilStr}
+                                  </span>
+                                )}
+                                {warningsCount > 0 && (
+                                  <span className="px-2 py-0.5 rounded-md bg-red-500/10 text-red-700 dark:text-red-400 border border-red-500/20 font-medium flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3" />
+                                    Предупреждений: {warningsCount}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                                <span>Кем выдано нарушение: </span>
+                                <strong className="text-zinc-700 dark:text-zinc-300">{issuedBy}</strong>
+                                {u.cannotInitiateReason && (
+                                  <span className="block mt-0.5 text-zinc-600 dark:text-zinc-400">
+                                    Причина: <em>{u.cannotInitiateReason}</em>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
+                            {isDmsRestricted && (
+                              <button
+                                type="button"
+                                onClick={() => onAction({ action: 'lift_restriction', targetUid: u.uid })}
+                                className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800/60 transition-colors flex items-center gap-1.5"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                Снять ограничение ЛС
+                              </button>
+                            )}
+
+                            {warningsCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => onAction({ action: 'pardon_warnings', targetUid: u.uid })}
+                                className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors flex items-center gap-1.5"
+                              >
+                                Снять варны
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'moderators' && isSuperAdmin && (
             /* Moderators Management Tab (SuperAdmin only) */
             <div className="flex-1 p-6 overflow-y-auto space-y-6">
               <div className="max-w-2xl">

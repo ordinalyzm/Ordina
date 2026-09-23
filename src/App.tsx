@@ -96,6 +96,7 @@ import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { ReportModal } from './components/ReportModal';
 import { ModerationModal } from './components/ModerationModal';
 import { PinnedMessageBanner } from './components/PinnedMessageBanner';
+import { LegalShieldInputWarning, LegalShieldMessageBadge } from './components/LegalShieldBadge';
 import { MeshRouter } from './utils/meshRouter';
 
 function cn(...inputs: ClassValue[]) {
@@ -2483,6 +2484,22 @@ function AppContent() {
   const [showNotificationSettingsModal, setShowNotificationSettingsModal] = useState(false);
   const [showMeshInspectorModal, setShowMeshInspectorModal] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
+  const [legalShieldEnabled, setLegalShieldEnabled] = useState<boolean>(() => {
+    const val = localStorage.getItem('ordina_legal_shield_enabled');
+    return val !== null ? val === 'true' : true;
+  });
+
+  // First-launch welcome onboarding guide immediately upon login
+  useEffect(() => {
+    if (user?.uid) {
+      const key = `ordina_onboarding_welcomed_${user.uid}`;
+      const alreadyWelcomed = localStorage.getItem(key);
+      if (!alreadyWelcomed) {
+        setShowOnboardingModal(true);
+        localStorage.setItem(key, 'true');
+      }
+    }
+  }, [user?.uid]);
   const [showDemoRelays, setShowDemoRelays] = useState(false);
   const [viewedStickerPack, setViewedStickerPack] = useState<any>(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState<{ url: string, name: string } | null>(null);
@@ -6616,6 +6633,43 @@ function AppContent() {
                   </div>
                 </button>
 
+                {/* Legal Shield (Anti-Violation assistant) */}
+                <div className="w-full flex items-center justify-between gap-4 p-4 rounded-2xl transition-all border border-slate-200/80 bg-white shadow-2xs">
+                  <div className="flex items-center gap-4 flex-1">
+                    <div className={cn(
+                      "w-10 h-10 rounded-xl flex items-center justify-center shadow-xs transition-colors shrink-0",
+                      legalShieldEnabled ? "bg-rose-500 text-white shadow-rose-500/20" : "bg-slate-100 text-slate-400"
+                    )}>
+                      <ShieldAlert size={20} />
+                    </div>
+                    <div className="text-left flex-1 min-w-0">
+                      <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        Правовой щит РФ
+                        <span className="text-[10px] font-semibold px-2 py-0.5 bg-rose-50 text-rose-600 rounded-full border border-rose-200">
+                          100% Локально
+                        </span>
+                      </p>
+                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+                        Помощник «Соучастник»: предупреждает о риске нарушения законов РФ (ст. 205.2, 228, 159 УК РФ) при наборе и в сообщениях. Текст никуда не отправляется.
+                      </p>
+                    </div>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input 
+                      type="checkbox" 
+                      checked={legalShieldEnabled} 
+                      onChange={(e) => {
+                        const newVal = e.target.checked;
+                        setLegalShieldEnabled(newVal);
+                        localStorage.setItem('ordina_legal_shield_enabled', String(newVal));
+                        addToast(newVal ? 'Правовой щит включен: анализ рисков активен' : 'Правовой щит отключен', 'info');
+                      }} 
+                      className="sr-only peer" 
+                    />
+                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-rose-600"></div>
+                  </label>
+                </div>
+
                 {isUserModerator && (
                   <button 
                     onClick={() => {
@@ -8402,12 +8456,15 @@ function AppContent() {
                         })()}
 
                         {(msg.text || msg.content) && (msg.type !== 'text' || !msg.isEncrypted) && msg.type !== 'audio' && (
-                          <p className={cn(
-                            "text-sm leading-relaxed mb-2 whitespace-pre-wrap break-words",
-                            msg.type === 'text' ? "" : "opacity-90"
-                          )}>
-                            {formatMessageText(msg.text || msg.content || '', showChatSearch ? chatSearchQuery : undefined)}
-                          </p>
+                          <>
+                            <p className={cn(
+                              "text-sm leading-relaxed mb-2 whitespace-pre-wrap break-words",
+                              msg.type === 'text' ? "" : "opacity-90"
+                            )}>
+                              {formatMessageText(msg.text || msg.content || '', showChatSearch ? chatSearchQuery : undefined)}
+                            </p>
+                            {legalShieldEnabled && <LegalShieldMessageBadge text={msg.text || msg.content || ''} />}
+                          </>
                         )}
 
                         {msg.type === 'audio' && (
@@ -8431,9 +8488,12 @@ function AppContent() {
                         )}
 
                         {msg.type === 'text' && msg.isEncrypted && (
-                          <p className="text-sm leading-relaxed italic text-blue-200/80 flex items-center gap-2 whitespace-pre-wrap break-words">
-                            <Shield size={12} className="shrink-0" /> {formatMessageText(decryptMessage(msg.text), showChatSearch ? chatSearchQuery : undefined)}
-                          </p>
+                          <>
+                            <p className="text-sm leading-relaxed italic text-blue-200/80 flex items-center gap-2 whitespace-pre-wrap break-words">
+                              <Shield size={12} className="shrink-0" /> {formatMessageText(decryptMessage(msg.text), showChatSearch ? chatSearchQuery : undefined)}
+                            </p>
+                            {legalShieldEnabled && <LegalShieldMessageBadge text={decryptMessage(msg.text)} />}
+                          </>
                         )}
 
                         {msg.type === 'image' && msg.fileUrl && msg.fileName !== 'sticker.jpg' && (
@@ -9417,6 +9477,9 @@ function AppContent() {
                       </motion.div>
                     )}
                     </AnimatePresence>
+
+                    {/* Legal Shield Live Keyboard / Input Assistant */}
+                    <LegalShieldInputWarning text={inputText} enabled={legalShieldEnabled} />
 
                     <form onSubmit={handleSendMessage} className="flex items-end gap-2 min-w-0 px-2 pb-2">
                       <div 
