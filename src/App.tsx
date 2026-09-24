@@ -97,6 +97,7 @@ import { ReportModal } from './components/ReportModal';
 import { ModerationModal } from './components/ModerationModal';
 import { PinnedMessageBanner } from './components/PinnedMessageBanner';
 import { BugReportModal } from './components/BugReportModal';
+import { ShareAppModal } from './components/ShareAppModal';
 import { MeshRouter } from './utils/meshRouter';
 
 function cn(...inputs: ClassValue[]) {
@@ -1484,16 +1485,19 @@ function AppContent() {
     }
   }, [socket, user, profile?.status, profile?.customStatus]);
 
-  // Sync last_auth_uid for Native Android BLE GATT server
+  // Sync last_auth_uid and start MeshTransport continuous mesh with real nickname
   useEffect(() => {
     if (user?.uid) {
+      const myNickname = profile?.displayName || user.displayName || 'Пользователь';
       Preferences.set({ key: 'last_auth_uid', value: user.uid }).catch(() => {});
+      Preferences.set({ key: 'last_auth_name', value: myNickname }).catch(() => {});
       try {
         localStorage.setItem('last_auth_uid', user.uid);
+        localStorage.setItem('last_auth_name', myNickname);
       } catch (e) {}
-      MeshTransport.setMyUid(user.uid);
+      MeshTransport.init(user.uid, myNickname, socket);
     }
-  }, [user?.uid]);
+  }, [user?.uid, profile?.displayName, user?.displayName, socket]);
 
   // Automatically sync users & groups cache to localStorage whenever they are added, updated, or removed
   useEffect(() => {
@@ -2561,6 +2565,7 @@ function AppContent() {
   const [showMeshInspectorModal, setShowMeshInspectorModal] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [showBugReportModal, setShowBugReportModal] = useState(false);
+  const [showShareAppModal, setShowShareAppModal] = useState(false);
 
   // First-launch welcome onboarding guide immediately upon login
   useEffect(() => {
@@ -6735,6 +6740,30 @@ function AppContent() {
                   </div>
                 </button>
 
+                {/* Share App QR & Install trigger */}
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowShareAppModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-cyan-50/70 rounded-2xl transition-all border border-cyan-200/60 bg-cyan-50/20"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 to-blue-600 text-white flex items-center justify-center shadow-md shadow-cyan-500/20">
+                    <Share2 size={20} />
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      Поделиться Ординой
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-cyan-600 text-white rounded-full">
+                        QR И APK
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      QR-код и ссылка для быстрой установки на смартфон
+                    </p>
+                  </div>
+                </button>
+
                 {isUserModerator && (
                   <button 
                     onClick={() => {
@@ -10452,6 +10481,12 @@ function AppContent() {
         onClose={() => setShowBugReportModal(false)}
         currentUser={user ? { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Пользователь', email: user.email || '' } : null}
         onSubmit={handleBugReportSubmit}
+      />
+
+      {/* Share App QR & Live Install Modal */}
+      <ShareAppModal
+        isOpen={showShareAppModal}
+        onClose={() => setShowShareAppModal(false)}
       />
 
       {/* Highest priority Toasts container on top of all modals and overlays */}

@@ -25,10 +25,15 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat })
   const [selectedPeer, setSelectedPeer] = useState<PeerNode | null>(null);
 
   useEffect(() => {
+    // Подписываемся на живой список. Сканер уже работает в фоне 24/7!
     MeshTransport.setOnPeersChanged((updated) => {
       setPeers([...updated]);
     });
-    MeshTransport.startDiscovery();
+
+    // Получаем мгновенный снепшот узлов
+    setPeers(MeshTransport.getPeers());
+
+    // ВНИМАНИЕ: Никакого stopLEScan при размонтировании! Меш должен жить непрерывно.
   }, []);
 
   const handleOpenDirectChat = (peer: PeerNode) => {
@@ -44,9 +49,8 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat })
       const angleDeg = getAngle(peer.uid);
       const angleRad = (angleDeg * Math.PI) / 180;
 
-      // Радиус определяется УРОВНЕМ СВЯЗИ (хопом)
       let radiusPercent = 22; // 1-й круг: Напрямую (1 хоп)
-      if (peer.hops === 2) radiusPercent = 33; // 2-й круг: Через 1-го
+      if (peer.hops === 2) radiusPercent = 33; // 2-й круг: Транзит
       if (peer.hops >= 3) radiusPercent = 42; // 3-й круг: Меш-цепь
 
       const x = 50 + radiusPercent * Math.cos(angleRad);
@@ -57,44 +61,39 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat })
   }, [peers]);
 
   return (
-    <div className="flex flex-col items-center p-4 bg-slate-950 text-slate-100 rounded-3xl border border-cyan-900/40 shadow-2xl max-w-md mx-auto">
+    <div className="flex flex-col items-center p-4 bg-slate-950 text-slate-100 rounded-3xl border border-cyan-900/40 shadow-2xl max-w-md mx-auto w-full">
       {/* Заголовок */}
       <div className="w-full flex items-center justify-between mb-2 px-1">
         <div className="flex items-center gap-2">
           <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
           <div>
             <h3 className="font-bold text-sm tracking-wide text-cyan-200">МЕШ-РАДАР ЦЕПЕЙ</h3>
-            <p className="text-[10px] text-cyan-500 font-mono">ШИФРОВАНИЕ • ПОЧТАЛЬОН • E2EE</p>
+            <p className="text-[10px] text-cyan-500 font-mono">АКТИВНЫЙ РАДИОЭФИР 24/7</p>
           </div>
         </div>
         <div className="text-xs bg-cyan-950/80 border border-cyan-700/50 px-2.5 py-1 rounded-full text-cyan-300 font-mono">
-          УЗЛОВ: <span className="font-bold text-cyan-400">{peers.length}</span>
+          РЯДОМ: <span className="font-bold text-cyan-400">{peers.length}</span>
         </div>
       </div>
 
-      {/* Экран радара с кольцами хопов */}
+      {/* Экран радара */}
       <div className="relative w-72 h-72 sm:w-80 sm:h-80 my-2 rounded-full border border-cyan-500/30 bg-slate-900/90 overflow-hidden shadow-[inset_0_0_50px_rgba(6,182,212,0.15)]">
         
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          {/* 3 хопа */}
           <div className="w-[84%] h-[84%] rounded-full border border-cyan-500/20 border-dashed" />
           <span className="absolute top-2 text-[8px] font-mono text-cyan-600/80">3 ХОПА (МЕШ)</span>
 
-          {/* 2 хопа */}
           <div className="absolute w-[66%] h-[66%] rounded-full border border-cyan-500/30" />
           <span className="absolute top-11 text-[8px] font-mono text-cyan-500/80">2 ХОПА (ТРАНЗИТ)</span>
 
-          {/* 1 хоп */}
           <div className="absolute w-[44%] h-[44%] rounded-full border border-cyan-400/40 bg-cyan-950/20" />
           <span className="absolute top-20 text-[8px] font-mono text-cyan-400">1 ХОП (ПРЯМО)</span>
 
-          {/* Центр */}
           <div className="absolute w-3.5 h-3.5 bg-cyan-400 rounded-full shadow-[0_0_12px_#22d3ee] flex items-center justify-center">
             <div className="w-1.5 h-1.5 bg-slate-950 rounded-full" />
           </div>
         </div>
 
-        {/* Сканирующий луч */}
         <div 
           className="absolute inset-0 pointer-events-none origin-center"
           style={{
@@ -104,7 +103,6 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat })
           }}
         />
 
-        {/* Узлы на кольцах */}
         {nodesOnRadar.map((node) => {
           const isSelected = selectedPeer?.uid === node.uid;
           return (
@@ -135,7 +133,6 @@ export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat })
         })}
       </div>
 
-      {/* Быстрое открытие диалога */}
       {selectedPeer && (
         <div className="w-full mt-3 p-3 bg-slate-900 border border-cyan-500/40 rounded-2xl flex items-center justify-between animate-fadeIn">
           <div>
