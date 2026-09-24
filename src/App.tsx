@@ -5919,7 +5919,7 @@ function AppContent() {
                         setEditAvatar(profile?.photoURL || '');
                         setEditBio(profile?.bio || '');
                         setEditBackgroundURL(profile?.profileBackgroundURL || '');
-                        setUserStatus(profile?.status || 'online');
+                        setUserStatus((profile?.status as any) || 'online');
                         setCustomStatus(profile?.customStatus || '');
                         setIsEditingProfile(true);
                       }}
@@ -8759,7 +8759,8 @@ function AppContent() {
                         {msg.reactions && Object.keys(msg.reactions).length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">
                             {Object.entries(msg.reactions).map(([emoji, userIds]) => {
-                              const hasReacted = userIds.includes(user?.uid || '');
+                              const ids = Array.isArray(userIds) ? (userIds as string[]) : [];
+                              const hasReacted = ids.includes(user?.uid || '');
                               return (
                                 <button
                                   key={emoji}
@@ -8775,7 +8776,7 @@ function AppContent() {
                                   )}
                                 >
                                   <span>{emoji}</span>
-                                  <span>{userIds.length}</span>
+                                  <span>{ids.length}</span>
                                 </button>
                               );
                             })}

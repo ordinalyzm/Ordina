@@ -111,60 +111,156 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
     }
   };
 
-  const generateLocalAiBot = (prompt: string, currentBot?: any): any => {
-    const p = prompt.toLowerCase();
-    const rules: any[] = currentBot?.rules ? [...currentBot.rules] : [];
-
-    if (p.includes('привет') || p.includes('старт') || p.includes('start') || p.includes('помощь')) {
-      rules.push({
-        id: Date.now().toString() + '1',
-        triggerType: 'command',
-        triggerValue: '/start',
-        actionType: 'text',
-        response: 'Здравствуйте! Я ваш авто-помощник. Чем могу помочь?',
-        buttons: [{ text: 'ℹ️ Помощь', action: 'text', payload: 'Помощь' }, { text: '📞 Контакты', action: 'text', payload: 'Контакты' }]
-      });
+  const normalizeBotRule = (r: any): BotRule => {
+    if (!r) {
+      return {
+        id: uuidv4(),
+        trigger: { id: uuidv4(), type: 'command', params: { value: '/start' }, forAdminsOnly: false },
+        conditions: [],
+        actions: [{ id: uuidv4(), order: 0, type: 'send_message', params: { text: 'Привет!' } }]
+      };
     }
-    if (p.includes('цена') || p.includes('стоимость') || p.includes('купить') || p.includes('заказ') || p.includes('магазин')) {
-      rules.push({
-        id: Date.now().toString() + '2',
-        triggerType: 'keyword',
-        triggerValue: 'цена, стоимость, купить, прайс',
-        actionType: 'text',
-        response: 'Актуальный прайс-лист и информация о заказах доступны по запросу. Выберите нужный раздел.',
-        buttons: [{ text: '📦 Каталог', action: 'text', payload: 'Каталог' }]
-      });
-    }
-    if (p.includes('поддержка') || p.includes('оператор') || p.includes('хелп')) {
-      rules.push({
-        id: Date.now().toString() + '3',
-        triggerType: 'keyword',
-        triggerValue: 'поддержка, оператор, помощи',
-        actionType: 'text',
-        response: 'Соединяю с оператором поддержки... Пожалуйста, опишите вашу проблему в сообщении.',
-      });
-    }
-    if (rules.length === 0 || p.length > 5) {
-      rules.push({
-        id: Date.now().toString() + '4',
-        triggerType: 'contains',
-        triggerValue: prompt.slice(0, 15),
-        actionType: 'text',
-        response: `Авто-ответ: принято сообщение по теме "${prompt.slice(0, 30)}...". Мы вам обязательно ответим!`,
-      });
-    }
+    const trigger: BotTrigger = {
+      id: r.trigger?.id || uuidv4(),
+      type: r.trigger?.type || (r.triggerType === 'contains' || r.triggerType === 'keyword' ? 'text' : (r.triggerType || 'command')),
+      params: r.trigger?.params || { value: r.triggerValue || (r.triggerType === 'command' ? '/start' : '') },
+      forAdminsOnly: !!(r.trigger?.forAdminsOnly || r.forAdminsOnly)
+    };
+    const actions: BotAction[] = Array.isArray(r.actions) && r.actions.length > 0 
+      ? r.actions.map((a: any, idx: number) => ({
+          id: a?.id || uuidv4(),
+          order: a?.order ?? idx,
+          type: a?.type || 'send_message',
+          params: a?.params || { text: a?.text || r.response || 'Привет!' }
+        }))
+      : [{
+          id: uuidv4(),
+          order: 0,
+          type: 'send_message',
+          params: { text: r.response || 'Привет!' }
+        }];
+    const conditions = Array.isArray(r.conditions) 
+      ? r.conditions.map((c: any) => ({
+          id: c?.id || uuidv4(),
+          type: c?.type || 'variable_equals',
+          params: { key: c?.params?.key || '', value: c?.params?.value || '' }
+        }))
+      : [];
 
     return {
+      id: r.id || uuidv4(),
+      trigger,
+      conditions,
+      actions
+    };
+  };
+
+  const normalizeBotConfig = (b: any): BotConfig => {
+    const rawRules = Array.isArray(b?.rules) ? b.rules : [];
+    const normalizedRules = rawRules.map(normalizeBotRule);
+    return {
+      id: b?.id || 'bot_' + Date.now(),
+      name: b?.name || 'Новый Бот',
+      username: (b?.username || ('bot_' + Math.floor(1000 + Math.random() * 9000))).replace(/[^a-zA-Z0-9_]/g, ''),
+      avatarUrl: b?.avatarUrl || b?.avatar || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150',
+      description: b?.description || '',
+      isActive: b?.isActive !== false,
+      triggers: Array.isArray(b?.triggers) ? b.triggers : [],
+      conditions: Array.isArray(b?.conditions) ? b.conditions : [],
+      actions: Array.isArray(b?.actions) ? b.actions : [],
+      rules: normalizedRules,
+      usersList: Array.isArray(b?.usersList) ? b.usersList : [],
+      currency: b?.currency
+    };
+  };
+
+  const generateLocalAiBot = (prompt: string, currentBot?: any): BotConfig => {
+    const p = prompt.toLowerCase();
+    const rules: BotRule[] = [];
+
+    rules.push({
+      id: 'rule_' + Date.now() + '_1',
+      trigger: {
+        id: 'trig_' + Date.now() + '_1',
+        type: 'command',
+        params: { value: '/start' },
+        forAdminsOnly: false
+      },
+      conditions: [],
+      actions: [{
+        id: 'act_' + Date.now() + '_1',
+        order: 0,
+        type: 'send_message',
+        params: { text: `👋 Здравствуйте! Я ваш авто-помощник «${prompt.slice(0, 24)}». Чем могу помочь? Напишите команду или вопрос.` }
+      }]
+    });
+
+    if (p.includes('цена') || p.includes('стоимость') || p.includes('купить') || p.includes('заказ') || p.includes('магазин') || p.includes('прайс')) {
+      rules.push({
+        id: 'rule_' + Date.now() + '_2',
+        trigger: {
+          id: 'trig_' + Date.now() + '_2',
+          type: 'text',
+          params: { value: 'цена' },
+          forAdminsOnly: false
+        },
+        conditions: [],
+        actions: [{
+          id: 'act_' + Date.now() + '_2',
+          order: 0,
+          type: 'send_message',
+          params: { text: '📦 Актуальный каталог и информация о стоимости товаров/услуг доступны по запросу.' }
+        }]
+      });
+    }
+
+    if (p.includes('поддержка') || p.includes('оператор') || p.includes('хелп') || p.includes('помощь')) {
+      rules.push({
+        id: 'rule_' + Date.now() + '_3',
+        trigger: {
+          id: 'trig_' + Date.now() + '_3',
+          type: 'command',
+          params: { value: '/help' },
+          forAdminsOnly: false
+        },
+        conditions: [],
+        actions: [{
+          id: 'act_' + Date.now() + '_3',
+          order: 0,
+          type: 'send_message',
+          params: { text: '📞 Соединяю с оператором поддержки... Пожалуйста, опишите вашу проблему.' }
+        }]
+      });
+    }
+
+    if (rules.length === 1 && p.length > 3) {
+      rules.push({
+        id: 'rule_' + Date.now() + '_4',
+        trigger: {
+          id: 'trig_' + Date.now() + '_4',
+          type: 'text',
+          params: { value: prompt.slice(0, 15) },
+          forAdminsOnly: false
+        },
+        conditions: [],
+        actions: [{
+          id: 'act_' + Date.now() + '_4',
+          order: 0,
+          type: 'send_message',
+          params: { text: `Авто-ответ: принято сообщение по теме "${prompt.slice(0, 30)}...". Мы вам обязательно ответим!` }
+        }]
+      });
+    }
+
+    return normalizeBotConfig({
       id: currentBot?.id || 'bot_' + Date.now(),
       name: currentBot?.name || (prompt.slice(0, 18) + ' Бот'),
-      username: currentBot?.username || ('bot_' + Math.floor(Math.random()*10000)),
-      avatar: currentBot?.avatar || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150',
+      username: currentBot?.username || ('bot_' + Math.floor(1000 + Math.random() * 9000)),
+      avatarUrl: currentBot?.avatarUrl || currentBot?.avatar || 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=150',
       description: currentBot?.description || `Бот для: "${prompt}"`,
-      greeting: currentBot?.greeting || `Здравствуйте! Я бота-помощник. Чем могу помочь?`,
-      rules: rules,
-      isActive: true,
-      createdAt: currentBot?.createdAt || new Date().toISOString()
-    };
+      rules,
+      isActive: true
+    });
   };
 
   const handleGenerateBotWithAi = async () => {
@@ -181,7 +277,9 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
       if (res.ok) {
         const data = await res.json();
         if (data.success && data.bot) {
-          setEditingBot(data.bot);
+          const norm = normalizeBotConfig(data.bot);
+          setEditingBot(norm);
+          handleSaveBot(norm);
           setShowAiModal(false);
           setAiPrompt('');
           if ((window as any).addToast) (window as any).addToast('Бот сгенерирован ИИ!', 'success');
@@ -192,7 +290,9 @@ export default function BotConstructor({ isOpen, onClose, user, socket }: BotCon
     } catch (err: any) {
       console.warn('AI generator fallback to local engine:', err);
       const generated = generateLocalAiBot(aiPrompt.trim(), editingBot);
-      setEditingBot(generated);
+      const norm = normalizeBotConfig(generated);
+      setEditingBot(norm);
+      handleSaveBot(norm);
       setShowAiModal(false);
       setAiPrompt('');
       if ((window as any).addToast) (window as any).addToast('Бот умной системы готов!', 'success');

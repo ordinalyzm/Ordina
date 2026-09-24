@@ -1,12 +1,17 @@
 // src/types/mesh.ts
 
+export type MeshPacketType = 'text' | 'ack_read' | 'ack_delivered';
+
 export interface MeshPacket {
   id: string;              // Уникальный ID сообщения
+  type: MeshPacketType;    // Тип пакета: текст, подтверждение прочтения или доставки
   senderId: string;        // UID создателя
   senderName: string;      // Никнейм создателя для отображения
-  receiverId: string;      // UID адресата
+  receiverId?: string;     // UID адресата (для личных чатов)
+  groupId?: string;        // ID группы (для групповых чатов)
   chatId: string;          // ID диалога
-  encryptedPayload: string;// Зашифрованный текст (почтальон не имеет ключа!)
+  encryptedPayload?: string;// Зашифрованный текст (почтальон не имеет ключа!)
+  readMessageIds?: string[];// Список ID прочитанных сообщений (для ack_read)
   createdAt: string;       // Дата создания
   ttl: number;             // Оставшееся число скачков (по умолчанию 4-5)
   hops: number;            // Число уже пройденных скачков (начинается с 0)

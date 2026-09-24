@@ -245,6 +245,55 @@ export async function updateMessageStatus(id: string, status: string): Promise<v
 }
 
 /**
+ * Marks a list of messages as read in SQLite database and localStorage.
+ */
+export async function markMessagesAsReadInDb(messageIds: string[]): Promise<void> {
+  if (!messageIds || messageIds.length === 0) return;
+  try {
+    await initDatabase();
+    if (dbInstance) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      const query = `
+        UPDATE messages 
+        SET status = 'read', deliveryStatus = 'read' 
+        WHERE id IN (${placeholders});
+      `;
+      await dbInstance.run(query, messageIds);
+      console.log(`[SQLite] Сообщения ${messageIds.join(', ')} отмечены как ПРОЧИТАННЫЕ`);
+    }
+  } catch (err) {
+    console.error('[SQLite] Ошибка обновления статуса прочтения:', err);
+  }
+
+  // Update in localStorage cache as well
+  try {
+    const idSet = new Set(messageIds);
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ordina_cache_')) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          let modified = false;
+          const list: Message[] = JSON.parse(raw);
+          if (Array.isArray(list)) {
+            for (const m of list) {
+              if (idSet.has(m.id)) {
+                m.status = 'read' as any;
+                m.deliveryStatus = 'read' as any;
+                modified = true;
+              }
+            }
+            if (modified) {
+              localStorage.setItem(k, JSON.stringify(list));
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+/**
  * Returns the highest delta version stored locally (for incremental delta sync).
  */
 export async function getDeltaSyncVersion(): Promise<number> {

@@ -104,8 +104,8 @@ const SLIDES = [
   },
   {
     id: 'secret_chats',
-    title: 'Секретные чаты и Группы',
-    subtitle: 'Шифрование от устройства к устройству (E2EE)',
+    title: 'Сквозное шифрование и E2EE',
+    subtitle: 'Все сообщения и файлы защищены по умолчанию',
     icon: Lock,
     color: 'from-purple-600 to-indigo-600',
     accentColor: 'text-purple-500',
@@ -117,17 +117,17 @@ const SLIDES = [
             <Lock size={20} />
           </div>
           <div className="text-xs text-purple-950">
-            <strong className="block text-purple-900 font-bold">Расположение: Кнопка «Создать чат» 📝 внизу списка</strong>
-            При создании диалога включите переключатель 🔒 Секретный чат для сквозного шифрования.
+            <strong className="block text-purple-900 font-bold">100% шифрование во всех чатах</strong>
+            В Ордине каждый диалог, группа и канал защищены сквозным криптографическим шифрованием. Никаких «обычных» незащищенных чатов нет.
           </div>
         </div>
 
         <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl space-y-2 text-xs">
           <div className="font-bold text-slate-800 flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-purple-600" /> Защита и удаление:
+            <ShieldCheck className="w-4 h-4 text-purple-600" /> Персональный шифр (Иконка 🛡️ в строке ввода):
           </div>
           <p className="text-slate-600">
-            При удалении чата вся история и медиафайлы гарантированно очищаются из вашей локальной памяти и базы данных.
+            Для сверхсекретных заметок и паролей используйте кнопку шифрования Cipher в строке ввода — текст зашифруется вашим личным паролем.
           </p>
         </div>
       </div>
@@ -172,7 +172,7 @@ const SLIDES = [
   },
   {
     id: 'legal_shield',
-    title: 'Правовой Щит и «Соучастник»',
+    title: 'Правовой Щит Ordina',
     subtitle: 'Локальная защита от случайных нарушений законов РФ',
     icon: ShieldAlert,
     color: 'from-rose-600 to-amber-600',
@@ -186,7 +186,7 @@ const SLIDES = [
           </div>
           <div className="text-xs text-rose-950">
             <strong className="block text-slate-900 font-bold">Безопасность вашего общения</strong>
-            Встроенный помощник анализирует набираемый текст на предмет риска нарушения УК и КоАП РФ (ст. 205.2, 228, 159, 128.1 и др.).
+            Правовой советник анализирует набираемый текст на предмет риска нарушения статей УК и КоАП РФ (оскорбления, брань, клевета, доксинг, экстремизм).
           </div>
         </div>
 

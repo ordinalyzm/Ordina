@@ -3,7 +3,7 @@ import { BleClient, numbersToDataView } from '@capacitor-community/bluetooth-le'
 import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
 import type { MeshPacket, PeerNode, DiscoveredPeer } from '../types/mesh';
-import { saveMessage } from './localCache';
+import { saveMessage, markMessagesAsReadInDb } from './localCache';
 
 export const ORDINA_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
 export const ORDINA_CHAR    = '0000ffe1-0000-1000-8000-00805f9b34fb';
@@ -58,7 +58,7 @@ export class MeshTransport {
       }
     } catch (_) {}
 
-    // Слушатель входящих пакетов из радиоэфира (Java)
+    // Слушатель входящих пакетов из радиоэфира (Android BLE / Custom Plugin)
     if (typeof window !== 'undefined') {
       window.removeEventListener('mesh:incoming_raw', this.onRawEvent);
       window.addEventListener('mesh:incoming_raw', this.onRawEvent);
@@ -180,10 +180,10 @@ export class MeshTransport {
   }
 
   /**
-   * Главный конвейер приёма, распаковки и ретрансляции
+   * Главный конвейер приёма, распаковки, обработки квитанций и ретрансляции
    */
   public static async handleIncomingPacket(packet: MeshPacket) {
-    // 1. Защита от шторма: игнорируем уже виденные пакеты
+    // 1. Защита от лавинного шторма: игнорируем уже виденные пакеты
     if (this.seenPackets.has(packet.id)) return;
     if (this.seenPackets.size > 1000) {
       const oldest = this.seenPackets.keys().next().value;
@@ -191,11 +191,57 @@ export class MeshTransport {
     }
     this.seenPackets.add(packet.id);
 
-    // 2. Это сообщение адресовано ЛИЧНО НАМ?
-    if (packet.receiverId === this.myUid) {
-      console.log(`[Mesh] Пакет ${packet.id} доставлен адресату (пройдено хопов: ${packet.hops})`);
+    // 2. ОБРАБОТКА ПОДТВЕРЖДЕНИЯ ПРОЧТЕНИЯ (ack_read)
+    if (packet.type === 'ack_read') {
+      if (packet.readMessageIds && packet.readMessageIds.length > 0) {
+        console.log(`[Mesh ACK] Получено подтверждение прочтения для сообщений:`, packet.readMessageIds);
+        await markMessagesAsReadInDb(packet.readMessageIds);
+        window.dispatchEvent(new CustomEvent('ordinamsg:read', { 
+          detail: { 
+            messageIds: packet.readMessageIds,
+            chatId: packet.chatId,
+            readBy: packet.senderId
+          } 
+        }));
+      }
 
-      // Расшифровываем payload (в простейшем виде base64/JSON или шифротекст)
+      // Если квитанция адресована нам лично — миссия завершена
+      if (packet.receiverId === this.myUid) {
+        return;
+      }
+    }
+
+    // 3. ГРУППОВОЙ ЧАТ (Multicast Flooding в groupId)
+    if (packet.groupId) {
+      console.log(`[Mesh Group] Пакет группы ${packet.groupId} от ${packet.senderName}`);
+      
+      // Расшифровываем и сохраняем локально, если мы состоим в группе или это текстовое сообщение
+      if (packet.type === 'text' || !packet.type) {
+        const decryptedText = this.decryptPayload(packet.encryptedPayload || (packet as any).text || '');
+        const normalized = {
+          id: packet.id,
+          chatId: packet.groupId,
+          groupId: packet.groupId,
+          senderId: packet.senderId,
+          senderName: packet.senderName,
+          text: decryptedText,
+          content: decryptedText,
+          type: 'text' as const,
+          createdAt: packet.createdAt,
+          deliveryStatus: 'delivered' as const,
+          isMesh: true,
+          hops: packet.hops
+        };
+
+        await saveMessage(normalized);
+        window.dispatchEvent(new CustomEvent('ordinamsg:new', { detail: normalized }));
+      }
+
+      // Даже сохранив себе, группа ретранслируется дальше другим соседям (Flooding)
+    } else if (packet.receiverId === this.myUid) {
+      // 4. ЛИЧНЫЙ ДИАЛОГ: Сообщение адресовано ЛИЧНО НАМ
+      console.log(`[Mesh] Пакет ${packet.id} доставлен адресату (хопов: ${packet.hops})`);
+
       const decryptedText = this.decryptPayload(packet.encryptedPayload || (packet as any).text || '');
 
       const normalized = {
@@ -218,8 +264,8 @@ export class MeshTransport {
       return;
     }
 
-    // 3. Пакет НЕ ДЛЯ НАС: Узел работает как транзитный Почтальон / Ретранслятор
-    console.log(`[Relay] Транзит пакета для ${packet.receiverId}. Хоп: ${packet.hops + 1}`);
+    // 5. ТРАНЗИТНЫЙ УЗЕЛ (Почтальон / Ретранслятор): Передаем дальше
+    console.log(`[Relay] Транзит пакета для ${packet.receiverId || packet.groupId}. Хоп: ${packet.hops + 1}`);
 
     // ГИБРИДНЫЙ МОСТ: Если у нас есть интернет, а пакет еще не в облаке — вбрасываем в интернет
     if (this.socketRef && this.socketRef.connected && !packet.isInternetBridge) {
@@ -227,7 +273,7 @@ export class MeshTransport {
       this.socketRef.emit('mesh:relay_to_cloud', { ...packet, isInternetBridge: true });
     }
 
-    // 4. Проверяем TTL перед радио-ретрансляцией
+    // 6. Проверяем TTL перед радио-ретрансляцией
     if (packet.ttl <= 1 || (packet.relayPath && packet.relayPath.includes(this.myUid))) {
       return; // Пакет исчерпал лимит скачков или зациклился
     }
@@ -253,14 +299,93 @@ export class MeshTransport {
       this.notifyPeers();
     }
 
-    // Случайная пауза против радио-коллизий (Jitter 100-300 мс)
+    // Случайная пауза против радио-коллизий (Jitter 80-250 мс)
     setTimeout(() => {
-      this.sendMeshMessage(nextHopPacket.receiverId, nextHopPacket, true);
-    }, Math.floor(Math.random() * 200) + 100);
+      if (nextHopPacket.groupId) {
+        this.broadcastToNeighbors(nextHopPacket);
+      } else if (nextHopPacket.receiverId) {
+        this.sendMeshMessage(nextHopPacket.receiverId, nextHopPacket, true);
+      }
+    }, Math.floor(Math.random() * 170) + 80);
   }
 
   /**
-   * Отправка сообщения
+   * Отправка квитанции прочтения (Offline Read Receipt)
+   * Легковесный пакет ~120 байт, пролетающий через меш-сеть мгновенно
+   */
+  public static async sendReadReceipt(
+    targetUid: string,
+    messageIds: string[],
+    chatId: string
+  ): Promise<boolean> {
+    if (!messageIds || messageIds.length === 0) return false;
+
+    const packet: MeshPacket = {
+      id: `ack_read_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      type: 'ack_read',
+      senderId: this.myUid,
+      senderName: this.myName,
+      receiverId: targetUid,
+      chatId: chatId,
+      readMessageIds: messageIds,
+      createdAt: new Date().toISOString(),
+      ttl: 4,
+      hops: 0,
+      relayPath: [this.myUid]
+    };
+
+    this.seenPackets.add(packet.id);
+    console.log(`[Mesh ACK] Отправка ack_read для ${messageIds.length} сообщений адресату ${targetUid}`);
+    return this.sendMeshMessage(targetUid, packet, true);
+  }
+
+  /**
+   * Многоадресная отправка сообщения в групповой чат (Multicast Flooding)
+   */
+  public static async sendGroupMessage(
+    groupId: string,
+    message: any
+  ): Promise<boolean> {
+    const packet: MeshPacket = {
+      id: message.id || `${this.myUid}_${Date.now()}`,
+      type: 'text',
+      senderId: this.myUid,
+      senderName: this.myName,
+      groupId: groupId,
+      chatId: groupId,
+      encryptedPayload: this.encryptPayload(message.text || message.content || ''),
+      createdAt: message.createdAt || new Date().toISOString(),
+      ttl: 4,
+      hops: 0,
+      relayPath: [this.myUid]
+    };
+
+    this.seenPackets.add(packet.id);
+    console.log(`[Mesh Group] Рассылка сообщения в группу ${groupId} всем соседям`);
+    return this.broadcastToNeighbors(packet);
+  }
+
+  /**
+   * Отправка пакета всем прямым соседям в зоне радиовидимости
+   */
+  public static async broadcastToNeighbors(packet: MeshPacket): Promise<boolean> {
+    const neighbors = Array.from(this.uidToMac.values());
+    if (neighbors.length === 0) {
+      console.log('[Mesh] Нет прямых радио-соседей в зоне видимости');
+      return false;
+    }
+
+    let sentCount = 0;
+    for (const mac of neighbors) {
+      const ok = await this.writeGatt(mac, packet);
+      if (ok) sentCount++;
+    }
+
+    return sentCount > 0;
+  }
+
+  /**
+   * Отправка личного сообщения в меш-сеть
    */
   public static async sendMeshMessage(
     targetUid: string,
@@ -275,6 +400,7 @@ export class MeshTransport {
       // Новое сообщение от нас: шифруем payload, чтобы почтальоны не прочли
       packet = {
         id: message.id || `${this.myUid}_${Date.now()}`,
+        type: 'text',
         senderId: this.myUid,
         senderName: this.myName,
         receiverId: targetUid,

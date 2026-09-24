@@ -37,11 +37,11 @@ export const PinnedMessageBanner: React.FC<PinnedMessageBannerProps> = ({
 
   const getPreviewText = () => {
     if (activeMessage.text) return activeMessage.text;
+    if (activeMessage.type === 'sticker' || activeMessage.fileName === 'sticker.jpg') return '🎨 Стикер';
     if (activeMessage.type === 'image') return '📷 Фотография';
     if (activeMessage.type === 'voice' || activeMessage.type === 'audio') return '🎤 Голосовое сообщение';
     if (activeMessage.type === 'file') return `📎 Файл: ${activeMessage.fileName || 'Документ'}`;
     if (activeMessage.type === 'poll') return '📊 Опрос';
-    if (activeMessage.type === 'sticker') return '👾 Стикер';
     return 'Закрепленное сообщение';
   };
 

@@ -144,7 +144,7 @@ export const LegalShieldDetailsModal: React.FC<LegalShieldDetailsModalProps> = (
               <Scale className="w-4 h-4 text-blue-600" />
             </div>
             <div>
-              <h3 className="font-bold text-slate-900 text-sm">Правовой щит «Соучастник»</h3>
+              <h3 className="font-bold text-slate-900 text-sm">Правовой щит Ordina</h3>
               <p className="text-xs text-slate-500">Автономный правовой советник (100% оффлайн)</p>
             </div>
           </div>

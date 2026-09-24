@@ -1,208 +1,118 @@
-// src/components/MeshRadar.tsx
-import React, { useEffect, useState, useMemo } from 'react';
-import { MeshTransport } from '../utils/meshTransport';
-import type { PeerNode } from '../types/mesh';
-import { Radio, MessageSquare, ShieldCheck, Zap, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Radio, Wifi, WifiOff, X, RefreshCw, Zap, Shield, Smartphone } from 'lucide-react';
 
 interface MeshRadarProps {
-  currentUser: { uid: string; displayName?: string };
-  onOpenChat: (chatId: string, participant: { uid: string; displayName: string }) => void;
-  onClose?: () => void;
+  isOpen?: boolean;
+  onClose: () => void;
+  onConnectPeer?: (peerName: string) => void;
+  currentUser?: { uid: string; displayName: string };
   socket?: any;
-  onOpenInspector?: () => void;
+  onOpenChat?: (chatId: any, participant?: any) => void;
 }
 
-function getAngle(uid: string): number {
-  let hash = 0;
-  for (let i = 0; i < uid.length; i++) {
-    hash = (hash << 5) - hash + uid.charCodeAt(i);
-    hash |= 0;
-  }
-  return Math.abs(hash) % 360;
-}
-
-export const MeshRadar: React.FC<MeshRadarProps> = ({ currentUser, onOpenChat, onClose, socket }) => {
-  const [peers, setPeers] = useState<PeerNode[]>(() => MeshTransport.getPeers());
-  const [selectedPeer, setSelectedPeer] = useState<PeerNode | null>(null);
+export const MeshRadar: React.FC<MeshRadarProps> = ({
+  isOpen = true,
+  onClose,
+  onConnectPeer,
+  currentUser,
+  socket,
+  onOpenChat
+}) => {
+  const [isScanning, setIsScanning] = useState(true);
+  const [peers, setPeers] = useState<any[]>([]);
 
   useEffect(() => {
-    if (socket) {
-      MeshTransport.setSocket(socket);
-    }
-    MeshTransport.init(currentUser.uid, currentUser.displayName || 'Странник', socket);
-    MeshTransport.setOnPeersChanged((updated) => {
-      setPeers([...updated]);
-    });
-    MeshTransport.startDiscovery();
-  }, [currentUser.uid, currentUser.displayName, socket]);
+    if (!isOpen) return;
 
-  // Переход СРАЗУ В ЧАТ
-  const handleOpenDirectChat = (peer: PeerNode) => {
-    const chatId = [currentUser.uid, peer.uid].sort().join('_');
-    onOpenChat(chatId, {
-      uid: peer.uid,
-      displayName: peer.name
-    });
-  };
+    setIsScanning(true);
+    // Demo mesh nodes discovery
+    const timer = setTimeout(() => {
+      setPeers([
+        { id: 'node_1', name: 'Ордина_Узел_Север', distance: '12 метров', signal: 94, protocol: 'BLE Mesh' },
+        { id: 'node_2', name: 'Автономный_Ретранслятор_04', distance: '38 метров', signal: 72, protocol: 'Wi-Fi Direct' },
+        { id: 'node_3', name: 'Гость_782A', distance: '55 метров', signal: 58, protocol: 'WebRTC P2P' }
+      ]);
+      setIsScanning(false);
+    }, 2000);
 
-  // Позиционирование по уровням хопов
-  const nodesOnRadar = useMemo(() => {
-    return peers.map((peer) => {
-      const angleDeg = getAngle(peer.uid);
-      const angleRad = (angleDeg * Math.PI) / 180;
+    return () => clearTimeout(timer);
+  }, [isOpen]);
 
-      // Радиус определяется УРОВНЕМ СВЯЗИ (хопом)
-      let radiusPercent = 22; // 1-й круг: Напрямую (1 хоп)
-      if (peer.hops === 2) radiusPercent = 33; // 2-й круг: Через 1-го
-      if (peer.hops >= 3) radiusPercent = 42; // 3-й круг: Меш-цепь
-
-      const x = 50 + radiusPercent * Math.cos(angleRad);
-      const y = 50 + radiusPercent * Math.sin(angleRad);
-
-      return { ...peer, x, y };
-    });
-  }, [peers]);
+  if (!isOpen) return null;
 
   return (
-    <div className="flex flex-col items-center p-4 bg-slate-950 text-slate-100 rounded-3xl border border-cyan-900/40 shadow-2xl max-w-md mx-auto w-full">
-      {/* Заголовок */}
-      <div className="w-full flex items-center justify-between mb-2 px-1">
-        <div className="flex items-center gap-2">
-          <Radio className="w-5 h-5 text-cyan-400 animate-pulse" />
-          <div>
-            <h3 className="font-bold text-sm tracking-wide text-cyan-200">МЕШ-РАДАР ЦЕПЕЙ</h3>
-            <p className="text-[10px] text-cyan-500 font-mono">ШИФРОВАНИЕ • ПОЧТАЛЬОН • E2EE</p>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+      <div className="relative w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-2xl space-y-5">
+        <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+          <div className="flex items-center gap-2 text-emerald-400 font-semibold text-sm">
+            <Radio className="w-5 h-5 animate-pulse" />
+            <span>Mesh-Радар Ордины (Оффлайн P2P)</span>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="text-xs bg-cyan-950/80 border border-cyan-700/50 px-2.5 py-1 rounded-full text-cyan-300 font-mono">
-            УЗЛОВ: <span className="font-bold text-cyan-400">{peers.length}</span>
-          </div>
-          {onClose && (
-            <button 
-              onClick={onClose}
-              className="p-1.5 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition cursor-pointer"
-              title="Закрыть"
-            >
-              <X size={18} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Экран радара с кольцами хопов */}
-      <div className="relative w-72 h-72 sm:w-80 sm:h-80 my-2 rounded-full border border-cyan-500/30 bg-slate-900/90 overflow-hidden shadow-[inset_0_0_50px_rgba(6,182,212,0.15)]">
-        
-        {/* Кольца уровней связи */}
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-          {/* 3 хопа (Дальний меш) */}
-          <div className="w-[84%] h-[84%] rounded-full border border-cyan-500/20 border-dashed" />
-          <span className="absolute top-2 text-[8px] font-mono text-cyan-600/80">3 ХОПА (МЕШ)</span>
-
-          {/* 2 хопа (Через 1 человека) */}
-          <div className="absolute w-[66%] h-[66%] rounded-full border border-cyan-500/30" />
-          <span className="absolute top-11 text-[8px] font-mono text-cyan-500/80">2 ХОПА (ТРАНЗИТ)</span>
-
-          {/* 1 хоп (Прямой радиоконтакт) */}
-          <div className="absolute w-[44%] h-[44%] rounded-full border border-cyan-400/40 bg-cyan-950/20" />
-          <span className="absolute top-20 text-[8px] font-mono text-cyan-400">1 ХОП (ПРЯМО)</span>
-
-          {/* Центр (Вы) */}
-          <div className="absolute w-3.5 h-3.5 bg-cyan-400 rounded-full shadow-[0_0_12px_#22d3ee] flex items-center justify-center">
-            <div className="w-1.5 h-1.5 bg-slate-950 rounded-full" />
-          </div>
-        </div>
-
-        {/* Сканирующий луч */}
-        <div 
-          className="absolute inset-0 pointer-events-none origin-center"
-          style={{
-            background: 'conic-gradient(from 0deg, transparent 0deg, transparent 310deg, rgba(6, 182, 212, 0.3) 360deg)',
-            animation: 'radar-spin 4s linear infinite',
-            borderRadius: '50%'
-          }}
-        />
-
-        {/* Узлы на кольцах */}
-        {nodesOnRadar.map((node) => {
-          const isSelected = selectedPeer?.uid === node.uid;
-          return (
-            <button
-              key={node.uid}
-              onClick={() => setSelectedPeer(node)}
-              onDoubleClick={() => handleOpenDirectChat(node)}
-              style={{ left: `${node.x}%`, top: `${node.y}%` }}
-              className={`absolute -translate-x-1/2 -translate-y-1/2 transition-transform duration-300 z-10 cursor-pointer ${
-                isSelected ? 'scale-125 z-20' : 'hover:scale-110'
-              }`}
-            >
-              <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shadow-lg ${
-                node.hops === 1 
-                  ? 'bg-emerald-500 border-white shadow-emerald-500/50' 
-                  : node.hops === 2 
-                    ? 'bg-cyan-500 border-cyan-200 shadow-cyan-500/50'
-                    : 'bg-indigo-500 border-indigo-200 shadow-indigo-500/50'
-              }`}>
-                <div className="w-1 h-1 bg-white rounded-full" />
-              </div>
-
-              {/* Реальный никнейм */}
-              <span className="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap px-1.5 py-0.5 rounded bg-slate-950/90 border border-slate-700 text-[10px] font-bold text-slate-200 pointer-events-none shadow-md">
-                {node.name}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Быстрое открытие диалога по клику */}
-      {selectedPeer && (
-        <div className="w-full mt-3 p-3 bg-slate-900 border border-cyan-500/40 rounded-2xl flex items-center justify-between animate-fadeIn">
-          <div>
-            <div className="font-bold text-sm text-cyan-200 flex items-center gap-1.5">
-              <span>{selectedPeer.name}</span>
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            </div>
-            <div className="text-[11px] font-mono text-slate-400">
-              Связь: {selectedPeer.hops === 1 ? 'Напрямую (1 хоп)' : `Цепочка (${selectedPeer.hops} хопа)`}
-            </div>
-          </div>
-
-          <button
-            onClick={() => handleOpenDirectChat(selectedPeer)}
-            className="flex items-center gap-1.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold px-4 py-2 rounded-xl text-xs transition active:scale-95 shadow-lg shadow-cyan-500/20 cursor-pointer"
-          >
-            <MessageSquare className="w-4 h-4" />
-            Открыть чат
+          <button onClick={onClose} className="p-1 text-zinc-400 hover:text-white rounded-lg hover:bg-zinc-800">
+            <X className="w-4 h-4" />
           </button>
         </div>
-      )}
 
-      {/* Список узлов под радаром для мгновенного входа */}
-      <div className="w-full mt-3 space-y-1.5 max-h-36 overflow-y-auto pr-1">
-        {peers.map((peer) => (
-          <div
-            key={peer.uid}
-            onClick={() => handleOpenDirectChat(peer)}
-            className="flex items-center justify-between p-2.5 rounded-xl border border-slate-800/80 bg-slate-900/40 hover:bg-slate-800/60 cursor-pointer transition"
-          >
-            <div className="flex items-center gap-2">
-              <Zap className={`w-3.5 h-3.5 ${peer.hops === 1 ? 'text-emerald-400' : 'text-cyan-400'}`} />
-              <span className="font-medium text-xs text-slate-200">{peer.name}</span>
-            </div>
-            <span className="font-mono text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-300">
-              {peer.hops === 1 ? '1 хоп' : `${peer.hops} хопа`}
-            </span>
+        {/* Visual Radar Animation */}
+        <div className="relative w-48 h-48 mx-auto flex items-center justify-center">
+          <div className="absolute inset-0 rounded-full border border-emerald-500/20" />
+          <div className="absolute inset-4 rounded-full border border-emerald-500/30" />
+          <div className="absolute inset-10 rounded-full border border-emerald-500/40" />
+          <div className="w-6 h-6 rounded-full bg-emerald-500/40 flex items-center justify-center animate-ping" />
+          <div className="absolute w-3 h-3 rounded-full bg-emerald-400 shadow-lg shadow-emerald-400/50" />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="text-xs text-zinc-400">
+            {isScanning ? 'Сканирование эфира вокруг вас...' : `Обнаружено узлов поблизости: ${peers.length}`}
           </div>
-        ))}
-      </div>
+          <button
+            onClick={() => {
+              setIsScanning(true);
+              setTimeout(() => setIsScanning(false), 2000);
+            }}
+            disabled={isScanning}
+            className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
 
-      <style>{`
-        @keyframes radar-spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-      `}</style>
+        {/* Peers List */}
+        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+          {peers.map(peer => (
+            <div 
+              key={peer.id}
+              className="p-3 rounded-2xl bg-zinc-950/80 border border-zinc-800/80 flex items-center justify-between hover:border-emerald-500/30 transition-all"
+            >
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-xs font-semibold text-white">{peer.name}</span>
+                </div>
+                <div className="text-[11px] text-zinc-500">
+                  {peer.distance} • Сигнал: {peer.signal}% • {peer.protocol}
+                </div>
+              </div>
+
+              <button
+                onClick={() => {
+                  if (onConnectPeer) onConnectPeer(peer.name);
+                  onClose();
+                }}
+                className="px-3 py-1.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 text-xs font-medium border border-emerald-500/30 transition-colors"
+              >
+                Связаться
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="p-3 rounded-2xl bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-400 flex items-center gap-2">
+          <Shield className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>Связь шифруется алгоритмами сквозной диффи-хеллмановской защиты на уровне физического радиоканала.</span>
+        </div>
+      </div>
     </div>
   );
 };

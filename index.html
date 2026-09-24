@@ -1,41 +1,17 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="ru">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-    <link rel="manifest" href="/manifest.json" />
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <title>Ордина: Мессенджер Свободы</title>
-    <meta name="theme-color" content="#2563eb" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Ордина" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>Ордина</title>
+    <meta name="description" content="Мессенджер с поддержкой Mesh-сетей и идеологией Ординализма." />
+    <meta property="og:title" content="Ордина" />
+    <meta property="og:description" content="Мессенджер с поддержкой Mesh-сетей и идеологией Ординализма." />
+    <meta name="theme-color" content="#09090b" />
   </head>
-  <body>
-    <div id="root">
-      <div style="height: 100%; background-color: #020617; display: flex; align-items: center; justify-content: center; color: white; font-family: sans-serif;">
-        <div style="text-align: center;">
-          <div style="width: 40px; height: 40px; border: 4px solid rgba(255,255,255,0.1); border-top-color: #2563eb; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
-          <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
-          <div style="font-weight: bold; font-size: 1.2rem;">Ордина</div>
-          <div id="loading-msg" style="font-size: 0.8rem; opacity: 0.5; margin-top: 8px;">Загрузка мессенджера...</div>
-          <script>
-            setTimeout(function() {
-              var el = document.getElementById('loading-msg');
-              if (el) {
-                el.innerHTML = "Загрузка идет дольше обычного.<br/><br/>Попробуйте очистить кэш браузера, отключить VPN/блокировщики рекламы или открыть в другом браузере.";
-                el.style.opacity = "1";
-                el.style.color = "#fbbf24";
-              }
-            }, 8000);
-          </script>
-        </div>
-      </div>
-    </div>
+  <body class="bg-zinc-950 text-zinc-100 antialiased selection:bg-amber-500/30">
+    <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
