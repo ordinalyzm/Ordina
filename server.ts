@@ -655,33 +655,96 @@ async function startServer() {
     res.send('pong');
   });
 
-  // Direct APK download routes (independent of VPN / Google Play)
-  app.get(['/download/ordina.apk', '/download/ordina-latest.apk', '/api/download-apk'], (req, res) => {
-    const staticApkPath = path.join(process.cwd(), 'public', 'Ordina-Mesh.apk');
-    if (fs.existsSync(staticApkPath)) {
-      res.setHeader('Content-Disposition', 'attachment; filename="Ordina-Mesh-v2.6.4.apk"');
-      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-      return res.sendFile(staticApkPath);
+  // Cache for GitHub release data
+  let cachedGitHubRelease: { data: any; lastFetched: number } = { data: null, lastFetched: 0 };
+
+  async function getLatestGitHubRelease(): Promise<{ version: string; apkUrl: string; releaseUrl: string; body: string } | null> {
+    const now = Date.now();
+    // Cache for 3 minutes
+    if (cachedGitHubRelease.data && (now - cachedGitHubRelease.lastFetched < 180000)) {
+      return cachedGitHubRelease.data;
     }
-    // If physical APK file is generated on build or requested, redirect to release or fallback
-    res.setHeader('Content-Disposition', 'attachment; filename="Ordina-Mesh-v2.6.4.apk"');
-    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-    // Send lightweight package descriptor for direct installation
-    res.send(Buffer.from('PK\x03\x04' + 'Ordina Mesh PWA/APK Direct Package v2.6.4'));
+
+    try {
+      const response = await fetch('https://api.github.com/repos/ordinalyzm/Ordina/releases/latest', {
+        headers: {
+          'User-Agent': 'Ordina-Server-Release-Checker/1.0',
+          'Accept': 'application/vnd.github.v3+json'
+        }
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        const apkAsset = json.assets?.find((a: any) => a.name?.toLowerCase().endsWith('.apk'));
+        const releaseInfo = {
+          version: json.tag_name || json.name || 'v2.6.4',
+          apkUrl: apkAsset ? apkAsset.browser_download_url : 'https://github.com/ordinalyzm/Ordina/releases/latest',
+          releaseUrl: json.html_url || 'https://github.com/ordinalyzm/Ordina/releases/latest',
+          body: json.body || 'Свежее обновление Ordina Mesh'
+        };
+        cachedGitHubRelease = { data: releaseInfo, lastFetched: now };
+        return releaseInfo;
+      }
+    } catch (err) {
+      console.warn('[GitHub Releases] Could not fetch latest release:', err);
+    }
+
+    return cachedGitHubRelease.data || {
+      version: 'v2.6.4',
+      apkUrl: 'https://github.com/ordinalyzm/Ordina/releases/latest',
+      releaseUrl: 'https://github.com/ordinalyzm/Ordina/releases/latest',
+      body: 'Актуальный билд Ordina Mesh'
+    };
+  }
+
+  // Direct APK download routes (independent of VPN / Google Play)
+  app.get(['/download/ordina.apk', '/download/ordina-latest.apk', '/api/download-apk'], async (req, res) => {
+    // 1. Check local static APK in public/
+    const staticPaths = [
+      path.join(process.cwd(), 'public', 'Ordina-Mesh.apk'),
+      path.join(process.cwd(), 'public', 'Ordina.apk'),
+      path.join(process.cwd(), 'public', 'app-release.apk')
+    ];
+
+    for (const p of staticPaths) {
+      if (fs.existsSync(p)) {
+        res.setHeader('Content-Disposition', 'attachment; filename="Ordina-Mesh.apk"');
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        return res.sendFile(p);
+      }
+    }
+
+    // 2. Resolve latest release from GitHub (ordinalyzm/Ordina)
+    const release = await getLatestGitHubRelease();
+    if (release && release.apkUrl && release.apkUrl.startsWith('http')) {
+      return res.redirect(302, release.apkUrl);
+    }
+
+    // 3. Fallback to direct GitHub releases URL
+    res.redirect(302, 'https://github.com/ordinalyzm/Ordina/releases/latest');
+  });
+
+  // Get current GitHub release info
+  app.get('/api/github/latest-release', async (req, res) => {
+    const release = await getLatestGitHubRelease();
+    res.json(release || {
+      version: 'v2.6.4',
+      apkUrl: 'https://github.com/ordinalyzm/Ordina/releases/latest',
+      releaseUrl: 'https://github.com/ordinalyzm/Ordina/releases/latest',
+      body: 'Актуальная версия Ordina'
+    });
   });
 
   // In-App update check endpoint (like VK / Telegram auto-updater)
-  app.get('/api/version/check', (req, res) => {
+  app.get('/api/version/check', async (req, res) => {
+    const release = await getLatestGitHubRelease();
     res.json({
-      latestVersion: '2.6.4',
+      latestVersion: release?.version || '2.6.4',
       versionCode: 264,
-      releaseNotes: 'Улучшена синхронизация удаления сообщений, автономный Bluetooth Mesh, темный интерфейс под вырезы экрана.',
-      downloadUrl: '/download/ordina-latest.apk',
-      mandatory: false,
-      mirrors: [
-        { name: 'RuStore', url: 'https://www.rustore.ru/catalog/app/app.ordina.messenger' },
-        { name: 'Telegram', url: 'https://t.me/ordina_mesh_official' }
-      ]
+      releaseNotes: release?.body || 'Улучшена синхронизация удаления сообщений, автономный Bluetooth Mesh, темный интерфейс под вырезы экрана.',
+      downloadUrl: release?.apkUrl || 'https://github.com/ordinalyzm/Ordina/releases/latest',
+      githubRepo: 'https://github.com/ordinalyzm/Ordina',
+      mandatory: false
     });
   });
 

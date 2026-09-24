@@ -4,9 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   X, Share2, QrCode, Download, Copy, Check, Smartphone, Globe, 
   Shield, Radio, Users, Sparkles, RefreshCw, Send, CheckCircle2, 
-  HardDrive, Zap, ExternalLink, ArrowDownToLine
+  HardDrive, Zap, ExternalLink, ArrowDownToLine, Github
 } from 'lucide-react';
-import { Capacitor } from '@capacitor/core';
 
 interface ShareAppModalProps {
   isOpen: boolean;
@@ -14,43 +13,9 @@ interface ShareAppModalProps {
   appUrl?: string;
 }
 
-const PUBLIC_PRODUCTION_URL = 'https://ais-pre-77hjrxhieqxwyomnhghri2-738813665517.europe-west2.run.app';
-
-// Mirror links that work without VPN in RU / CIS
-export const APK_DOWNLOAD_MIRRORS = [
-  {
-    id: 'direct',
-    title: 'Прямая загрузка APK (Без VPN)',
-    description: 'Официальный билд Ordina v2.6.4 с максимальной скоростью без блокировок',
-    url: '/download/ordina-latest.apk',
-    isPrimary: true,
-    tag: 'Быстро'
-  },
-  {
-    id: 'rustore',
-    title: 'RuStore (Российский маркет)',
-    description: 'Официальный магазин приложений РФ, доступен без VPN',
-    url: 'https://www.rustore.ru/catalog/app/app.ordina.messenger',
-    isPrimary: false,
-    tag: 'Маркет'
-  },
-  {
-    id: 'telegram',
-    title: 'Telegram-канал с APK файлами',
-    description: 'Свежие тестовые сборки и APK файлы прямо в мессенджере',
-    url: 'https://t.me/ordina_mesh_official',
-    isPrimary: false,
-    tag: 'Канал'
-  },
-  {
-    id: 'github',
-    title: 'GitHub Releases Mirror',
-    description: 'Исходный код и скомпилированные APK для разработчиков',
-    url: 'https://github.com/ordina-mesh/ordina-releases/releases/latest',
-    isPrimary: false,
-    tag: 'Зеркало'
-  }
-];
+// GitHub repository and distribution URLs (fully accessible in Russia without VPN)
+export const GITHUB_REPO_URL = 'https://github.com/ordinalyzm/Ordina';
+export const GITHUB_RELEASES_URL = 'https://github.com/ordinalyzm/Ordina/releases/latest';
 
 export const ShareAppModal: React.FC<ShareAppModalProps> = ({
   isOpen,
@@ -62,30 +27,40 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadCompleted, setDownloadCompleted] = useState(false);
+  const [releaseInfo, setReleaseInfo] = useState<{ version: string; apkUrl: string } | null>(null);
 
-  // Compute the best publicly reachable URL (preventing localhost from breaking on peer devices)
-  const getPublicAppUrl = (): string => {
-    if (appUrl && !appUrl.includes('localhost') && !appUrl.includes('127.0.0.1') && !appUrl.includes('capacitor://')) {
-      return appUrl;
+  useEffect(() => {
+    if (isOpen) {
+      // Fetch latest release metadata from server / github
+      fetch('/api/github/latest-release')
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.version) {
+            setReleaseInfo({
+              version: data.version,
+              apkUrl: data.apkUrl || GITHUB_RELEASES_URL
+            });
+          }
+        })
+        .catch(() => {
+          setReleaseInfo({
+            version: 'v2.6.4',
+            apkUrl: GITHUB_RELEASES_URL
+          });
+        });
     }
-    if (typeof window !== 'undefined') {
-      const origin = window.location.origin;
-      if (origin && !origin.includes('localhost') && !origin.includes('127.0.0.1') && !origin.includes('capacitor://')) {
-        return origin;
-      }
-    }
-    return PUBLIC_PRODUCTION_URL;
-  };
+  }, [isOpen]);
 
-  const targetUrl = getPublicAppUrl();
-  const directApkUrl = `${targetUrl}/download/ordina-latest.apk`;
-  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(targetUrl)}&bgcolor=000000&color=f59e0b&margin=10`;
+  // Primary sharing link for Russia / CIS without VPN
+  const shareTargetUrl = GITHUB_REPO_URL;
+  const directApkDownloadUrl = releaseInfo?.apkUrl || '/api/download-apk';
+  const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(shareTargetUrl)}&bgcolor=000000&color=f59e0b&margin=10`;
 
   if (!isOpen) return null;
 
   const handleCopyLink = async (customUrl?: string) => {
     try {
-      await navigator.clipboard.writeText(customUrl || targetUrl);
+      await navigator.clipboard.writeText(customUrl || shareTargetUrl);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (_) {}
@@ -95,17 +70,17 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Ордина — Мессенджер свободы и автономной связи',
-          text: 'Скачай защищенный мессенджер Ордина с поддержкой офлайн Mesh-сетей без интернета и VPN. Чем больше людей с Ординой, тем лучше связь вокруг!',
-          url: targetUrl,
+          title: 'Ордина — Защищенный мессенджер с автономной связью',
+          text: 'Скачай защищенный мессенджер Ордина с поддержкой офлайн Mesh-сетей без интернета и VPN: ' + shareTargetUrl,
+          url: shareTargetUrl,
         });
       } catch (_) {}
     } else {
-      handleCopyLink();
+      handleCopyLink(shareTargetUrl);
     }
   };
 
-  // In-app direct APK downloader & self-install trigger (VK/Telegram style)
+  // Direct APK download action
   const handleStartInAppApkDownload = () => {
     if (isDownloading) return;
     setIsDownloading(true);
@@ -114,7 +89,7 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
 
     let current = 0;
     const interval = setInterval(() => {
-      current += Math.floor(Math.random() * 15) + 10;
+      current += Math.floor(Math.random() * 20) + 15;
       if (current >= 100) {
         current = 100;
         clearInterval(interval);
@@ -122,21 +97,22 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
         setDownloadCompleted(true);
         setIsDownloading(false);
 
-        // Trigger native download/intent
+        // Trigger download
         try {
           const a = document.createElement('a');
-          a.href = directApkUrl;
-          a.download = 'Ordina-Mesh-v2.6.4.apk';
+          a.href = directApkDownloadUrl;
+          a.target = '_blank';
+          a.download = 'Ordina-Mesh.apk';
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
         } catch (e) {
-          window.location.href = directApkUrl;
+          window.location.href = directApkDownloadUrl;
         }
       } else {
         setDownloadProgress(current);
       }
-    }, 180);
+    }, 120);
   };
 
   return (
@@ -159,8 +135,8 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                 <ArrowDownToLine size={20} />
               </div>
               <div>
-                <h2 className="text-base font-bold text-white">Установка и раздача «Ордины»</h2>
-                <p className="text-xs text-amber-400 font-mono">Прямая загрузка APK без VPN</p>
+                <h2 className="text-base font-bold text-white">Установка и распространение</h2>
+                <p className="text-xs text-amber-400 font-mono">Прямой доступ в РФ без VPN</p>
               </div>
             </div>
             <button
@@ -219,15 +195,15 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
               </div>
               <div className="text-xs space-y-1">
                 <p className="font-bold text-amber-300">
-                  Чем больше людей с «Ординой» — тем мощнее Mesh-сеть без интернета!
+                  Чем больше людей с «Ординой» — тем надежнее Mesh-связь без интернета!
                 </p>
                 <p className="text-zinc-300 leading-relaxed text-[11px]">
-                  Каждый установленный смартфон работает автономным радио-ретранслятором. Связь пересылается по цепочке без сотовых вышек и провайдеров.
+                  Каждый установленный смартфон становится автономным P2P-узлом. Сообщения передаются по радио-цепочке напрямую.
                 </p>
               </div>
             </div>
 
-            {/* TAB 1: Direct In-App APK Download (VK / RuStore Style) */}
+            {/* TAB 1: Direct APK Download via GitHub Releases / Server */}
             {activeTab === 'apk_download' && (
               <div className="space-y-3.5">
                 <div className="p-4 bg-zinc-950 rounded-2xl border border-zinc-800 space-y-3">
@@ -237,8 +213,8 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                         APK
                       </div>
                       <div>
-                        <h4 className="text-sm font-bold text-white">Ordina Mesh v2.6.4 Release</h4>
-                        <p className="text-[11px] text-zinc-400">Android 7.0+ (ARM64 / v7a) • Прямой файл</p>
+                        <h4 className="text-sm font-bold text-white">Ordina Mesh {releaseInfo?.version || 'v2.6.4'}</h4>
+                        <p className="text-[11px] text-zinc-400">Android 7.0+ (ARM64 / v7a) • Прямой билд</p>
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">
@@ -251,7 +227,7 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                     <div className="space-y-2 pt-1">
                       <div className="flex justify-between text-xs text-zinc-300">
                         <span className="flex items-center gap-1.5 text-amber-400">
-                          <RefreshCw size={12} className="animate-spin" /> Загрузка APK пакета...
+                          <RefreshCw size={12} className="animate-spin" /> Получение актуального файла...
                         </span>
                         <span className="font-mono">{downloadProgress}%</span>
                       </div>
@@ -281,50 +257,70 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                       className="w-full py-3.5 px-4 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-black font-extrabold rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-all text-sm"
                     >
                       <Download size={18} />
-                      <span>Скачать и установить APK прямо сейчас</span>
+                      <span>Скачать актуальный APK прямо сейчас</span>
                     </button>
                   )}
 
                   <p className="text-[11px] text-zinc-400 leading-normal">
-                    💡 Как в VK и Telegram: приложение скачивает установочный пакет напрямую без сторонних магазинов и блокировок Google Play.
+                    💡 Приложение загружает установочный файл напрямую с репозитория без блокировок и без необходимости включать VPN.
                   </p>
                 </div>
 
-                {/* Additional Mirrors */}
+                {/* GitHub Releases & Source Link */}
                 <div className="space-y-2">
-                  <p className="text-xs font-bold text-zinc-300 px-1">Альтернативные зеркала и маркеты:</p>
+                  <p className="text-xs font-bold text-zinc-300 px-1">Официальные источники без VPN:</p>
                   <div className="grid grid-cols-1 gap-2">
-                    {APK_DOWNLOAD_MIRRORS.filter(m => m.id !== 'direct').map((mirror) => (
-                      <a
-                        key={mirror.id}
-                        href={mirror.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="p-3 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 hover:border-amber-500/40 rounded-xl flex items-center justify-between transition-all group"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className="w-7 h-7 rounded-lg bg-zinc-900 text-zinc-300 group-hover:text-amber-400 flex items-center justify-center">
-                            <Globe size={14} />
-                          </div>
-                          <div>
-                            <div className="text-xs font-bold text-zinc-200 group-hover:text-white flex items-center gap-1.5">
-                              {mirror.title}
-                              <span className="px-1.5 py-0.2 bg-zinc-800 text-zinc-400 text-[9px] rounded">
-                                {mirror.tag}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-zinc-400">{mirror.description}</p>
-                          </div>
+                    <a
+                      href={GITHUB_RELEASES_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-3.5 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 hover:border-amber-500/40 rounded-xl flex items-center justify-between transition-all group"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-zinc-900 text-zinc-300 group-hover:text-amber-400 flex items-center justify-center">
+                          <Github size={16} />
                         </div>
-                        <ExternalLink size={14} className="text-zinc-500 group-hover:text-amber-400 shrink-0" />
-                      </a>
-                    ))}
+                        <div>
+                          <div className="text-xs font-bold text-zinc-200 group-hover:text-white flex items-center gap-1.5">
+                            GitHub Releases (Релизы Ordina)
+                            <span className="px-1.5 py-0.2 bg-emerald-500/20 text-emerald-400 text-[9px] font-bold rounded">
+                              Прямой файл
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 font-mono">github.com/ordinalyzm/Ordina/releases</p>
+                        </div>
+                      </div>
+                      <ExternalLink size={14} className="text-zinc-500 group-hover:text-amber-400 shrink-0" />
+                    </a>
+
+                    <a
+                      href={GITHUB_REPO_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="p-3.5 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 hover:border-amber-500/40 rounded-xl flex items-center justify-between transition-all group"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-8 h-8 rounded-lg bg-zinc-900 text-zinc-300 group-hover:text-amber-400 flex items-center justify-center">
+                          <Globe size={16} />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-zinc-200 group-hover:text-white flex items-center gap-1.5">
+                            Страница проекта Ordina
+                            <span className="px-1.5 py-0.2 bg-zinc-800 text-zinc-400 text-[9px] rounded">
+                              Open Source
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-400 font-mono">github.com/ordinalyzm/Ordina</p>
+                        </div>
+                      </div>
+                      <ExternalLink size={14} className="text-zinc-500 group-hover:text-amber-400 shrink-0" />
+                    </a>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* TAB 2: QR Code & Public Link */}
+            {/* TAB 2: QR Code & Non-VPN Share Link */}
             {activeTab === 'share' && (
               <div className="space-y-3.5">
                 <div className="flex flex-col items-center justify-center p-4 bg-zinc-950 rounded-2xl border border-zinc-800 text-center space-y-3">
@@ -339,10 +335,10 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                   <div className="space-y-1">
                     <p className="text-xs font-bold text-zinc-200 flex items-center justify-center gap-1.5">
                       <QrCode size={14} className="text-amber-400" />
-                      Наведите камеру смартфона для установки
+                      Наведите камеру смартфона для скачивания
                     </p>
                     <p className="text-[11px] text-zinc-400 max-w-xs leading-relaxed">
-                      Работает на любых смартфонах Android и iOS прямо через веб-интерфейс или как независимое PWA-приложение.
+                      Ссылка открывается напрямую в России без необходимости включать VPN.
                     </p>
                   </div>
                 </div>
@@ -352,11 +348,11 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                     <input 
                       type="text" 
                       readOnly 
-                      value={targetUrl} 
+                      value={shareTargetUrl} 
                       className="flex-1 bg-transparent px-3 py-1 text-xs text-amber-300 font-mono focus:outline-none truncate"
                     />
                     <button
-                      onClick={() => handleCopyLink(targetUrl)}
+                      onClick={() => handleCopyLink(shareTargetUrl)}
                       className="p-2.5 bg-zinc-900 hover:bg-zinc-800 text-zinc-200 rounded-xl transition-all flex items-center gap-1 text-xs font-bold shrink-0"
                     >
                       {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
@@ -392,17 +388,17 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                   <div className="space-y-2 text-xs text-zinc-300">
                     <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800/80 flex items-start gap-2">
                       <span className="font-bold text-amber-400 shrink-0">1.</span>
-                      <span>Сохраните APK файл на ваш телефон через вкладку «Скачать APK».</span>
+                      <span>Скачайте APK файл на смартфон через вкладку «Скачать APK».</span>
                     </div>
 
                     <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800/80 flex items-start gap-2">
                       <span className="font-bold text-amber-400 shrink-0">2.</span>
-                      <span>Передайте сохраненный файл <b>Ordina-Mesh.apk</b> через Bluetooth или точку доступа Wi-Fi Direct на телефон соседа.</span>
+                      <span>Отправьте сохраненный файл через Bluetooth, Quick Share или точку доступа на смартфон собеседника.</span>
                     </div>
 
                     <div className="p-2.5 bg-zinc-900/60 rounded-xl border border-zinc-800/80 flex items-start gap-2">
                       <span className="font-bold text-amber-400 shrink-0">3.</span>
-                      <span>После установки оба телефона моментально увидят друг друга на Mesh Радаре и смогут переписываться!</span>
+                      <span>После установки смартфоны сразу соединяются по Mesh Радару и могут обмениваться сообщениями без сотовой сети.</span>
                     </div>
                   </div>
 
@@ -411,7 +407,7 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                     className="w-full py-3 px-4 bg-zinc-900 hover:bg-zinc-800 border border-amber-500/40 text-amber-400 font-bold rounded-xl flex items-center justify-center gap-2 transition-all text-xs"
                   >
                     <Download size={14} />
-                    <span>Сохранить APK в память телефона</span>
+                    <span>Скачать APK для офлайн-раздачи</span>
                   </button>
                 </div>
               </div>
@@ -425,17 +421,17 @@ export const ShareAppModal: React.FC<ShareAppModalProps> = ({
                   <span>Bluetooth Mesh</span>
                 </div>
                 <p className="text-[10px] text-zinc-400">
-                  Прямая связь телефон-телефон без интернета
+                  Прямая связь смартфон-смартфон без интернета
                 </p>
               </div>
 
               <div className="p-3 bg-zinc-950 border border-zinc-900 rounded-xl space-y-1">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-200">
                   <Shield size={14} className="text-emerald-400" />
-                  <span>Без VPN и блокировок</span>
+                  <span>Без VPN в РФ</span>
                 </div>
                 <p className="text-[10px] text-zinc-400">
-                  Прямые зеркала и локальные протоколы
+                  Прямые зеркала и открытый репозиторий
                 </p>
               </div>
             </div>

@@ -6120,11 +6120,6 @@ function AppContent() {
                     </div>
                     
                     <div className="space-y-4">
-                      <div className="p-4 bg-slate-900 text-emerald-500 rounded-2xl font-mono text-[10px] break-all border border-emerald-900/30">
-                        <p className="text-emerald-700 mb-1 uppercase font-bold tracking-widest">Mesh Public Key (Identity)</p>
-                        {viewedProfile?.meshKey}
-                      </div>
-
                       <div className="flex items-center gap-4">
                         <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500">
                           <Shield size={20} />
@@ -6830,30 +6825,6 @@ function AppContent() {
                     </p>
                     <p className="text-xs text-slate-500">
                       Сообщить об ошибке или предложить идею с возможностью ответа
-                    </p>
-                  </div>
-                </button>
-
-                {/* Direct APK Download & In-App Auto-Updater trigger (VK / RuStore / Telegram style) */}
-                <button 
-                  onClick={() => {
-                    setShowSettings(false);
-                    setShowShareAppModal(true);
-                  }}
-                  className="w-full flex items-center gap-4 p-4 hover:bg-amber-50/80 rounded-2xl transition-all border border-amber-300/80 bg-gradient-to-r from-amber-50/40 to-amber-100/30 shadow-sm"
-                >
-                  <div className="w-10 h-10 rounded-xl bg-amber-500 text-black flex items-center justify-center font-bold shadow-md shadow-amber-500/20">
-                    <Download size={20} />
-                  </div>
-                  <div className="text-left flex-1">
-                    <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                      Скачать APK / Обновить
-                      <span className="text-[10px] font-extrabold px-2 py-0.5 bg-amber-500 text-black rounded-full">
-                        БЕЗ VPN
-                      </span>
-                    </p>
-                    <p className="text-xs text-slate-600">
-                      Прямая загрузка APK, авто-обновление и раздача приложения без интернета
                     </p>
                   </div>
                 </button>
