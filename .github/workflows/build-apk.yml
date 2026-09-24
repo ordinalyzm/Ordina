@@ -40,8 +40,13 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Sync Capacitor Android
-        run: npx cap sync android
+      - name: Ensure Android Project & Sync Capacitor
+        run: |
+          if [ ! -f "android/gradlew" ]; then
+            echo "Gradle wrapper not found, generating Android platform via Capacitor..."
+            npx cap add android --no-sync || true
+          fi
+          npx cap sync android
 
       - name: Build Android APK
         working-directory: ./android
@@ -54,6 +59,12 @@ jobs:
           mkdir -p build-output
           cp android/app/build/outputs/apk/debug/app-debug.apk build-output/Ordina-Mesh.apk
           cp android/app/build/outputs/apk/debug/app-debug.apk build-output/Ordina-latest.apk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ordina-apk
+          path: build-output/Ordina-Mesh.apk
 
       - name: Create / Update GitHub Release
         uses: softprops/action-gh-release@v2
