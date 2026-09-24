@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
-    "build": "vite build",
+    "build": "vite build && cap copy android",
     "lint": "tsc --noEmit",
     "start": "node server.ts"
   },
@@ -13,13 +13,15 @@
     "@capacitor-community/bluetooth-le": "^8.3.0",
     "@capacitor-community/sqlite": "^8.1.1",
     "@capacitor-firebase/authentication": "^8.5.2",
+    "@capacitor/android": "^8.4.1",
     "@capacitor/app": "^8.1.1",
     "@capacitor/browser": "^8.0.4",
-    "@capacitor/core": "^6.0.0",
+    "@capacitor/core": "^8.4.1",
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/preferences": "^8.0.1",
     "@capacitor/push-notifications": "^8.1.2",
     "@google/genai": "^2.24.0",
+    "@tailwindcss/vite": "^4.3.3",
     "capacitor-native-settings": "^8.2.0",
     "clsx": "^2.1.1",
     "cors": "^2.8.5",
@@ -42,6 +44,8 @@
     "uuid": "^9.0.1"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.2",
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.12.12",
@@ -52,7 +56,7 @@
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",
-    "tailwindcss": "^3.4.3",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.10.5",
     "typescript": "^5.4.5",
     "vite": "^5.2.11"

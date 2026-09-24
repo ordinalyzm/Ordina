@@ -93,18 +93,19 @@ export class MeshRouter {
   /** Обработка устройств, найденных эфирным сканером */
   private handleDiscoveredPeers(peers: DiscoveredPeer[]) {
     peers.forEach(peer => {
-      this.knownNodes.set(peer.id, {
-        id: peer.id,
-        displayName: peer.name || `Узел ${peer.id.slice(0, 5)}`,
+      const peerId = peer.uid || peer.id || peer.mac || 'unknown';
+      this.knownNodes.set(peerId, {
+        id: peerId,
+        displayName: peer.name || `Узел ${peerId.slice(0, 5)}`,
         status: 'active',
-        hops: peer.transport === 'ble' ? 1 : 1,
+        hops: peer.hops || 1,
         lastSeen: new Date(peer.lastSeen).toISOString(),
-        address: peer.ip,
+        address: peer.mac || peer.ip,
         rssi: peer.rssi
       });
 
       // При встрече с узлом — проверяем, не несем ли мы для него сообщения
-      this.deliverMulePacketsToPeer(peer.id);
+      this.deliverMulePacketsToPeer(peerId);
     });
 
     // Очистка устаревших узлов

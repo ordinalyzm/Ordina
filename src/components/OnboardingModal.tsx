@@ -171,40 +171,6 @@ const SLIDES = [
     )
   },
   {
-    id: 'legal_shield',
-    title: 'Правовой Щит Ordina',
-    subtitle: 'Локальная защита от случайных нарушений законов РФ',
-    icon: ShieldAlert,
-    color: 'from-rose-600 to-amber-600',
-    accentColor: 'text-rose-500',
-    bgBadge: 'bg-rose-500/10 text-rose-600',
-    content: (
-      <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
-        <div className="p-3 bg-rose-50/80 border border-rose-200/80 rounded-2xl flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-rose-600/20 font-bold">
-            <ShieldAlert size={20} />
-          </div>
-          <div className="text-xs text-rose-950">
-            <strong className="block text-slate-900 font-bold">Безопасность вашего общения</strong>
-            Правовой советник анализирует набираемый текст на предмет риска нарушения статей УК и КоАП РФ (оскорбления, брань, клевета, доксинг, экстремизм).
-          </div>
-        </div>
-
-        <div className="p-3 bg-slate-50 border border-slate-200 rounded-2xl space-y-1.5">
-          <div className="font-bold text-slate-800 flex items-center gap-1.5">
-            <ShieldCheck className="w-4 h-4 text-emerald-600" /> 100% Локально и Приватно:
-          </div>
-          <p className="text-slate-600">
-            Сканирование происходит исключительно на вашем устройстве в реальном времени. Набранный текст <strong>никогда и никуда не отправляется</strong> на внешние серверы.
-          </p>
-          <p className="text-slate-500 text-[11px]">
-            Вы всегда можете отключить или включить этот режим в Меню ➔ Настройки ➔ «Правовой щит РФ».
-          </p>
-        </div>
-      </div>
-    )
-  },
-  {
     id: 'bots_export',
     title: 'Конструктор Ботов и Telegram',
     subtitle: 'Создание, перенос и экспорт готового кода',

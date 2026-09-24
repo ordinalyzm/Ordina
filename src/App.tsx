@@ -96,7 +96,7 @@ import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { ReportModal } from './components/ReportModal';
 import { ModerationModal } from './components/ModerationModal';
 import { PinnedMessageBanner } from './components/PinnedMessageBanner';
-import { LegalShieldInputWarning, LegalShieldMessageBadge } from './components/LegalShieldBadge';
+import { BugReportModal } from './components/BugReportModal';
 import { MeshRouter } from './utils/meshRouter';
 
 function cn(...inputs: ClassValue[]) {
@@ -2077,6 +2077,82 @@ function AppContent() {
     addToast('Жалоба передана в службу безопасности Ордины', 'success');
   };
 
+  const handleBugReportSubmit = async (data: {
+    type: 'bug' | 'suggestion';
+    title: string;
+    description: string;
+    contact?: string;
+  }) => {
+    if (!user) return;
+    const reportPayload = {
+      id: `bug_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      type: data.type,
+      title: data.title,
+      description: data.description,
+      contact: data.contact,
+      userId: user.uid,
+      userName: profile?.displayName || user.displayName || 'Пользователь',
+      userEmail: user.email || '',
+      createdAt: new Date().toISOString(),
+      status: 'pending'
+    };
+
+    const adminUser = users.find(u => u.email === 'ordinalyzm25@gmail.com' || u.username === 'MEGAKPYIIIuTeJIb');
+    const targetUid = adminUser?.uid || 'le6qifgHZsV99qTBzSe3VZpYVlE2';
+    const supportChatId = [user.uid, targetUid].sort().join('_');
+
+    const formattedMsg = `${data.type === 'bug' ? '🐛 [БАГ-РЕПОРТ]' : '💡 [ПРЕДЛОЖЕНИЕ]'}\n\n📌 Тема: ${data.title}\n\n📝 Описание:\n${data.description}${data.contact ? `\n\n📞 Контакты: ${data.contact}` : ''}`;
+
+    if (socket && socket.connected) {
+      socket.emit('chat:message', {
+        id: reportPayload.id,
+        chatId: supportChatId,
+        senderId: user.uid,
+        senderName: profile?.displayName || user.displayName || 'Пользователь',
+        receiverId: targetUid,
+        text: formattedMsg,
+        content: formattedMsg,
+        createdAt: reportPayload.createdAt,
+        type: 'text'
+      });
+      socket.emit('report:create', {
+        targetType: 'user',
+        targetId: targetUid,
+        targetName: 'Администрация (Баги и предложения)',
+        chatId: supportChatId,
+        reasonCategory: data.type === 'bug' ? 'bug_report' : 'suggestion',
+        reasonCategoryTitle: data.type === 'bug' ? 'Баг-репорт' : 'Предложение',
+        description: `${data.title}: ${data.description}`,
+        reporterId: user.uid,
+        reporterName: profile?.displayName || user.displayName || 'Пользователь'
+      });
+    }
+
+    await saveMessage({
+      id: reportPayload.id,
+      chatId: supportChatId,
+      senderId: user.uid,
+      senderName: profile?.displayName || user.displayName || 'Пользователь',
+      receiverId: targetUid,
+      text: formattedMsg,
+      content: formattedMsg,
+      createdAt: reportPayload.createdAt,
+      type: 'text',
+      status: 'sent',
+      deliveryStatus: 'sent'
+    } as any);
+
+    if (!(profile?.activeChats || []).includes(targetUid)) {
+      const newActive = [...(profile?.activeChats || []), targetUid];
+      setProfile(p => p ? { ...p, activeChats: newActive } : null);
+      if (socket && socket.connected) {
+        socket.emit('profile:update', { uid: user.uid, profile: { activeChats: newActive } });
+      }
+    }
+
+    addToast('Обращение отправлено админу! Ответ поступит в чат.', 'success');
+  };
+
   const handleModerationAction = (actionData: any) => {
     if (!user) return;
     socket?.emit('moderation:action', {
@@ -2484,10 +2560,7 @@ function AppContent() {
   const [showNotificationSettingsModal, setShowNotificationSettingsModal] = useState(false);
   const [showMeshInspectorModal, setShowMeshInspectorModal] = useState(false);
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
-  const [legalShieldEnabled, setLegalShieldEnabled] = useState<boolean>(() => {
-    const val = localStorage.getItem('ordina_legal_shield_enabled');
-    return val !== null ? val === 'true' : true;
-  });
+  const [showBugReportModal, setShowBugReportModal] = useState(false);
 
   // First-launch welcome onboarding guide immediately upon login
   useEffect(() => {
@@ -4287,14 +4360,12 @@ function AppContent() {
     }
     if (!user || !selectedChat) return;
     try {
-      const speechText = transcribedSpeechRef.current.trim();
       const newMessage: any = {
         id: createMessageId(user.uid, Date.now()),
         senderId: user.uid,
         text: '🎤 Голосовое сообщение',
         type: 'audio',
         fileUrl: base64Audio,
-        subtitles: speechText || undefined,
         duration: durationInSecs || recordingTime || 1,
         createdAt: new Date().toISOString(),
         isEncrypted: false,
@@ -5405,6 +5476,13 @@ function AppContent() {
 
               <div className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-4">Каналы и Группы</div>
               {Array.from(new Map(groups.map(g => [g.id, g])).values())
+                .filter(g => 
+                  g.id === 'global_channel' || 
+                  g.ownerId === user?.uid || 
+                  (g.members || []).includes(user?.uid || '') || 
+                  (profile?.activeChats || []).includes(g.id) ||
+                  Boolean(lastMessages[g.id])
+                )
                 .sort((a, b) => {
                   if (a.id === 'global_channel') return -1;
                   if (b.id === 'global_channel') return 1;
@@ -6633,42 +6711,29 @@ function AppContent() {
                   </div>
                 </button>
 
-                {/* Legal Shield (Anti-Violation assistant) */}
-                <div className="w-full flex items-center justify-between gap-4 p-4 rounded-2xl transition-all border border-slate-200/80 bg-white shadow-2xs">
-                  <div className="flex items-center gap-4 flex-1">
-                    <div className={cn(
-                      "w-10 h-10 rounded-xl flex items-center justify-center shadow-xs transition-colors shrink-0",
-                      legalShieldEnabled ? "bg-rose-500 text-white shadow-rose-500/20" : "bg-slate-100 text-slate-400"
-                    )}>
-                      <ShieldAlert size={20} />
-                    </div>
-                    <div className="text-left flex-1 min-w-0">
-                      <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
-                        Правовой щит РФ
-                        <span className="text-[10px] font-semibold px-2 py-0.5 bg-rose-50 text-rose-600 rounded-full border border-rose-200">
-                          100% Локально
-                        </span>
-                      </p>
-                      <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                        Помощник «Соучастник»: предупреждает о риске нарушения законов РФ (ст. 205.2, 228, 159 УК РФ) при наборе и в сообщениях. Текст никуда не отправляется.
-                      </p>
-                    </div>
+                {/* Bugs and Suggestions Modal trigger */}
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowBugReportModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-amber-50/70 rounded-2xl transition-all border border-amber-200/60 bg-amber-50/20"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                    <Sparkles size={20} />
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                    <input 
-                      type="checkbox" 
-                      checked={legalShieldEnabled} 
-                      onChange={(e) => {
-                        const newVal = e.target.checked;
-                        setLegalShieldEnabled(newVal);
-                        localStorage.setItem('ordina_legal_shield_enabled', String(newVal));
-                        addToast(newVal ? 'Правовой щит включен: анализ рисков активен' : 'Правовой щит отключен', 'info');
-                      }} 
-                      className="sr-only peer" 
-                    />
-                    <div className="w-11 h-6 bg-slate-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-rose-600"></div>
-                  </label>
-                </div>
+                  <div className="text-left flex-1">
+                    <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      Баги и предложения
+                      <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-500 text-white rounded-full">
+                        СВЯЗЬ С АДМИНОМ
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Сообщить об ошибке или предложить идею с возможностью ответа
+                    </p>
+                  </div>
+                </button>
 
                 {isUserModerator && (
                   <button 
@@ -6722,7 +6787,7 @@ function AppContent() {
                   </div>
                   <div className="text-left">
                     <p className="font-bold text-sm">Обратная связь</p>
-                    <p className="text-xs text-slate-500">Написать разработчику</p>
+                    <p className="text-xs text-slate-500">Написать разработчику (письмо на Gmail: ordinalyzm25@gmail.com)</p>
                   </div>
                 </a>
 
@@ -8463,7 +8528,6 @@ function AppContent() {
                             )}>
                               {formatMessageText(msg.text || msg.content || '', showChatSearch ? chatSearchQuery : undefined)}
                             </p>
-                            {legalShieldEnabled && <LegalShieldMessageBadge text={msg.text || msg.content || ''} />}
                           </>
                         )}
 
@@ -8492,7 +8556,6 @@ function AppContent() {
                             <p className="text-sm leading-relaxed italic text-blue-200/80 flex items-center gap-2 whitespace-pre-wrap break-words">
                               <Shield size={12} className="shrink-0" /> {formatMessageText(decryptMessage(msg.text), showChatSearch ? chatSearchQuery : undefined)}
                             </p>
-                            {legalShieldEnabled && <LegalShieldMessageBadge text={decryptMessage(msg.text)} />}
                           </>
                         )}
 
@@ -9129,22 +9192,6 @@ function AppContent() {
                   </button>
                 )}
 
-                {contextMenu.msg.type === 'audio' && (
-                  <button 
-                    onClick={() => {
-                      const msgEl = document.getElementById(`msg-${contextMenu.msg.id}`);
-                      if (msgEl) {
-                        const subBtn = msgEl.querySelector('button[title*="Субтитры"]') as HTMLButtonElement;
-                        if (subBtn) subBtn.click();
-                      }
-                      setContextMenu(null);
-                    }}
-                    className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
-                  >
-                    <Subtitles size={16} className="text-blue-500" /> Субтитры (Распознать)
-                  </button>
-                )}
-
                 {/* Edit text - strictly disallowed for voice, stickers, images, and files */}
                 {contextMenu.msg.senderId === user?.uid && (!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
                   <button 
@@ -9478,9 +9525,6 @@ function AppContent() {
                       </motion.div>
                     )}
                     </AnimatePresence>
-
-                    {/* Legal Shield Live Keyboard / Input Assistant */}
-                    <LegalShieldInputWarning text={inputText} enabled={legalShieldEnabled} />
 
                     <form onSubmit={handleSendMessage} className="flex items-end gap-2 min-w-0 px-2 pb-2">
                       <div 
@@ -10400,6 +10444,14 @@ function AppContent() {
         onAction={handleModerationAction}
         onAssignModerator={handleAssignModerator}
         onRefreshReports={() => socket?.emit('reports:get', { userId: user?.uid })}
+      />
+
+      {/* Bug & Suggestion Direct Admin Contact Modal */}
+      <BugReportModal
+        isOpen={showBugReportModal}
+        onClose={() => setShowBugReportModal(false)}
+        currentUser={user ? { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Пользователь', email: user.email || '' } : null}
+        onSubmit={handleBugReportSubmit}
       />
 
       {/* Highest priority Toasts container on top of all modals and overlays */}

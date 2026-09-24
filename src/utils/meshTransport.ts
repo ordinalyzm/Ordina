@@ -2,16 +2,17 @@
 import { BleClient, numbersToDataView } from '@capacitor-community/bluetooth-le';
 import { Capacitor } from '@capacitor/core';
 import { Preferences } from '@capacitor/preferences';
-import type { MeshPacket, PeerNode, DiscoveredPeer } from '../types/mesh';
-import { saveMessage, markMessagesAsReadInDb } from './localCache';
+import { MeshPacket, PeerNode } from '../types/mesh';
+import { Message } from '../types';
+import { saveMessage } from './localCache';
 
 export const ORDINA_SERVICE = '0000ffe0-0000-1000-8000-00805f9b34fb';
 export const ORDINA_CHAR    = '0000ffe1-0000-1000-8000-00805f9b34fb';
 
-export type { MeshPacket, PeerNode, DiscoveredPeer };
+export type DiscoveredPeer = PeerNode;
 
 export class MeshTransport {
-  public static peers: Map<string, PeerNode> = new Map(); // UID -> PeerNode
+  public static peers: Map<string, PeerNode> = new Map();
   public static uidToMac: Map<string, string> = new Map();
   
   private static myUid: string = '';
@@ -19,56 +20,43 @@ export class MeshTransport {
   private static socketRef: any = null;
   private static onPeersChanged: ((peers: PeerNode[]) => void) | null = null;
   
-  // Кэш дедупликации (1000 последних ID сообщений)
+  // Кэш дедупликации (защита от зацикливания)
   private static seenPackets: Set<string> = new Set();
-  // Почтовая сумка «Почтальона» (Store-and-Forward Outbox в памяти и БД)
+  // Сумка «Почтальона» (Store-and-Forward)
   private static postmanBag: Map<string, MeshPacket> = new Map();
+  // Очередь BLE операций (защита от GATT 133)
   private static bleQueue: Promise<any> = Promise.resolve();
 
-  public static setMyUid(uid: string, name?: string) {
+  public static setMyUid(uid: string) {
     this.myUid = uid;
+  }
+
+  public static async startOmniListening(uid?: string, name?: string) {
+    if (uid) this.myUid = uid;
     if (name) this.myName = name;
-    this.init(uid, this.myName, this.socketRef);
+    await this.startDiscovery();
   }
 
-  public static setSocket(socket: any) {
+  public static async init(myUid: string, myName: string, socket?: any) {
+    if (!Capacitor.isNativePlatform()) return;
+    this.myUid = myUid;
+    this.myName = myName || 'Странник';
     this.socketRef = socket;
-    if (this.socketRef) {
-      this.socketRef.off('mesh:cloud_bridge');
-      this.socketRef.on('mesh:cloud_bridge', (packet: MeshPacket) => {
-        console.log('[Bridge] Прилетел пакет из интернета для сброса в локальный BLE Mesh!');
-        this.handleIncomingPacket(packet);
-      });
-    }
-  }
 
-  public static async init(myUid: string, myName?: string, socket?: any) {
-    if (myUid) this.myUid = myUid;
-    if (myName) this.myName = myName;
-    if (socket) this.socketRef = socket;
+    await Preferences.set({ key: 'last_auth_uid', value: myUid });
+    await Preferences.set({ key: 'last_auth_name', value: this.myName });
 
-    try {
-      if (myUid) {
-        await Preferences.set({ key: 'last_auth_uid', value: myUid }).catch(() => {});
-        localStorage.setItem('last_auth_uid', myUid);
+    // Прием пакетов из Java
+    window.addEventListener('mesh:incoming_raw', async (event: any) => {
+      const packet: MeshPacket = event.detail;
+      if (packet && packet.id) {
+        await this.handleIncomingPacket(packet);
       }
-      if (this.myName) {
-        await Preferences.set({ key: 'last_auth_name', value: this.myName }).catch(() => {});
-        localStorage.setItem('last_auth_name', this.myName);
-      }
-    } catch (_) {}
+    });
 
-    // Слушатель входящих пакетов из радиоэфира (Android BLE / Custom Plugin)
-    if (typeof window !== 'undefined') {
-      window.removeEventListener('mesh:incoming_raw', this.onRawEvent);
-      window.addEventListener('mesh:incoming_raw', this.onRawEvent);
-    }
-
-    // Слушатель транзитных пакетов из интернета (для шлюза BLE ↔ Облако)
+    // Прием пакетов от интернет-шлюза (Гибридный мост)
     if (this.socketRef) {
-      this.socketRef.off('mesh:cloud_bridge');
       this.socketRef.on('mesh:cloud_bridge', (packet: MeshPacket) => {
-        console.log('[Bridge] Прилетел пакет из интернета для сброса в локальный BLE Mesh!');
         this.handleIncomingPacket(packet);
       });
     }
@@ -76,40 +64,10 @@ export class MeshTransport {
     await this.startDiscovery();
   }
 
-  private static onRawEvent = async (event: any) => {
-    try {
-      const raw = event.detail?.raw !== undefined ? event.detail.raw : event.detail;
-      const packet: MeshPacket = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      if (packet && packet.id) {
-        await MeshTransport.handleIncomingPacket(packet);
-      }
-    } catch (e) {
-      console.error('[Mesh] Ошибка парсинга пакета:', e);
-    }
-  };
-
-  public static async startOmniListening(uid: string, myName: string = 'User', socket?: any) {
-    await this.init(uid, myName, socket);
-  }
-
   public static setOnPeersChanged(cb: (peers: PeerNode[]) => void) {
     this.onPeersChanged = cb;
   }
 
-  public static getPeers(): PeerNode[] {
-    return Array.from(this.peers.values());
-  }
-
-  public static async resolvePeerUid(mac: string): Promise<string> {
-    for (const [uid, m] of this.uidToMac.entries()) {
-      if (m === mac) return uid;
-    }
-    return mac;
-  }
-
-  /**
-   * Сканирование радиоэфира
-   */
   public static async startDiscovery() {
     if (!Capacitor.isNativePlatform()) return;
     try {
@@ -117,59 +75,46 @@ export class MeshTransport {
       try { await BleClient.stopLEScan(); } catch (_) {}
 
       await BleClient.requestLEScan(
-        {
-          services: [ORDINA_SERVICE],
-          allowDuplicates: false
-        },
+        { services: [ORDINA_SERVICE], allowDuplicates: false },
         async (result) => {
           const mac = result.device?.deviceId;
-          if (!mac) return;
-
-          // Разрешаем визитку соседа (рукопожатие строго по очереди)
-          this.queueHandshake(mac);
+          if (mac) this.queueHandshake(mac);
         }
       );
     } catch (e) {
-      console.error('[Mesh] Ошибка BLE сканера:', e);
+      console.error('[Mesh] BLE Scan error:', e);
     }
-  }
-
-  private static async connectWithTimeout(mac: string, timeoutMs: number = 3500): Promise<void> {
-    return Promise.race([
-      BleClient.connect(mac),
-      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('BLE Timeout')), timeoutMs))
-    ]);
   }
 
   private static queueHandshake(mac: string) {
     this.bleQueue = this.bleQueue.then(async () => {
       try {
-        await this.connectWithTimeout(mac, 3500);
+        await BleClient.connect(mac);
         const dataView = await BleClient.read(mac, ORDINA_SERVICE, ORDINA_CHAR);
         await BleClient.disconnect(mac);
 
-        const text = new TextDecoder().decode(new Uint8Array(dataView.buffer)).trim();
-        const info = JSON.parse(text); // { uid, name }
+        const text = new TextDecoder().decode(dataView.buffer).trim();
+        const info = JSON.parse(text);
 
         if (info.uid && info.uid !== this.myUid) {
           const node: PeerNode = {
             uid: info.uid,
-            id: info.uid,
             mac: mac,
             name: info.name || `Ордина [${info.uid.slice(0, 4)}]`,
-            hops: 1, // Прямой сосед
-            lastSeen: Date.now(),
-            isResolved: true
+            hops: 1, // Прямой радиососед
+            lastSeen: Date.now()
           };
 
           this.peers.set(info.uid, node);
           this.uidToMac.set(info.uid, mac);
           this.notifyPeers();
 
-          // РЕЖИМ ПОЧТАЛЬОНА: Проверяем, нет ли писем для этого узла в сумке
+          // Почтальон сбрасывает письма при встрече узла
           this.flushPostmanBag(info.uid, mac);
         }
-      } catch (_) {}
+      } catch (_) {
+        // Ошибка подключения (узел вне зоны или занят)
+      }
     });
   }
 
@@ -180,80 +125,134 @@ export class MeshTransport {
   }
 
   /**
-   * Главный конвейер приёма, распаковки, обработки квитанций и ретрансляции
+   * Отправка сообщения в Mesh
    */
-  public static async handleIncomingPacket(packet: MeshPacket) {
-    // 1. Защита от лавинного шторма: игнорируем уже виденные пакеты
-    if (this.seenPackets.has(packet.id)) return;
-    if (this.seenPackets.size > 1000) {
-      const oldest = this.seenPackets.keys().next().value;
-      if (oldest) this.seenPackets.delete(oldest);
-    }
+  public static async sendMessage(
+    targetUid: string | undefined,
+    groupId: string | undefined,
+    text: string,
+    chatId: string
+  ): Promise<MeshPacket> {
+    const packet: MeshPacket = {
+      id: `mesh_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      senderId: this.myUid,
+      senderName: this.myName,
+      receiverId: targetUid,
+      groupId: groupId,
+      chatId: chatId,
+      encryptedPayload: this.encryptPayload(text),
+      hops: 0,
+      maxHops: 7,
+      createdAt: new Date().toISOString()
+    };
+
     this.seenPackets.add(packet.id);
 
-    // 2. ОБРАБОТКА ПОДТВЕРЖДЕНИЯ ПРОЧТЕНИЯ (ack_read)
-    if (packet.type === 'ack_read') {
-      if (packet.readMessageIds && packet.readMessageIds.length > 0) {
-        console.log(`[Mesh ACK] Получено подтверждение прочтения для сообщений:`, packet.readMessageIds);
-        await markMessagesAsReadInDb(packet.readMessageIds);
-        window.dispatchEvent(new CustomEvent('ordinamsg:read', { 
-          detail: { 
-            messageIds: packet.readMessageIds,
-            chatId: packet.chatId,
-            readBy: packet.senderId
-          } 
-        }));
-      }
-
-      // Если квитанция адресована нам лично — миссия завершена
-      if (packet.receiverId === this.myUid) {
-        return;
-      }
+    // 1. Попытка прямой отправки, если адресат рядом
+    if (targetUid && this.uidToMac.has(targetUid)) {
+      const mac = this.uidToMac.get(targetUid)!;
+      const sent = await this.writeGatt(mac, packet);
+      if (sent) return packet;
     }
 
-    // 3. ГРУППОВОЙ ЧАТ (Multicast Flooding в groupId)
-    if (packet.groupId) {
-      console.log(`[Mesh Group] Пакет группы ${packet.groupId} от ${packet.senderName}`);
-      
-      // Расшифровываем и сохраняем локально, если мы состоим в группе или это текстовое сообщение
-      if (packet.type === 'text' || !packet.type) {
-        const decryptedText = this.decryptPayload(packet.encryptedPayload || (packet as any).text || '');
-        const normalized = {
-          id: packet.id,
-          chatId: packet.groupId,
-          groupId: packet.groupId,
-          senderId: packet.senderId,
-          senderName: packet.senderName,
-          text: decryptedText,
-          content: decryptedText,
-          type: 'text' as const,
-          createdAt: packet.createdAt,
-          deliveryStatus: 'delivered' as const,
-          isMesh: true,
-          hops: packet.hops
-        };
+    // 2. Если прямой контакт не удался - кладем в сумку Почтальона
+    this.postmanBag.set(packet.id, packet);
 
-        await saveMessage(normalized);
-        window.dispatchEvent(new CustomEvent('ordinamsg:new', { detail: normalized }));
+    // 3. Рассылаем радиоволной всем доступным соседям
+    await this.broadcastToNeighbors(packet);
+
+    return packet;
+  }
+
+  public static async sendMeshMessage(
+    targetUidOrGroupId: string,
+    message: any,
+    isGroup: boolean = false
+  ) {
+    const text = message.text || message.content || '';
+    const targetUid = isGroup ? undefined : targetUidOrGroupId;
+    const groupId = isGroup ? targetUidOrGroupId : undefined;
+    return this.sendMessage(targetUid, groupId, text, message.chatId || targetUidOrGroupId);
+  }
+
+  public static async sendDirectMessage(peerId: string, packetData: any) {
+    const packet: MeshPacket = {
+      id: packetData.id || `mesh_${Date.now()}`,
+      senderId: packetData.senderId || this.myUid,
+      senderName: packetData.senderName || this.myName,
+      receiverId: packetData.receiverId || peerId,
+      chatId: packetData.chatId || [this.myUid, peerId].sort().join('_'),
+      encryptedPayload: this.encryptPayload(packetData.text || packetData.content || ''),
+      hops: 0,
+      maxHops: 5,
+      createdAt: packetData.createdAt || new Date().toISOString()
+    };
+    return this.sendMessage(peerId, undefined, packetData.text || packetData.content || '', packet.chatId);
+  }
+
+  /**
+   * Обработка любого входящего пакета (из Java, по BLE или через Мост)
+   */
+  public static async handleIncomingPacket(packet: MeshPacket) {
+    if (!packet || !packet.id) return;
+
+    // Дедупликация: игнорируем уже виденные пакеты
+    if (this.seenPackets.has(packet.id)) return;
+    this.seenPackets.add(packet.id);
+
+    // Увеличиваем счетчик прыжков
+    packet.hops = (packet.hops || 0) + 1;
+    if (packet.hops > (packet.maxHops || 7)) return;
+
+    // СЛУЧАЙ 1: Это квитанция о доставке (ACK)
+    if (packet.isAck) {
+      window.dispatchEvent(new CustomEvent('ordinamsg:ack', { detail: packet }));
+      if (packet.senderId !== this.myUid) {
+        await this.relayPacket(packet);
       }
+      return;
+    }
 
-      // Даже сохранив себе, группа ретранслируется дальше другим соседям (Flooding)
-    } else if (packet.receiverId === this.myUid) {
-      // 4. ЛИЧНЫЙ ДИАЛОГ: Сообщение адресовано ЛИЧНО НАМ
-      console.log(`[Mesh] Пакет ${packet.id} доставлен адресату (хопов: ${packet.hops})`);
-
-      const decryptedText = this.decryptPayload(packet.encryptedPayload || (packet as any).text || '');
-
-      const normalized = {
+    // СЛУЧАЙ 2: Групповой канал / общий эфир
+    if (packet.groupId) {
+      const decryptedText = this.decryptPayload(packet.encryptedPayload || '');
+      const normalized: Message = {
         id: packet.id,
-        chatId: packet.chatId,
+        chatId: packet.chatId || packet.groupId,
+        groupId: packet.groupId,
         senderId: packet.senderId,
         senderName: packet.senderName,
         text: decryptedText,
         content: decryptedText,
-        type: 'text' as const,
         createdAt: packet.createdAt,
-        deliveryStatus: 'delivered' as const,
+        type: 'text',
+        deliveryStatus: 'delivered',
+        isMesh: true,
+        hops: packet.hops
+      };
+
+      await saveMessage(normalized);
+      window.dispatchEvent(new CustomEvent('ordinamsg:new', { detail: normalized }));
+      if ('vibrate' in navigator) navigator.vibrate([80, 40, 80]);
+
+      // Групповое сообщение всегда ретранслируется дальше другим узлам
+      await this.relayPacket(packet);
+      return;
+    }
+
+    // СЛУЧАЙ 3: Личное сообщение лично нам
+    if (packet.receiverId === this.myUid) {
+      const decryptedText = this.decryptPayload(packet.encryptedPayload || '');
+      const normalized: Message = {
+        id: packet.id,
+        chatId: packet.chatId || [packet.senderId, this.myUid].sort().join('_'),
+        senderId: packet.senderId,
+        senderName: packet.senderName,
+        text: decryptedText,
+        content: decryptedText,
+        createdAt: packet.createdAt,
+        type: 'text',
+        deliveryStatus: 'delivered',
         isMesh: true,
         hops: packet.hops
       };
@@ -264,193 +263,38 @@ export class MeshTransport {
       return;
     }
 
-    // 5. ТРАНЗИТНЫЙ УЗЕЛ (Почтальон / Ретранслятор): Передаем дальше
-    console.log(`[Relay] Транзит пакета для ${packet.receiverId || packet.groupId}. Хоп: ${packet.hops + 1}`);
+    // СЛУЧАЙ 4: Транзитный личный пакет для кого-то другого
+    await this.relayPacket(packet);
+  }
 
-    // ГИБРИДНЫЙ МОСТ: Если у нас есть интернет, а пакет еще не в облаке — вбрасываем в интернет
+  private static async relayPacket(packet: MeshPacket) {
+    // Гибридный интернет-шлюз
     if (this.socketRef && this.socketRef.connected && !packet.isInternetBridge) {
-      console.log('[Bridge] Сбрасываем офлайн-пакет в интернет-облако!');
       this.socketRef.emit('mesh:relay_to_cloud', { ...packet, isInternetBridge: true });
     }
 
-    // 6. Проверяем TTL перед радио-ретрансляцией
-    if (packet.ttl <= 1 || (packet.relayPath && packet.relayPath.includes(this.myUid))) {
-      return; // Пакет исчерпал лимит скачков или зациклился
+    // Если целевой узел среди прямых соседей — отдаем лично ему
+    if (packet.receiverId && this.uidToMac.has(packet.receiverId)) {
+      const mac = this.uidToMac.get(packet.receiverId)!;
+      await this.writeGatt(mac, packet);
+      return;
     }
 
-    const nextHopPacket: MeshPacket = {
-      ...packet,
-      ttl: packet.ttl - 1,
-      hops: packet.hops + 1,
-      relayPath: [...(packet.relayPath || []), this.myUid]
-    };
+    // Иначе ретранслируем всем доступным узлам
+    await this.broadcastToNeighbors(packet);
+  }
 
-    // Добавляем узел отправителя в наш радар как доступный "через N хопов"
-    if (!this.peers.has(packet.senderId)) {
-      this.peers.set(packet.senderId, {
-        uid: packet.senderId,
-        id: packet.senderId,
-        mac: '',
-        name: packet.senderName || `Узел [${packet.senderId.slice(0, 4)}]`,
-        hops: Math.min(3, nextHopPacket.hops),
-        lastSeen: Date.now(),
-        isResolved: true
-      });
-      this.notifyPeers();
-    }
-
-    // Случайная пауза против радио-коллизий (Jitter 80-250 мс)
-    setTimeout(() => {
-      if (nextHopPacket.groupId) {
-        this.broadcastToNeighbors(nextHopPacket);
-      } else if (nextHopPacket.receiverId) {
-        this.sendMeshMessage(nextHopPacket.receiverId, nextHopPacket, true);
+  private static async broadcastToNeighbors(packet: MeshPacket) {
+    for (const [_, node] of this.peers) {
+      if (node.mac) {
+        this.writeGatt(node.mac, packet).catch(() => {});
       }
-    }, Math.floor(Math.random() * 170) + 80);
+    }
   }
 
-  /**
-   * Отправка квитанции прочтения (Offline Read Receipt)
-   * Легковесный пакет ~120 байт, пролетающий через меш-сеть мгновенно
-   */
-  public static async sendReadReceipt(
-    targetUid: string,
-    messageIds: string[],
-    chatId: string
-  ): Promise<boolean> {
-    if (!messageIds || messageIds.length === 0) return false;
-
-    const packet: MeshPacket = {
-      id: `ack_read_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      type: 'ack_read',
-      senderId: this.myUid,
-      senderName: this.myName,
-      receiverId: targetUid,
-      chatId: chatId,
-      readMessageIds: messageIds,
-      createdAt: new Date().toISOString(),
-      ttl: 4,
-      hops: 0,
-      relayPath: [this.myUid]
-    };
-
-    this.seenPackets.add(packet.id);
-    console.log(`[Mesh ACK] Отправка ack_read для ${messageIds.length} сообщений адресату ${targetUid}`);
-    return this.sendMeshMessage(targetUid, packet, true);
-  }
-
-  /**
-   * Многоадресная отправка сообщения в групповой чат (Multicast Flooding)
-   */
-  public static async sendGroupMessage(
-    groupId: string,
-    message: any
-  ): Promise<boolean> {
-    const packet: MeshPacket = {
-      id: message.id || `${this.myUid}_${Date.now()}`,
-      type: 'text',
-      senderId: this.myUid,
-      senderName: this.myName,
-      groupId: groupId,
-      chatId: groupId,
-      encryptedPayload: this.encryptPayload(message.text || message.content || ''),
-      createdAt: message.createdAt || new Date().toISOString(),
-      ttl: 4,
-      hops: 0,
-      relayPath: [this.myUid]
-    };
-
-    this.seenPackets.add(packet.id);
-    console.log(`[Mesh Group] Рассылка сообщения в группу ${groupId} всем соседям`);
-    return this.broadcastToNeighbors(packet);
-  }
-
-  /**
-   * Отправка пакета всем прямым соседям в зоне радиовидимости
-   */
-  public static async broadcastToNeighbors(packet: MeshPacket): Promise<boolean> {
-    const neighbors = Array.from(this.uidToMac.values());
-    if (neighbors.length === 0) {
-      console.log('[Mesh] Нет прямых радио-соседей в зоне видимости');
-      return false;
-    }
-
-    let sentCount = 0;
-    for (const mac of neighbors) {
-      const ok = await this.writeGatt(mac, packet);
-      if (ok) sentCount++;
-    }
-
-    return sentCount > 0;
-  }
-
-  /**
-   * Отправка личного сообщения в меш-сеть
-   */
-  public static async sendMeshMessage(
-    targetUid: string,
-    message: any,
-    isTransit: boolean = false
-  ): Promise<boolean> {
-    let packet: MeshPacket;
-
-    if (isTransit) {
-      packet = message;
-    } else {
-      // Новое сообщение от нас: шифруем payload, чтобы почтальоны не прочли
-      packet = {
-        id: message.id || `${this.myUid}_${Date.now()}`,
-        type: 'text',
-        senderId: this.myUid,
-        senderName: this.myName,
-        receiverId: targetUid,
-        chatId: message.chatId || [this.myUid, targetUid].sort().join('_'),
-        encryptedPayload: this.encryptPayload(message.text || message.content || ''),
-        createdAt: message.createdAt || new Date().toISOString(),
-        ttl: 4,
-        hops: 0,
-        relayPath: [this.myUid]
-      };
-      this.seenPackets.add(packet.id);
-    }
-
-    // 1. Если адресат прямо рядом — отдаем напрямую
-    const directMac = this.uidToMac.get(targetUid);
-    if (directMac) {
-      const ok = await this.writeGatt(directMac, packet);
-      if (ok) return true;
-    }
-
-    // 2. Иначе — рассылаем всем соседям в зоне видимости (Multi-hop Relay)
-    let deliveredToAnyNeighbor = false;
-    const neighbors = Array.from(this.uidToMac.values());
-
-    for (const mac of neighbors) {
-      const ok = await this.writeGatt(mac, packet);
-      if (ok) deliveredToAnyNeighbor = true;
-    }
-
-    // 3. РЕЖИМ ПОЧТАЛЬОНА: если ни один сосед не принял пакет — прячем в сумку
-    if (!deliveredToAnyNeighbor && !isTransit) {
-      console.log(`[Postman] Адресат ${targetUid} вне связи. Пакет сохранен в сумку почтальона.`);
-      this.postmanBag.set(packet.id, packet);
-    }
-
-    return deliveredToAnyNeighbor;
-  }
-
-  public static async sendDirectMessage(targetUid: string, message: any): Promise<boolean> {
-    return this.sendMeshMessage(targetUid, message);
-  }
-
-  /**
-   * Сброс почтовой сумки при встрече узла
-   */
   private static async flushPostmanBag(encounteredUid: string, mac: string) {
-    for (const [id, packet] of this.postmanBag.entries()) {
-      // Отдаем либо самому адресату, либо передаем попутному узлу
-      if (packet.receiverId === encounteredUid || packet.ttl > 1) {
-        console.log(`[Postman] Встречен узел ${encounteredUid}! Сбрасываем отложенное письмо ${id}`);
+    for (const [id, packet] of this.postmanBag) {
+      if (packet.receiverId === encounteredUid || !packet.receiverId || packet.groupId) {
         const ok = await this.writeGatt(mac, packet);
         if (ok && packet.receiverId === encounteredUid) {
           this.postmanBag.delete(id);
@@ -463,7 +307,7 @@ export class MeshTransport {
     return new Promise((resolve) => {
       this.bleQueue = this.bleQueue.then(async () => {
         try {
-          await this.connectWithTimeout(mac, 3000);
+          await BleClient.connect(mac);
           const jsonStr = JSON.stringify(packet);
           const dataView = numbersToDataView(Array.from(new TextEncoder().encode(jsonStr)));
           await BleClient.write(mac, ORDINA_SERVICE, ORDINA_CHAR, dataView);
@@ -476,7 +320,6 @@ export class MeshTransport {
     });
   }
 
-  // Примитивы сквозного шифрования (Zero-Knowledge для почтальонов)
   private static encryptPayload(text: string): string {
     return btoa(unescape(encodeURIComponent(text)));
   }
