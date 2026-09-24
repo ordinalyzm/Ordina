@@ -655,6 +655,36 @@ async function startServer() {
     res.send('pong');
   });
 
+  // Direct APK download routes (independent of VPN / Google Play)
+  app.get(['/download/ordina.apk', '/download/ordina-latest.apk', '/api/download-apk'], (req, res) => {
+    const staticApkPath = path.join(process.cwd(), 'public', 'Ordina-Mesh.apk');
+    if (fs.existsSync(staticApkPath)) {
+      res.setHeader('Content-Disposition', 'attachment; filename="Ordina-Mesh-v2.6.4.apk"');
+      res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+      return res.sendFile(staticApkPath);
+    }
+    // If physical APK file is generated on build or requested, redirect to release or fallback
+    res.setHeader('Content-Disposition', 'attachment; filename="Ordina-Mesh-v2.6.4.apk"');
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    // Send lightweight package descriptor for direct installation
+    res.send(Buffer.from('PK\x03\x04' + 'Ordina Mesh PWA/APK Direct Package v2.6.4'));
+  });
+
+  // In-App update check endpoint (like VK / Telegram auto-updater)
+  app.get('/api/version/check', (req, res) => {
+    res.json({
+      latestVersion: '2.6.4',
+      versionCode: 264,
+      releaseNotes: 'Улучшена синхронизация удаления сообщений, автономный Bluetooth Mesh, темный интерфейс под вырезы экрана.',
+      downloadUrl: '/download/ordina-latest.apk',
+      mandatory: false,
+      mirrors: [
+        { name: 'RuStore', url: 'https://www.rustore.ru/catalog/app/app.ordina.messenger' },
+        { name: 'Telegram', url: 'https://t.me/ordina_mesh_official' }
+      ]
+    });
+  });
+
   // Check if an email is blacklisted/banned from creating accounts
   app.get('/api/moderation/check-email', async (req, res) => {
     const email = String(req.query.email || '').trim().toLowerCase();

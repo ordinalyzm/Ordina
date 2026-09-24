@@ -16,7 +16,7 @@ html, body, #root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
-  background-color: #09090b;
+  background-color: #000000;
 }
 
 /* Safe area utility classes for seamless edge-to-edge headers and footers */
@@ -31,6 +31,16 @@ html, body, #root {
 }
 .pr-safe {
   padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* Black notch header background wrapper */
+.safe-notch-black {
+  background-color: #000000;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.safe-bottom-black {
+  background-color: #000000;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* Modal and bottom sheets scrollable adaptation */

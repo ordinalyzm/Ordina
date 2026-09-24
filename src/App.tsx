@@ -43,11 +43,16 @@ import {
   saveLocalSetting,
   getLocalSetting,
   initDatabase,
+  getMessagesForChat,
   saveMessageToLocalCache, 
   saveMessagesToLocalCache, 
   loadMessagesFromLocalCache, 
-  clearChatLocalCache 
+  clearChatLocalCache,
+  deleteMessageFromDb,
+  deleteMessagesFromDb
 } from './utils/localCache';
+import { StatusBar, Style } from '@capacitor/status-bar';
+import { Capacitor } from '@capacitor/core';
 import { bleMesh } from './services/bleMesh';
 import { Preferences } from '@capacitor/preferences';
 import { MeshTransport } from './utils/meshTransport';
@@ -401,7 +406,64 @@ function AppContent() {
   });
   const [selectedChat, setSelectedChat] = useState<{ type: 'user' | 'group' | 'channel', id: string } | null>(null);
   const [notifications, setNotifications] = useState<{ [chatId: string]: number }>({});
-  const [recentPreviews, setRecentPreviews] = useState<{ [chatId: string]: Message }>({});
+  const [recentPreviews, setRecentPreviews] = useState<{ [chatId: string]: Message }>(() => {
+    try {
+      const saved = localStorage.getItem('ordina_recent_previews');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+
+    // Fallback: Scan all ordina_cache_* keys in localStorage to reconstruct previews
+    try {
+      const previewMap: { [chatId: string]: Message } = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('ordina_cache_')) {
+          const raw = localStorage.getItem(key);
+          if (raw) {
+            const list = JSON.parse(raw);
+            if (Array.isArray(list) && list.length > 0) {
+              const last = list[list.length - 1];
+              if (last && last.id) {
+                const targetChatId = last.groupId || (last.receiverId ? last.receiverId : last.senderId);
+                if (targetChatId) {
+                  if (!previewMap[targetChatId] || new Date(last.createdAt) > new Date(previewMap[targetChatId].createdAt)) {
+                    previewMap[targetChatId] = last;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      return previewMap;
+    } catch (e) {
+      return {};
+    }
+  });
+
+  // Automatically persist recentPreviews whenever updated
+  useEffect(() => {
+    if (Object.keys(recentPreviews).length > 0) {
+      try {
+        localStorage.setItem('ordina_recent_previews', JSON.stringify(recentPreviews));
+      } catch (e) {}
+    }
+  }, [recentPreviews]);
+
+  // Configure native Mobile Safe Area & Transparent Status Bar
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      try {
+        StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {});
+        StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+      } catch (e) {}
+    }
+  }, []);
 
   const [socket, setSocket] = useState<Socket | null>(null);
   const [socketConnected, setSocketConnected] = useState(false);
@@ -1136,10 +1198,15 @@ function AppContent() {
     newSocket.on('message:updated', (updatedMsg: Message) => {
       setMessages(prev => prev.map(m => m.id === updatedMsg.id ? updatedMsg : m));
     });
-    newSocket.on('message:deleted', (data: { id: string, chatId?: string }) => {
+    newSocket.on('message:deleted', (data: { id: string, chatId?: string } | string) => {
       // For backwards compatibility or simplified events
       const deletedId = typeof data === 'string' ? data : data.id;
       const chatId = typeof data === 'object' ? data.chatId : undefined;
+      
+      // Permanently remove from SQLite database and durable local cache
+      if (deletedId) {
+        deleteMessageFromDb(deletedId).catch(() => {});
+      }
       
       setMessages(prev => {
         const next = prev.filter(m => m.id !== deletedId);
@@ -2314,6 +2381,17 @@ function AppContent() {
   const [authMode, setAuthMode] = useState<'email_login' | 'email_register' | 'forgot_password'>('email_login');
   const [isSending, setIsSending] = useState(false);
   
+  useEffect(() => {
+    // Configure black status bar and safe areas for mobile cutouts (like Telegram & VK)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        StatusBar.setBackgroundColor({ color: '#000000' }).catch(() => {});
+        StatusBar.setStyle({ style: Style.Dark }).catch(() => {});
+        StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {});
+      } catch (e) {}
+    }
+  }, []);
+
   useEffect(() => {
     // Process redirect result for both Capacitor and Web/PWA
     setIsLoggingIn(true);
@@ -3522,10 +3600,11 @@ function AppContent() {
     }
     
     setMessageLimit(30);
+    const myUid = user?.uid;
     let cached = messageCacheRef.current[chat.id];
     if (!cached || cached.length === 0) {
       try {
-        cached = loadMessagesFromLocalCache(chat.id);
+        cached = loadMessagesFromLocalCache(chat.id, myUid);
         if (cached && cached.length > 0) {
           messageCacheRef.current[chat.id] = cached;
         }
@@ -3542,6 +3621,15 @@ function AppContent() {
       setMessages(cached);
       setIsLoadingMessages(false);
     }
+
+    // Also asynchronously fetch from SQLite database to guarantee instant offline messages
+    getMessagesForChat(chat.id, myUid).then(dbMsgs => {
+      if (dbMsgs && dbMsgs.length > 0) {
+        messageCacheRef.current[chat.id] = dbMsgs;
+        setMessages(dbMsgs);
+        setIsLoadingMessages(false);
+      }
+    }).catch(() => {});
     
     setActiveThread(null); // Clear active thread too
     
@@ -3580,10 +3668,11 @@ function AppContent() {
       return;
     }
 
+    const myUid = user.uid;
     let cached = messageCacheRef.current[selectedChat.id];
     if (!cached || cached.length === 0) {
       try {
-        cached = loadMessagesFromLocalCache(selectedChat.id);
+        cached = loadMessagesFromLocalCache(selectedChat.id, myUid);
         if (cached && cached.length > 0) {
           messageCacheRef.current[selectedChat.id] = cached;
         }
@@ -3591,6 +3680,15 @@ function AppContent() {
         console.error('Error loading local cache in sync useEffect:', e);
       }
     }
+
+    // Also fetch from SQLite database
+    getMessagesForChat(selectedChat.id, myUid).then(dbMsgs => {
+      if (dbMsgs && dbMsgs.length > 0) {
+        messageCacheRef.current[selectedChat.id] = dbMsgs;
+        setMessages(dbMsgs);
+        setIsLoadingMessages(false);
+      }
+    }).catch(() => {});
     
     // Determine the actual limit we should request. If the user scrolled up previously,
     // we want to honor that cached length.
@@ -3601,7 +3699,7 @@ function AppContent() {
       setMessageLimit(requiredLimit);
     }
 
-    if (cached) {
+    if (cached && cached.length > 0) {
       setMessages(cached);
       setIsLoadingMessages(false);
       // We still join the room to get new messages and real-time updates
@@ -4649,13 +4747,9 @@ function AppContent() {
       if (messageCacheRef.current[currentChatId]) {
         messageCacheRef.current[currentChatId] = messageCacheRef.current[currentChatId].filter(m => m.id !== id);
       }
-      try {
-        const cached = loadMessagesFromLocalCache(currentChatId);
-        if (cached && cached.length > 0) {
-          const updatedCached = cached.filter(m => m.id !== id);
-          saveMessagesToLocalCache(currentChatId, updatedCached);
-        }
-      } catch (e) {}
+      
+      // Permanently remove from local SQLite database and localStorage cache
+      await deleteMessageFromDb(id);
 
       if (forEveryone) {
         if (socket) {
@@ -5129,7 +5223,7 @@ function AppContent() {
               mobileView === 'chat' ? "absolute inset-0 z-0 lg:relative lg:z-20 lg:w-80 lg:flex" : "relative z-20 w-full lg:w-80"
             )}
           >
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <div className="p-4 pt-[calc(12px+env(safe-area-inset-top,0px))] border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
                 setViewedProfile(profile);
                 setShowProfile(true);
@@ -6740,6 +6834,30 @@ function AppContent() {
                   </div>
                 </button>
 
+                {/* Direct APK Download & In-App Auto-Updater trigger (VK / RuStore / Telegram style) */}
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowShareAppModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-amber-50/80 rounded-2xl transition-all border border-amber-300/80 bg-gradient-to-r from-amber-50/40 to-amber-100/30 shadow-sm"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-amber-500 text-black flex items-center justify-center font-bold shadow-md shadow-amber-500/20">
+                    <Download size={20} />
+                  </div>
+                  <div className="text-left flex-1">
+                    <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                      Скачать APK / Обновить
+                      <span className="text-[10px] font-extrabold px-2 py-0.5 bg-amber-500 text-black rounded-full">
+                        БЕЗ VPN
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      Прямая загрузка APK, авто-обновление и раздача приложения без интернета
+                    </p>
+                  </div>
+                </button>
+
                 {/* Share App QR & Install trigger */}
                 <button 
                   onClick={() => {
@@ -7808,7 +7926,7 @@ function AppContent() {
         {selectedChat ? (
           <>
             {/* Chat Header */}
-            <div className="h-16 border-b border-slate-100 flex items-center justify-between px-6 bg-white sticky top-0 z-[100]">
+            <div className="min-h-16 pt-[calc(10px+env(safe-area-inset-top,0px))] pb-2.5 border-b border-slate-100 flex items-center justify-between px-4 sm:px-6 bg-white sticky top-0 z-[100] messenger-header">
               {showChatSearch ? (
                 <div className="flex items-center w-full gap-3 h-full">
                   <button onClick={() => { setShowChatSearch(false); setChatSearchQuery(''); setChatSearchFilterUser(null); }} className="p-2 hover:bg-slate-100 rounded-xl relative z-[120]">
@@ -9388,7 +9506,7 @@ function AppContent() {
             </AnimatePresence>
 
             {/* Input Area */}
-            <div className="p-4 bg-white border-t border-slate-100 shrink-0 relative z-40">
+            <div className="p-4 pb-[calc(14px+env(safe-area-inset-bottom,0px))] bg-white border-t border-slate-100 shrink-0 relative z-40 message-input-bar">
               {(() => {
                 const activeGroup = selectedChat?.type !== 'user' ? groups.find(g => g.id === selectedChat.id) : null;
                 const userRole = activeGroup?.memberRoles?.[user?.uid || ''] || 'member';

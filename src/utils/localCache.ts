@@ -294,6 +294,84 @@ export async function markMessagesAsReadInDb(messageIds: string[]): Promise<void
 }
 
 /**
+ * Permanently deletes a single message from SQLite database, in-memory deduplication, and localStorage.
+ */
+export async function deleteMessageFromDb(messageId: string): Promise<void> {
+  if (!messageId) return;
+  recentWritesMap.delete(messageId);
+
+  try {
+    await initDatabase();
+    if (dbInstance) {
+      await dbInstance.run('DELETE FROM messages WHERE id = ?;', [messageId]);
+      console.log(`[SQLite] Сообщение ${messageId} удалено из базы`);
+    }
+  } catch (err) {
+    console.error('[SQLite] deleteMessageFromDb error:', err);
+  }
+
+  // Remove from all localStorage caches
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ordina_cache_')) {
+        const raw = localStorage.getItem(k);
+        if (raw && raw.includes(messageId)) {
+          try {
+            const list: Message[] = JSON.parse(raw);
+            if (Array.isArray(list)) {
+              const filtered = list.filter(m => m.id !== messageId);
+              if (filtered.length !== list.length) {
+                localStorage.setItem(k, JSON.stringify(filtered));
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+/**
+ * Permanently deletes multiple messages from SQLite database and localStorage.
+ */
+export async function deleteMessagesFromDb(messageIds: string[]): Promise<void> {
+  if (!messageIds || messageIds.length === 0) return;
+  messageIds.forEach(id => recentWritesMap.delete(id));
+
+  try {
+    await initDatabase();
+    if (dbInstance) {
+      const placeholders = messageIds.map(() => '?').join(',');
+      await dbInstance.run(`DELETE FROM messages WHERE id IN (${placeholders});`, messageIds);
+    }
+  } catch (err) {
+    console.error('[SQLite] deleteMessagesFromDb error:', err);
+  }
+
+  try {
+    const idSet = new Set(messageIds);
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ordina_cache_')) {
+        const raw = localStorage.getItem(k);
+        if (raw) {
+          try {
+            const list: Message[] = JSON.parse(raw);
+            if (Array.isArray(list)) {
+              const filtered = list.filter(m => !idSet.has(m.id));
+              if (filtered.length !== list.length) {
+                localStorage.setItem(k, JSON.stringify(filtered));
+              }
+            }
+          } catch (e) {}
+        }
+      }
+    }
+  } catch (e) {}
+}
+
+/**
  * Returns the highest delta version stored locally (for incremental delta sync).
  */
 export async function getDeltaSyncVersion(): Promise<number> {
@@ -395,6 +473,12 @@ export async function mergeDelta(chats: Chat[] = [], messages: Message[], curren
         const ver = msg.version || 1;
         if (ver > maxVer) maxVer = ver;
 
+        // If message is marked as deleted on server, remove it locally immediately!
+        if ((msg as any).deleted || (msg as any).isDeleted) {
+          await deleteMessageFromDb(msg.id);
+          continue;
+        }
+
         // Strict isolation: if currentUserId is known, only store messages for user's direct chats or groups
         if (currentUserId) {
           const isGlobal = msg.groupId === 'global_channel';
@@ -449,7 +533,9 @@ export async function getMessagesForChat(chatId: string, currentUserId?: string)
 
       const res = await dbInstance.query(query, params);
       if (res.values && res.values.length > 0) {
-        return res.values.map(v => JSON.parse(v.rawJson));
+        return res.values
+          .map(v => JSON.parse(v.rawJson))
+          .filter(m => !m.deleted && !m.isDeleted);
       }
     }
   } catch (err) {
@@ -547,9 +633,9 @@ export function loadMessagesFromLocalCache(chatId: string, currentUserId?: strin
     }
 
     if (foundMap.size > 0) {
-      return Array.from(foundMap.values()).sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      );
+      return Array.from(foundMap.values())
+        .filter(m => !m.deleted && !(m as any).isDeleted)
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     }
   } catch (e) {}
   return [];
