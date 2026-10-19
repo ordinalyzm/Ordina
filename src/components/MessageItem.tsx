@@ -46,6 +46,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const isLongPressTriggered = useRef(false);
   const lastTapRef = useRef<number>(0);
   const singleTapTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isInteractiveDownRef = useRef<boolean>(false);
 
   const startPosRef = useRef<{ x: number; y: number; time: number }>({ x: 0, y: 0, time: 0 });
   const isMovedRef = useRef(false);
@@ -58,7 +59,70 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   const iconScale = useTransform(x, [0, SWIPE_THRESHOLD], [0.5, 1.2]);
   const iconOpacity = useTransform(x, [0, SWIPE_THRESHOLD / 2], [0, 1]);
 
+  const isInteractiveTarget = (target: any) => {
+    if (!target) return false;
+    let curr: Element | null = target instanceof Element ? target : (target as any)?.parentElement;
+    let depth = 0;
+    while (curr && depth < 12) {
+      depth++;
+      const tag = curr.tagName?.toLowerCase() || '';
+      if (
+        tag === 'button' || tag === 'a' || tag === 'input' || tag === 'select' ||
+        tag === 'textarea' || tag === 'audio' || tag === 'video' || tag === 'label' ||
+        tag === 'svg' || tag === 'path' ||
+        curr.getAttribute?.('role') === 'button' ||
+        curr.getAttribute?.('data-interactive') === 'true' ||
+        curr.getAttribute?.('data-no-menu') === 'true' ||
+        curr.getAttribute?.('data-voice-player') === 'true' ||
+        curr.getAttribute?.('data-audio-player') === 'true' ||
+        curr.getAttribute?.('data-action') === 'true' ||
+        curr.getAttribute?.('data-reaction') !== null ||
+        curr.getAttribute?.('data-subtitle-btn') === 'true' ||
+        curr.getAttribute?.('data-quote') === 'true' ||
+        curr.getAttribute?.('data-poll-option') === 'true' ||
+        curr.getAttribute?.('data-game') === 'true' ||
+        curr.classList?.contains('interactive-action') ||
+        curr.classList?.contains('reaction-button') ||
+        curr.classList?.contains('action-pill') ||
+        curr.classList?.contains('copy-btn') ||
+        curr.classList?.contains('msg-action-btn') ||
+        curr.classList?.contains('poll-option') ||
+        curr.classList?.contains('reply-quote')
+      ) {
+        return true;
+      }
+      if (typeof curr.closest === 'function') {
+        const found = curr.closest(
+          'button, a, input, select, textarea, audio, video, label, ' +
+          '[role="button"], [data-interactive="true"], .interactive-action, ' +
+          '.reaction-button, [data-reaction], [data-no-menu="true"], ' +
+          '[data-subtitle-btn="true"], [data-quote="true"], [data-reply-quote="true"], ' +
+          '.reply-quote, [data-voice-player="true"], [data-audio-player="true"], [data-poll-option="true"], .poll-option, ' +
+          '.game-board, [data-game="true"], .quote-block, .copy-btn, .msg-action-btn, ' +
+          '[data-action="true"], .action-pill'
+        );
+        if (found) return true;
+      }
+      curr = curr.parentElement;
+    }
+    return false;
+  };
+
   const handlePointerDown = (e: React.PointerEvent) => {
+    if (isInteractiveTarget(e.target)) {
+      isInteractiveDownRef.current = true;
+      if (longPressTimer.current) {
+        clearTimeout(longPressTimer.current);
+        longPressTimer.current = null;
+      }
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      return;
+    }
+    isInteractiveDownRef.current = false;
+
     isLongPressTriggered.current = false;
     isMovedRef.current = false;
     startPosRef.current = { x: e.clientX, y: e.clientY, time: Date.now() };
@@ -74,7 +138,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
 
     // Telegram standard 500ms long press -> Message selection mode trigger
     longPressTimer.current = setTimeout(() => {
-      if (!isMovedRef.current) {
+      if (!isMovedRef.current && !isInteractiveDownRef.current) {
         isLongPressTriggered.current = true;
         x.set(0);
         if ('vibrate' in navigator) {
@@ -114,6 +178,16 @@ export const MessageItem: React.FC<MessageItemProps> = ({
       longPressTimer.current = null;
     }
 
+    if (isInteractiveDownRef.current || isInteractiveTarget(e.target)) {
+      isInteractiveDownRef.current = false;
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      return;
+    }
+    isInteractiveDownRef.current = false;
+
     const pressDuration = Date.now() - startPosRef.current.time;
 
     // Do NOT open single-tap menu if longpress fired, or if finger moved (swipe/scroll), or if held > 250ms
@@ -135,8 +209,12 @@ export const MessageItem: React.FC<MessageItemProps> = ({
           }
         } else {
           lastTapRef.current = now;
+          const capturedTarget = e.target;
           singleTapTimerRef.current = setTimeout(() => {
             singleTapTimerRef.current = null;
+            if (isInteractiveDownRef.current || isInteractiveTarget(capturedTarget)) {
+              return;
+            }
             if (onSingleTap) {
               onSingleTap(e, msg);
             }
@@ -147,6 +225,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   };
 
   const handlePointerCancel = () => {
+    isInteractiveDownRef.current = false;
     if (longPressTimer.current) {
       clearTimeout(longPressTimer.current);
       longPressTimer.current = null;
@@ -162,11 +241,14 @@ export const MessageItem: React.FC<MessageItemProps> = ({
   return (
     <div
       ref={scope}
+      id={`msg-${msg.id}`}
       data-msg-id={msg.id}
       className={cn(
-        "relative w-full select-none touch-pan-y flex flex-col my-1 transition-colors duration-200",
+        "relative w-full select-none touch-pan-y flex flex-col my-1 transition-all duration-300",
         isMe ? "items-end pr-0" : "items-start pl-0",
-        highlightedMsgId === msg.id ? "scale-[1.02] drop-shadow-xl z-10" : "",
+        highlightedMsgId === msg.id 
+          ? "scale-[1.03] z-30 ring-4 ring-amber-400 bg-amber-400/30 dark:bg-amber-400/40 rounded-3xl p-2 shadow-2xl highlighted-reply-target" 
+          : "",
         isSelected ? "bg-blue-500/10 rounded-2xl border border-blue-300/80 p-1" : ""
       )}
     >
@@ -209,6 +291,10 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         onPointerCancel={handlePointerCancel}
         onContextMenu={(e) => {
           e.preventDefault();
+          if (isInteractiveDownRef.current || isInteractiveTarget(e.target)) {
+            e.stopPropagation();
+            return;
+          }
         }}
         onDragEnd={(_, info) => {
           if (info.offset.x < SWIPE_THRESHOLD || info.velocity.x < -150) {

@@ -4,6 +4,7 @@ import {
   X, 
   Mic, 
   Image as ImageIcon, 
+  Video as VideoIcon,
   FileText, 
   Music, 
   Link as LinkIcon, 
@@ -18,9 +19,12 @@ import {
   Users, 
   ShieldCheck,
   Eye,
-  FileSpreadsheet
+  FileSpreadsheet,
+  BarChart2
 } from 'lucide-react';
 import { Message } from '../types';
+import { MediaLightboxModal } from './MediaLightboxModal';
+import { VideoPreview } from './VideoPreview';
 
 export interface ChatMediaModalProps {
   isOpen: boolean;
@@ -36,7 +40,7 @@ export interface ChatMediaModalProps {
   onOpenEditProfile?: () => void;
 }
 
-export type MediaTabType = 'media' | 'files' | 'voice' | 'links' | 'audio' | 'notes';
+export type MediaTabType = 'photos' | 'videos' | 'files' | 'voice' | 'audio' | 'polls' | 'links' | 'notes';
 
 export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
   isOpen,
@@ -50,19 +54,21 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
   onSelectMessage,
   onOpenEditProfile,
 }) => {
-  const [activeTab, setActiveTab] = useState<MediaTabType>('media');
+  const [activeTab, setActiveTab] = useState<MediaTabType>('photos');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [audioElements, setAudioElements] = useState<{ [id: string]: HTMLAudioElement }>({});
-  const [previewMediaUrl, setPreviewMediaUrl] = useState<{ url: string; isVideo?: boolean; name?: string } | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
   // Categorize messages of this chat
   const categorized = useMemo(() => {
-    const media: Message[] = [];
+    const photos: Message[] = [];
+    const videos: Message[] = [];
     const voice: Message[] = [];
     const files: Message[] = [];
     const audio: Message[] = [];
+    const polls: Message[] = [];
     const links: { msg: Message; url: string; domain: string }[] = [];
     const notes: Message[] = [];
 
@@ -76,14 +82,21 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
       ) {
         voice.push(msg);
       }
-      // Media (images & videos)
+      // Videos
+      else if (
+        msg.type === 'video' || 
+        (msg.fileUrl && /\.(mp4|mov|webm)$/i.test(msg.fileUrl || '')) || 
+        (msg.fileName && /\.(mp4|mov|webm)$/i.test(msg.fileName || ''))
+      ) {
+        videos.push(msg);
+      }
+      // Photos & Images
       else if (
         msg.type === 'image' || 
-        msg.type === 'video' || 
-        (msg.fileUrl && /\.(jpeg|jpg|png|gif|webp|svg|mp4|mov|webm)$/i.test(msg.fileUrl || '')) || 
-        (msg.fileName && /\.(jpeg|jpg|png|gif|webp|svg|mp4|mov|webm)$/i.test(msg.fileName || ''))
+        (msg.fileUrl && /\.(jpeg|jpg|png|gif|webp|svg)$/i.test(msg.fileUrl || '')) || 
+        (msg.fileName && /\.(jpeg|jpg|png|gif|webp|svg)$/i.test(msg.fileName || ''))
       ) {
-        media.push(msg);
+        photos.push(msg);
       }
       // Audio tracks
       else if (
@@ -92,6 +105,10 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
         (msg.fileName && /\.(mp3|wav|m4a|aac|flac|ogg)$/i.test(msg.fileName || ''))
       ) {
         audio.push(msg);
+      }
+      // Polls
+      else if (msg.type === 'poll' || (msg as any).poll || msg.pollQuestion) {
+        polls.push(msg);
       }
       // Files & documents
       else if (msg.type === 'file' || msg.fileUrl) {
@@ -113,21 +130,28 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
         }
       }
 
-      // Text notes / quotes
-      if (msg.text && !msg.fileUrl && msg.type !== 'voice') {
+      // Text notes
+      if (msg.text && !msg.fileUrl && msg.type !== 'voice' && msg.type !== 'poll') {
         notes.push(msg);
       }
     });
 
     return {
-      media: media.reverse(),
+      photos: photos.reverse(),
+      videos: videos.reverse(),
       files: files.reverse(),
       voice: voice.reverse(),
-      links: links.reverse(),
       audio: audio.reverse(),
+      polls: polls.reverse(),
+      links: links.reverse(),
       notes: notes.reverse(),
     };
   }, [messages]);
+
+  // Combined media list for lightbox
+  const combinedMediaList = useMemo(() => {
+    return [...categorized.photos, ...categorized.videos];
+  }, [categorized.photos, categorized.videos]);
 
   // Filtered by search query
   const filteredItems = useMemo(() => {
@@ -135,11 +159,13 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
     if (!q) return categorized;
 
     return {
-      media: categorized.media.filter(m => (m.fileName || m.text || '').toLowerCase().includes(q)),
+      photos: categorized.photos.filter(m => (m.fileName || m.text || '').toLowerCase().includes(q)),
+      videos: categorized.videos.filter(m => (m.fileName || m.text || '').toLowerCase().includes(q)),
       files: categorized.files.filter(m => (m.fileName || m.text || '').toLowerCase().includes(q)),
       voice: categorized.voice.filter(m => (m.text || m.fileName || '').toLowerCase().includes(q)),
-      links: categorized.links.filter(l => l.url.toLowerCase().includes(q) || (l.msg.text || '').toLowerCase().includes(q)),
       audio: categorized.audio.filter(m => (m.fileName || m.text || '').toLowerCase().includes(q)),
+      polls: categorized.polls.filter(m => ((m as any).poll?.question || m.pollQuestion || m.text || '').toLowerCase().includes(q)),
+      links: categorized.links.filter(l => l.url.toLowerCase().includes(q) || (l.msg.text || '').toLowerCase().includes(q)),
       notes: categorized.notes.filter(m => (m.text || '').toLowerCase().includes(q)),
     };
   }, [categorized, searchQuery]);
@@ -150,30 +176,33 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleToggleAudio = (id: string, url: string) => {
-    if (playingAudioId === id) {
-      audioElements[id]?.pause();
+  const handleToggleAudio = (msgId: string, url: string) => {
+    let currentAudio = audioElements[msgId];
+
+    if (!currentAudio) {
+      currentAudio = new Audio(url);
+      currentAudio.onended = () => setPlayingAudioId(null);
+      currentAudio.onpause = () => setPlayingAudioId(null);
+      setAudioElements(prev => ({ ...prev, [msgId]: currentAudio }));
+    }
+
+    if (playingAudioId === msgId) {
+      currentAudio.pause();
       setPlayingAudioId(null);
     } else {
-      if (playingAudioId && audioElements[playingAudioId]) {
-        audioElements[playingAudioId].pause();
-      }
-      let audio = audioElements[id];
-      if (!audio) {
-        audio = new Audio(url);
-        audio.onended = () => setPlayingAudioId(null);
-        setAudioElements(prev => ({ ...prev, [id]: audio }));
-      }
-      audio.play().catch(() => {});
-      setPlayingAudioId(id);
+      // Pause other audio
+      Object.values(audioElements).forEach(a => a.pause());
+      currentAudio.play().catch(() => {});
+      setPlayingAudioId(msgId);
     }
   };
 
   const formatBytes = (bytes?: number) => {
-    if (!bytes) return '';
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    if (!bytes || bytes === 0) return '0 Б';
+    const k = 1024;
+    const sizes = ['Б', 'КБ', 'МБ', 'ГБ'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
   const formatDate = (isoString?: string) => {
@@ -225,14 +254,16 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
                   )}
                 </div>
                 <p className="text-blue-100 text-sm font-medium truncate">
-                  {subtitle || 'Медиа, файлы и ссылки'}
+                  {subtitle || 'Медиа, файлы, опросы и ссылки'}
                 </p>
-                <div className="flex items-center gap-3 text-[11px] text-blue-200 mt-1">
-                  <span>{categorized.media.length} медиа</span>
+                <div className="flex items-center gap-2 text-[11px] text-blue-200 mt-1 flex-wrap">
+                  <span>{categorized.photos.length} фото</span>
+                  <span>•</span>
+                  <span>{categorized.videos.length} видео</span>
                   <span>•</span>
                   <span>{categorized.files.length} файлов</span>
                   <span>•</span>
-                  <span>{categorized.links.length} ссылок</span>
+                  <span>{categorized.polls.length} опросов</span>
                 </div>
               </div>
               {onOpenEditProfile && (
@@ -254,8 +285,8 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
             <div className="relative">
               <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input 
-                type="text"
-                placeholder="Поиск по вложениям..."
+                type="text" 
+                placeholder="Поиск по вложениям..." 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-white border border-slate-200 pl-10 pr-9 py-2 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
@@ -274,11 +305,13 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
           {/* Telegram-style Tab Bar */}
           <div className="flex border-b border-slate-100 px-2 bg-white overflow-x-auto custom-scrollbar shrink-0">
             {[
-              { key: 'media', label: 'Медиа', icon: ImageIcon, count: filteredItems.media.length },
+              { key: 'photos', label: 'Фото', icon: ImageIcon, count: filteredItems.photos.length },
+              { key: 'videos', label: 'Видео', icon: VideoIcon, count: filteredItems.videos.length },
               { key: 'files', label: 'Файлы', icon: FileText, count: filteredItems.files.length },
               { key: 'voice', label: 'Голосовые', icon: Mic, count: filteredItems.voice.length },
-              { key: 'links', label: 'Ссылки', icon: LinkIcon, count: filteredItems.links.length },
               { key: 'audio', label: 'Аудио', icon: Music, count: filteredItems.audio.length },
+              { key: 'polls', label: 'Опросы', icon: BarChart2, count: filteredItems.polls.length },
+              { key: 'links', label: 'Ссылки', icon: LinkIcon, count: filteredItems.links.length },
               { key: 'notes', label: 'Заметки', icon: StickyNote, count: filteredItems.notes.length },
             ].map(tab => {
               const Icon = tab.icon;
@@ -309,73 +342,102 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
 
           {/* Tab Content Area */}
           <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-slate-50/40">
-            {/* 1. MEDIA TAB */}
-            {activeTab === 'media' && (
-              filteredItems.media.length === 0 ? (
+            {/* 1. PHOTOS TAB */}
+            {activeTab === 'photos' && (
+              filteredItems.photos.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
                   <ImageIcon size={40} className="text-slate-300" />
-                  <p className="text-sm font-medium">Нет фото и видео в этом чате</p>
-                  <p className="text-xs text-slate-400">Отправленные медиафайлы отобразятся здесь</p>
+                  <p className="text-sm font-medium">Нет фотографий в этом чате</p>
+                  <p className="text-xs text-slate-400">Отправленные фото отобразятся здесь</p>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
-                  {filteredItems.media.map(msg => {
-                    const isVideo = msg.type === 'video' || /\.(mp4|mov|webm)$/i.test(msg.fileUrl || '') || /\.(mp4|mov|webm)$/i.test(msg.fileName || '');
-                    return (
-                      <div 
-                        key={msg.id}
-                        className="group relative aspect-square rounded-2xl overflow-hidden bg-slate-100 border border-slate-200/80 shadow-sm hover:shadow-md transition-all cursor-pointer"
-                        onClick={() => {
-                          if (msg.fileUrl) {
-                            setPreviewMediaUrl({ url: msg.fileUrl, isVideo, name: msg.fileName });
-                          } else if (onSelectMessage) {
-                            onSelectMessage(msg.id);
-                            onClose();
-                          }
-                        }}
-                      >
-                        {isVideo ? (
-                          <div className="w-full h-full bg-slate-900 flex items-center justify-center relative">
-                            <video src={msg.fileUrl} className="w-full h-full object-cover opacity-80" />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors">
-                              <div className="w-10 h-10 rounded-full bg-white/30 backdrop-blur-md flex items-center justify-center text-white">
-                                <Play size={18} className="fill-white translate-x-0.5" />
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <img 
-                            src={msg.fileUrl} 
-                            alt={msg.fileName || 'Фото'} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                            loading="lazy"
-                            referrerPolicy="no-referrer"
-                          />
+                  {filteredItems.photos.map(msg => (
+                    <div 
+                      key={msg.id}
+                      className="group relative aspect-square rounded-2xl overflow-hidden bg-slate-100 border border-slate-200/80 shadow-sm hover:shadow-md transition-all cursor-pointer"
+                      onClick={() => {
+                        const idx = combinedMediaList.findIndex(m => m.id === msg.id);
+                        if (idx !== -1) setLightboxIndex(idx);
+                      }}
+                    >
+                      <img 
+                        src={msg.fileUrl} 
+                        alt={msg.fileName || 'Фото'} 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent p-2 text-white flex items-end justify-between opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span className="text-[10px] font-medium truncate max-w-[80%]">
+                          {formatDate(msg.createdAt)}
+                        </span>
+                        {msg.fileUrl && (
+                          <a 
+                            href={msg.fileUrl} 
+                            download={msg.fileName || 'photo'} 
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1 hover:bg-white/20 rounded-md transition"
+                            title="Скачать"
+                          >
+                            <Download size={14} />
+                          </a>
                         )}
-                        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent p-2 text-white flex items-end justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-                          <span className="text-[10px] font-medium truncate max-w-[80%]">
-                            {formatDate(msg.createdAt)}
-                          </span>
-                          {msg.fileUrl && (
-                            <a 
-                              href={msg.fileUrl} 
-                              download={msg.fileName || 'media'} 
-                              onClick={(e) => e.stopPropagation()}
-                              className="p-1 hover:bg-white/20 rounded-md transition"
-                              title="Скачать"
-                            >
-                              <Download size={14} />
-                            </a>
-                          )}
-                        </div>
                       </div>
-                    );
-                  })}
+                    </div>
+                  ))}
                 </div>
               )
             )}
 
-            {/* 2. FILES TAB */}
+            {/* 2. VIDEOS TAB */}
+            {activeTab === 'videos' && (
+              filteredItems.videos.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
+                  <VideoIcon size={40} className="text-slate-300" />
+                  <p className="text-sm font-medium">Нет видео в этом чате</p>
+                  <p className="text-xs text-slate-400">Отправленные видеозаписи отобразятся здесь</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5">
+                  {filteredItems.videos.map(msg => (
+                    <div 
+                      key={msg.id}
+                      className="group relative aspect-square rounded-2xl overflow-hidden bg-slate-900 border border-slate-200/80 shadow-sm hover:shadow-md transition-all cursor-pointer"
+                      onClick={() => {
+                        const idx = combinedMediaList.findIndex(m => m.id === msg.id);
+                        if (idx !== -1) setLightboxIndex(idx);
+                      }}
+                    >
+                      <VideoPreview
+                        url={msg.fileUrl || ''}
+                        fileName={msg.fileName}
+                        className="w-full h-full object-cover"
+                        showPlayOverlay={true}
+                      />
+                      <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent p-2 text-white flex items-end justify-between opacity-0 group-hover:opacity-100 transition-opacity z-10">
+                        <span className="text-[10px] font-medium truncate max-w-[80%]">
+                          {formatDate(msg.createdAt)}
+                        </span>
+                        {msg.fileUrl && (
+                          <a 
+                            href={msg.fileUrl} 
+                            download={msg.fileName || 'video'} 
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1 hover:bg-white/20 rounded-md transition"
+                            title="Скачать"
+                          >
+                            <Download size={14} />
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            {/* 3. FILES TAB */}
             {activeTab === 'files' && (
               filteredItems.files.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
@@ -439,7 +501,7 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
               )
             )}
 
-            {/* 3. VOICE TAB */}
+            {/* 4. VOICE TAB */}
             {activeTab === 'voice' && (
               filteredItems.voice.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
@@ -481,17 +543,7 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
-                          {msg.fileUrl && (
-                            <a 
-                              href={msg.fileUrl}
-                              download={`voice_${msg.id}.ogg`}
-                              className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
-                              title="Скачать запись"
-                            >
-                              <Download size={16} />
-                            </a>
-                          )}
+                        <div className="flex items-center gap-2 shrink-0">
                           {onSelectMessage && (
                             <button
                               onClick={() => {
@@ -499,7 +551,7 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
                                 onClose();
                               }}
                               className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-colors"
-                              title="Показать в чате"
+                              title="Перейти к сообщению"
                             >
                               <Eye size={16} />
                             </button>
@@ -512,76 +564,16 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
               )
             )}
 
-            {/* 4. LINKS TAB */}
-            {activeTab === 'links' && (
-              filteredItems.links.length === 0 ? (
-                <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
-                  <LinkIcon size={40} className="text-slate-300" />
-                  <p className="text-sm font-medium">Нет ссылок</p>
-                  <p className="text-xs text-slate-400">Ссылки из сообщений автоматически собираются здесь</p>
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  {filteredItems.links.map((item, idx) => (
-                    <div 
-                      key={`${item.msg.id}_${idx}`}
-                      className="p-3.5 bg-white rounded-2xl border border-slate-200/80 hover:border-blue-300 hover:shadow-sm transition-all flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 px-2 py-0.5 rounded-md">
-                            {item.domain}
-                          </span>
-                          <span className="text-[10px] text-slate-400">{formatDate(item.msg.createdAt)}</span>
-                        </div>
-                        <a 
-                          href={item.url} 
-                          target="_blank" 
-                          rel="noreferrer noopener"
-                          className="text-xs font-semibold text-slate-800 hover:text-blue-600 break-all line-clamp-2 mt-1 block"
-                        >
-                          {item.url}
-                        </a>
-                        {item.msg.text && item.msg.text !== item.url && (
-                          <p className="text-[11px] text-slate-500 line-clamp-1 mt-1">
-                            {item.msg.text}
-                          </p>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => handleCopy(item.url, `${item.msg.id}_${idx}`)}
-                          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
-                          title="Скопировать ссылку"
-                        >
-                          {copiedId === `${item.msg.id}_${idx}` ? <Check size={16} className="text-emerald-600" /> : <Copy size={16} />}
-                        </button>
-                        <a 
-                          href={item.url} 
-                          target="_blank" 
-                          rel="noreferrer noopener"
-                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
-                          title="Перейти"
-                        >
-                          <ExternalLink size={16} />
-                        </a>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )
-            )}
-
             {/* 5. AUDIO TAB */}
             {activeTab === 'audio' && (
               filteredItems.audio.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
                   <Music size={40} className="text-slate-300" />
                   <p className="text-sm font-medium">Нет аудиофайлов</p>
-                  <p className="text-xs text-slate-400">Музыкальные файлы и подкасты будут здесь</p>
+                  <p className="text-xs text-slate-400">Музыка и треки появятся здесь</p>
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   {filteredItems.audio.map(msg => {
                     const isPlaying = playingAudioId === msg.id;
                     return (
@@ -589,11 +581,11 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
                         key={msg.id}
                         className="flex items-center justify-between p-3.5 bg-white rounded-2xl border border-slate-200/80 hover:shadow-sm transition-all"
                       >
-                        <div className="flex items-center gap-3 min-w-0">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
                           <button
                             onClick={() => msg.fileUrl && handleToggleAudio(msg.id, msg.fileUrl)}
                             className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 transition-all ${
-                              isPlaying ? 'bg-indigo-600 text-white shadow-md' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
+                              isPlaying ? 'bg-blue-600 text-white' : 'bg-indigo-50 text-indigo-600 hover:bg-indigo-100'
                             }`}
                           >
                             {isPlaying ? <Pause size={20} /> : <Play size={20} className="translate-x-0.5" />}
@@ -628,7 +620,125 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
               )
             )}
 
-            {/* 6. NOTES / TEXT TAB */}
+            {/* 6. POLLS TAB */}
+            {activeTab === 'polls' && (
+              filteredItems.polls.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
+                  <BarChart2 size={40} className="text-slate-300" />
+                  <p className="text-sm font-medium">Нет опросов в этом чате</p>
+                  <p className="text-xs text-slate-400">Созданные опросы и голосования отобразятся здесь</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredItems.polls.map(msg => {
+                    const poll = (msg as any).poll || { question: msg.pollQuestion || msg.text, options: msg.pollOptions || [] };
+                    const totalVotes = (poll.options || []).reduce((sum: number, opt: any) => sum + (opt.votes?.length || 0), 0);
+                    return (
+                      <div 
+                        key={msg.id}
+                        className="p-4 bg-white rounded-2xl border border-slate-200/80 hover:shadow-sm transition-all"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] font-semibold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">
+                            Опрос • {totalVotes} голосов
+                          </span>
+                          <span className="text-[10px] text-slate-400">{formatDate(msg.createdAt)}</span>
+                        </div>
+                        <h4 className="font-bold text-sm text-slate-900 mb-3">{poll.question}</h4>
+                        <div className="space-y-2 mb-3">
+                          {(poll.options || []).map((opt: any, idx: number) => {
+                            const optVotes = opt.votes?.length || 0;
+                            const percentage = totalVotes > 0 ? Math.round((optVotes / totalVotes) * 100) : 0;
+                            return (
+                              <div key={idx} className="relative bg-slate-50 rounded-xl p-2.5 overflow-hidden border border-slate-100">
+                                <div 
+                                  className="absolute inset-y-0 left-0 bg-blue-100/60 transition-all duration-500 rounded-xl"
+                                  style={{ width: `${percentage}%` }}
+                                />
+                                <div className="relative flex justify-between items-center text-xs font-medium z-10 text-slate-800">
+                                  <span>{opt.text}</span>
+                                  <span className="text-slate-500 font-bold">{percentage}% ({optVotes})</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {onSelectMessage && (
+                          <button
+                            onClick={() => {
+                              onSelectMessage(msg.id);
+                              onClose();
+                            }}
+                            className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1"
+                          >
+                            <Eye size={13} /> Перейти к опросу в чате
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )
+            )}
+
+            {/* 7. LINKS TAB */}
+            {activeTab === 'links' && (
+              filteredItems.links.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
+                  <LinkIcon size={40} className="text-slate-300" />
+                  <p className="text-sm font-medium">Нет ссылок</p>
+                  <p className="text-xs text-slate-400">Ссылки из переписки будут найдены здесь</p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {filteredItems.links.map((item, idx) => (
+                    <div 
+                      key={idx}
+                      className="p-3.5 bg-white rounded-2xl border border-slate-200/80 hover:shadow-sm transition-all flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-cyan-50 text-cyan-600 flex items-center justify-center shrink-0">
+                          <LinkIcon size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <a 
+                            href={item.url} 
+                            target="_blank" 
+                            rel="noopener noreferrer" 
+                            className="text-xs font-bold text-blue-600 hover:underline truncate block"
+                          >
+                            {item.url}
+                          </a>
+                          <p className="text-[10px] text-slate-400 truncate mt-0.5">
+                            {item.domain} • {formatDate(item.msg.createdAt)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleCopy(item.url, `link-${idx}`)}
+                          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors"
+                          title="Скопировать ссылку"
+                        >
+                          {copiedId === `link-${idx}` ? <Check size={16} className="text-emerald-600" /> : <Copy size={16} />}
+                        </button>
+                        <a 
+                          href={item.url} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+                          title="Открыть"
+                        >
+                          <ExternalLink size={16} />
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+
+            {/* 8. NOTES / TEXT TAB */}
             {activeTab === 'notes' && (
               filteredItems.notes.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-2">
@@ -679,48 +789,17 @@ export const ChatMediaModal: React.FC<ChatMediaModalProps> = ({
         </motion.div>
       </div>
 
-      {/* Fullscreen Media Lightbox Viewer */}
-      {previewMediaUrl && (
-        <div 
-          className="fixed inset-0 z-[15000] bg-black/90 backdrop-blur-md flex items-center justify-center p-4"
-          onClick={() => setPreviewMediaUrl(null)}
-        >
-          <div className="relative max-w-4xl max-h-[90vh] flex flex-col items-center" onClick={e => e.stopPropagation()}>
-            <div className="absolute top-2 right-2 flex items-center gap-2 z-10">
-              <a 
-                href={previewMediaUrl.url} 
-                download={previewMediaUrl.name || 'media'} 
-                className="p-2.5 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur-sm"
-                title="Скачать"
-              >
-                <Download size={20} />
-              </a>
-              <button 
-                onClick={() => setPreviewMediaUrl(null)}
-                className="p-2.5 bg-black/50 hover:bg-black/80 text-white rounded-full transition backdrop-blur-sm"
-                title="Закрыть"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            {previewMediaUrl.isVideo ? (
-              <video 
-                src={previewMediaUrl.url} 
-                controls 
-                autoPlay 
-                className="max-h-[85vh] max-w-full rounded-2xl shadow-2xl" 
-              />
-            ) : (
-              <img 
-                src={previewMediaUrl.url} 
-                alt="Предпросмотр" 
-                className="max-h-[85vh] max-w-full object-contain rounded-2xl shadow-2xl"
-                referrerPolicy="no-referrer"
-              />
-            )}
-          </div>
-        </div>
+      {/* Interactive Media Lightbox Modal with Zoom & Pan */}
+      {lightboxIndex !== null && combinedMediaList[lightboxIndex] && (
+        <MediaLightboxModal
+          isOpen={lightboxIndex !== null}
+          onClose={() => setLightboxIndex(null)}
+          mediaList={combinedMediaList}
+          currentIndex={lightboxIndex}
+          onIndexChange={(newIdx) => setLightboxIndex(newIdx)}
+        />
       )}
     </AnimatePresence>
   );
 };
+export default ChatMediaModal;

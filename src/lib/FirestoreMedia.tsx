@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getFileFromFirestore } from './fileStorage';
+import { VideoPreview } from '../components/VideoPreview';
 
 interface FirestoreMediaProps {
   url: string;
@@ -16,6 +17,19 @@ export const FirestoreMedia: React.FC<FirestoreMediaProps> = (props) => {
   const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  if (type === 'video') {
+    return (
+      <VideoPreview
+        url={url}
+        fileName={fileName}
+        className={className}
+        onClick={onClick}
+        controls={props.controls}
+        autoPlay={props.autoPlay}
+      />
+    );
+  }
 
   useEffect(() => {
     let isMounted = true;
@@ -78,18 +92,41 @@ export const FirestoreMedia: React.FC<FirestoreMediaProps> = (props) => {
 
   if (error || !resolvedUrl) {
     return (
-      <div className={`flex items-center justify-center bg-red-50 text-red-500 rounded-xl p-4 text-xs ${className || ''}`}>
-        {error || 'Файл недоступен'}
+      <div className={`flex flex-col items-center justify-center bg-slate-100 text-slate-500 rounded-xl p-3 text-xs ${className || ''}`} style={{ minHeight: '80px' }}>
+        <span className="font-medium text-[11px] truncate max-w-[160px]">{fileName || 'Медиафайл'}</span>
+        <button 
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsLoading(true);
+            setError(null);
+            setResolvedUrl(url);
+          }}
+          className="mt-1 text-[10px] text-blue-600 hover:underline font-semibold"
+        >
+          Повторить
+        </button>
       </div>
     );
   }
 
   if (type === 'image') {
-    return <img src={resolvedUrl} alt={fileName || 'Image'} className={className} onClick={onClick} />;
-  }
-
-  if (type === 'video') {
-    return <video src={resolvedUrl} className={className} onClick={onClick} controls={props.controls} autoPlay={props.autoPlay} />;
+    return (
+      <img 
+        src={resolvedUrl} 
+        alt={fileName || 'Image'} 
+        className={className} 
+        onClick={onClick}
+        loading="lazy"
+        decoding="async"
+        onError={() => {
+          if (resolvedUrl !== url) {
+            setResolvedUrl(url);
+          } else {
+            setError('Не удалось отобразить');
+          }
+        }}
+      />
+    );
   }
 
   return null;

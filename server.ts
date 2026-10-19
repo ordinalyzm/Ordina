@@ -17,6 +17,257 @@ import cors from 'cors';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 
+const DEFAULT_PUBLIC_TRACKS: any[] = [
+  {
+    id: 'track_classical_vivaldi_summer',
+    title: '«Времена года» — Гроза (Лето, Presto)',
+    artist: 'Антонио Вивальди / John Harrison, violin',
+    genre: 'Классика',
+    duration: 159,
+    fileSize: 3009285,
+    fileUrl: '/music/vivaldi_summer.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1507676184212-d03ab07a01bf?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Antonio Vivaldi (1723), Концерт № 2 соль минор, RV 315',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    likes: 124,
+    likedBy: ['system_ordina'],
+    lyrics: `[Характерные инструменты]:\n🎻 Соло-скрипка\n🎻 Струнный оркестр\n🎹 Клавесин`
+  },
+  {
+    id: 'track_classical_vivaldi_spring',
+    title: '«Времена года» — Весна (Allegro)',
+    artist: 'Антонио Вивальди / John Harrison, violin',
+    genre: 'Классика',
+    duration: 216,
+    fileSize: 4200000,
+    fileUrl: '/music/vivaldi_spring.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Antonio Vivaldi (1723), Концерт № 1 ми мажор, RV 269',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-02T00:00:00.000Z',
+    likes: 98,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_vivaldi_winter',
+    title: '«Времена года» — Зима (Allegro non molto)',
+    artist: 'Антонио Вивальди / John Harrison, violin',
+    genre: 'Классика',
+    duration: 209,
+    fileSize: 3900000,
+    fileUrl: '/music/vivaldi_winter.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1517824806704-9040b037703b?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Antonio Vivaldi (1723), Концерт № 4 фа минор, RV 297',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-03T00:00:00.000Z',
+    likes: 87,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_beethoven_moonlight',
+    title: '«Лунная соната» (Соната № 14)',
+    artist: 'Людвиг ван Бетховен / Фортепиано',
+    genre: 'Классика',
+    duration: 360,
+    fileSize: 6633329,
+    fileUrl: '/music/beethoven_moonlight.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1520523839898-507127027c8e?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Ludwig van Beethoven (1801), Op. 27 No. 2',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-04T00:00:00.000Z',
+    likes: 145,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_tchaikovsky_sugarplum',
+    title: '«Щелкунчик» — Танец феи Драже',
+    artist: 'П. И. Чайковский / Симфонический оркестр',
+    genre: 'Классика',
+    duration: 114,
+    fileSize: 1894439,
+    fileUrl: '/music/tchaikovsky_sugarplum.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1543584756-8f40a802e14f?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Пётр Ильич Чайковский (1892), Балет «Щелкунчик»',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-05T00:00:00.000Z',
+    likes: 93,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_mozart_serenade',
+    title: '«Маленькая ночная серенада» (Allegro)',
+    artist: 'В. А. Моцарт / Оркестр',
+    genre: 'Классика',
+    duration: 345,
+    fileSize: 11000000,
+    fileUrl: '/music/mozart_serenade.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Wolfgang Amadeus Mozart (1787), Serenade No. 13 in G major, K. 525',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-06T00:00:00.000Z',
+    likes: 118,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_chopin_nocturne',
+    title: 'Ноктюрн ми-бемоль мажор (Op. 9 No. 2)',
+    artist: 'Фредерик Шопен / Фортепиано',
+    genre: 'Классика',
+    duration: 203,
+    fileSize: 3287356,
+    fileUrl: '/music/chopin_nocturne_op9.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1520523839898-507127027c8e?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Frédéric Chopin (1832), Nocturne Op. 9 No. 2',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-07T00:00:00.000Z',
+    likes: 156,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_debussy_clair',
+    title: '«Лунный свет» (Clair de Lune)',
+    artist: 'Клод Дебюсси / Фортепиано',
+    genre: 'Классика',
+    duration: 304,
+    fileSize: 15740765,
+    fileUrl: '/music/debussy_clair_de_lune.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Claude Debussy (1905), Suite bergamasque',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-08T00:00:00.000Z',
+    likes: 184,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_bach_air',
+    title: 'Ария из оркестровой сюиты № 3 (Air)',
+    artist: 'И. С. Бах / Струнный оркестр',
+    genre: 'Классика',
+    duration: 260,
+    fileSize: 2758350,
+    fileUrl: '/music/bach_air.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Johann Sebastian Bach (1731), BWV 1068',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-09T00:00:00.000Z',
+    likes: 142,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_classical_satie_gymnopedie',
+    title: 'Гимнопедия № 1 (Gymnopédie No. 1)',
+    artist: 'Эрик Сати / Фортепиано',
+    genre: 'Классика',
+    duration: 205,
+    fileSize: 1571628,
+    fileUrl: '/music/satie_gymnopedie.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1511192336575-5a79af67a629?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Erik Satie (1888), 3 Gymnopédies',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-10T00:00:00.000Z',
+    likes: 129,
+    likedBy: ['system_ordina']
+  },
+  {
+    id: 'track_jazz_maple_rag',
+    title: 'Maple Leaf Rag (Регтайм & Джаз)',
+    artist: 'Скотт Джоплин / Фортепиано',
+    genre: 'Джаз / Блюз',
+    duration: 148,
+    fileSize: 3673778,
+    fileUrl: '/music/joplin_maple_rag.ogg',
+    coverUrl: 'https://images.unsplash.com/photo-1511192336575-5a79af67a629?w=600&auto=format&fit=crop&q=80',
+    uploaderId: 'system_ordina',
+    uploaderName: 'Ordina Music',
+    isPublic: true,
+    originalAuthorNotice: 'Scott Joplin (1899), Классический американский регтайм',
+    licenseType: 'public_domain',
+    createdAt: '2025-01-11T00:00:00.000Z',
+    likes: 112,
+    likedBy: ['system_ordina']
+  }
+];
+
+const DEFAULT_PUBLIC_PLAYLISTS: any[] = [
+  {
+    id: 'pl_piano_relax',
+    name: '🎹 Шедевры Фортепиано (Шопен, Дебюсси, Бетховен, Сати)',
+    description: 'Ноктюрн Шопена, Лунный свет Дебюсси, Лунная соната Бетховена, Гимнопедия Сати и Регтайм',
+    coverUrl: 'https://images.unsplash.com/photo-1520523839898-507127027c8e?w=600&auto=format&fit=crop&q=80',
+    userId: 'system_ordina',
+    trackIds: [
+      'track_classical_chopin_nocturne',
+      'track_classical_debussy_clair',
+      'track_classical_beethoven_moonlight',
+      'track_classical_satie_gymnopedie',
+      'track_jazz_maple_rag'
+    ],
+    createdAt: '2025-01-01T00:00:00.000Z'
+  },
+  {
+    id: 'pl_classical_masters',
+    name: '🎻 Золотая Классика (Вивальди, Бах, Моцарт, Чайковский)',
+    description: '«Времена года» (Гроза, Весна, Зима), Ария Баха, Маленькая ночная серенада и Танец феи Драже',
+    coverUrl: 'https://images.unsplash.com/photo-1507676184212-d03ab07a01bf?w=600&auto=format&fit=crop&q=80',
+    userId: 'system_ordina',
+    trackIds: [
+      'track_classical_vivaldi_summer', 
+      'track_classical_vivaldi_spring', 
+      'track_classical_vivaldi_winter', 
+      'track_classical_bach_air', 
+      'track_classical_mozart_serenade',
+      'track_classical_tchaikovsky_sugarplum'
+    ],
+    createdAt: '2025-01-01T00:00:00.000Z'
+  },
+  {
+    id: 'pl_focus_evening',
+    name: '☕ Вечерний Уют & Спокойствие',
+    description: 'Мягкое вдохновение для учёбы, чтения и отдыха под живое фортепиано и струнные',
+    coverUrl: 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=600&auto=format&fit=crop&q=80',
+    userId: 'system_ordina',
+    trackIds: [
+      'track_classical_debussy_clair',
+      'track_classical_satie_gymnopedie',
+      'track_classical_chopin_nocturne',
+      'track_classical_bach_air',
+      'track_classical_beethoven_moonlight'
+    ],
+    createdAt: '2025-01-01T00:00:00.000Z'
+  }
+];
+
 // Local storage fallback database
 let localDb = {
   users: {} as Record<string, { uid: string, data: string }>,
@@ -26,8 +277,11 @@ let localDb = {
   scheduled_messages: {} as Record<string, { id: string, chatId: string, data: string, sendAt: string }>,
   bots: {} as Record<string, { id: string, owner_id: string, data: string }>,
   reports: {} as Record<string, { id: string, data: string, status: string, createdAt: string }>,
+  music_tracks: {} as Record<string, { id: string, uploaderId: string, isPublic: boolean, data: string, createdAt: string }>,
+  music_playlists: {} as Record<string, { id: string, userId: string, data: string, createdAt: string }>,
   moderators: [] as string[],
-  banned_emails: {} as Record<string, { email: string, reason: string, bannedAt: string, moderatorUid: string }>
+  banned_emails: {} as Record<string, { email: string, reason: string, bannedAt: string, moderatorUid: string }>,
+  moderation_rules: {} as Record<string, { id: string, category: string, title: string, lawArticle: string, pattern: string, description: string, replacement: string, createdAt: string }>
 };
 
 const DB_FILE = path.join(process.cwd(), 'local_database.json');
@@ -406,6 +660,36 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
     return { rows: [], rowCount: 1 };
   }
 
+  if (normalized.includes('INSERT INTO moderation_rules')) {
+    const id = params[0];
+    const category = params[1];
+    const title = params[2];
+    const lawArticle = params[3];
+    const pattern = params[4];
+    const description = params[5];
+    const replacement = params[6];
+    const createdAt = params[7] || new Date().toISOString();
+    localDb.moderation_rules = localDb.moderation_rules || {};
+    localDb.moderation_rules[id] = { id, category, title, lawArticle, pattern, description, replacement, createdAt };
+    saveLocalDb();
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (normalized.includes('FROM moderation_rules')) {
+    localDb.moderation_rules = localDb.moderation_rules || {};
+    const rows = Object.values(localDb.moderation_rules);
+    return { rows, rowCount: rows.length };
+  }
+
+  if (normalized.includes('DELETE FROM moderation_rules WHERE id =')) {
+    const id = params[0];
+    if (localDb.moderation_rules && localDb.moderation_rules[id]) {
+      delete localDb.moderation_rules[id];
+      saveLocalDb();
+    }
+    return { rows: [], rowCount: 1 };
+  }
+
   return { rows: [], rowCount: 0 };
 }
 
@@ -485,6 +769,29 @@ async function initDb() {
         "bannedAt" TEXT NOT NULL,
         "moderatorUid" TEXT
       );
+      CREATE TABLE IF NOT EXISTS music_tracks (
+        id TEXT PRIMARY KEY,
+        "uploaderId" TEXT NOT NULL,
+        "isPublic" BOOLEAN NOT NULL DEFAULT false,
+        data TEXT NOT NULL,
+        "createdAt" TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS music_playlists (
+        id TEXT PRIMARY KEY,
+        "userId" TEXT NOT NULL,
+        data TEXT NOT NULL,
+        "createdAt" TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS moderation_rules (
+        id TEXT PRIMARY KEY,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        "lawArticle" TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        description TEXT NOT NULL,
+        replacement TEXT NOT NULL,
+        "createdAt" TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_messages_chatid ON messages ("chatId");
       CREATE INDEX IF NOT EXISTS idx_messages_createdat ON messages ("createdAt");
       CREATE INDEX IF NOT EXISTS idx_sched_sendat ON scheduled_messages ("sendAt");
@@ -496,11 +803,128 @@ async function initDb() {
   }
 }
 
+const DEFAULT_MODERATION_RULES = [
+  {
+    id: 'rule_insult_5_61',
+    category: 'conflict',
+    title: 'Оскорбление и ненормативная лексика',
+    lawArticle: 'ст. 5.61 КоАП РФ',
+    pattern: 'маты, бранные слова, унижение чести и достоинства',
+    description: 'Унижение чести и достоинства лица в неприличной форме влечет административный штраф до 10 000 руб. и компенсацию морального вреда.',
+    replacement: 'Я не согласен с вашей точкой зрения и предлагаю вернуться к конструктивному диалогу.'
+  },
+  {
+    id: 'rule_threat_119',
+    category: 'conflict',
+    title: 'Угроза убийством или причинением тяжкого вреда',
+    lawArticle: 'ст. 119 УК РФ',
+    pattern: 'убью, закопаю, искалечу, расправлюсь, оторву голову',
+    description: 'Угроза убийством или причинением вреда здоровью наказывается лишением свободы до 2 лет (а по мотивам вражды — до 5 лет).',
+    replacement: 'Настоятельно призываю решать все возникшие разногласия исключительно законным правовым путем.'
+  },
+  {
+    id: 'rule_extortion_163',
+    category: 'conflict',
+    title: 'Вымогательство и шантаж',
+    lawArticle: 'ст. 163 УК РФ',
+    pattern: 'гони бабки, верни деньги иначе пожалеешь, поставлю на счетчик',
+    description: 'Требование передачи денежных средств под угрозой насилия или распространения позорящих сведений влечет до 4 лет лишения свободы.',
+    replacement: 'Имущественные требования должны направляться в форме мотивированной досудебной претензии.'
+  },
+  {
+    id: 'rule_defamation_128',
+    category: 'defamation',
+    title: 'Клевета и распространение заведомо ложных сведений',
+    lawArticle: 'ст. 128.1 УК РФ',
+    pattern: 'вор, мошенник, коррупционер, компромат',
+    description: 'Распространение заведомо ложных сведений, порочащих честь, наказывается штрафом до 500 000 руб.',
+    replacement: 'У меня имеются вопросы к добросовестности данных действий, требующие официальной проверки.'
+  },
+  {
+    id: 'rule_authority_319',
+    category: 'conflict',
+    title: 'Оскорбление представителя власти',
+    lawArticle: 'ст. 319 УК РФ',
+    pattern: 'оскорбления в адрес должностных лиц, полиции, судей, президента',
+    description: 'Публичное оскорбление представителя власти при исполнении им должностных обязанностей наказывается штрафом или обязательными работами.',
+    replacement: 'Действия должностных лиц могут быть обжалованы в вышестоящие инстанции или в суд.'
+  },
+  {
+    id: 'rule_drugs_228',
+    category: 'criminal',
+    title: 'Незаконный оборот наркотических средств',
+    lawArticle: 'ст. 228 УК РФ',
+    pattern: 'закладки, наркотики, меф, продам вес, вещества',
+    description: 'Приобретение, хранение или сбыт наркотических средств наказывается лишением свободы на срок от 3 до 20 лет.',
+    replacement: 'Любые противоправные вещества категорически запрещены законодательством РФ.'
+  },
+  {
+    id: 'rule_theft_158',
+    category: 'self_incrimination',
+    title: 'Признание в краже или хищении (самооговор)',
+    lawArticle: 'ст. 158 УК РФ',
+    pattern: 'я украл, я своровал, кинул на бабки',
+    description: 'Тайное хищение чужого имущества образует состав кражи (ст. 158 УК РФ).',
+    replacement: 'Вопрос о принадлежности имущества должен решаться в законном порядке.'
+  },
+  {
+    id: 'rule_privacy_137',
+    category: 'privacy',
+    title: 'Нарушение неприкосновенности частной жизни и деанон',
+    lawArticle: 'ст. 137 УК РФ, ст. 13.11 КоАП РФ',
+    pattern: 'солью паспорт, выложу домашний адрес, деанон, чужие персональные данные',
+    description: 'Незаконный сбор или распространение сведений о частной жизни без согласия влечет уголовную ответственность до 2 лет лишения свободы.',
+    replacement: 'Обработка персональных данных допустима только с письменного согласия субъекта.'
+  },
+  {
+    id: 'rule_bribery_291',
+    category: 'corruption',
+    title: 'Взятки и коррупционные предложения',
+    lawArticle: 'ст. 291 УК РФ',
+    pattern: 'дам на лапу, откуплюсь от гаишника, решу за взятку',
+    description: 'Дача взятки должностному лицу является тяжким преступлением и наказывается лишением свободы до 8 лет со штрафом.',
+    replacement: 'Все государственные услуги и процедуры осуществляются строго по официальному регламенту.'
+  },
+  {
+    id: 'rule_extremism_280',
+    category: 'extremism',
+    title: 'Призывы к экстремизму и насилию',
+    lawArticle: 'ст. 280, ст. 282 УК РФ',
+    pattern: 'призывы к насилию, разжигание национальной вражды',
+    description: 'Публичные призывы к экстремистской деятельности и возбуждение вражды влекут лишение свободы на срок до 5 лет.',
+    replacement: 'Призываю к взаимоуважению и строгому соблюдению Конституции Российской Федерации.'
+  }
+];
+
+async function seedModerationRules() {
+  try {
+    const { rows } = await pool.query('SELECT id FROM moderation_rules LIMIT 1');
+    if (rows.length === 0) {
+      for (const r of DEFAULT_MODERATION_RULES) {
+        await pool.query(
+          'INSERT INTO moderation_rules (id, category, title, "lawArticle", pattern, description, replacement, "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+          [r.id, r.category, r.title, r.lawArticle, r.pattern, r.description, r.replacement, new Date().toISOString()]
+        );
+      }
+      console.log('Default moderation rules seeded into database.');
+    }
+  } catch (err) {
+    console.error('Error seeding moderation rules:', err);
+  }
+}
+
 let aiClient: GoogleGenAI | null = null;
 function getAiClient(): GoogleGenAI | null {
   if (!aiClient && process.env.GEMINI_API_KEY) {
     try {
-      aiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      aiClient = new GoogleGenAI({
+        apiKey: process.env.GEMINI_API_KEY,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
     } catch (e) {
       console.warn('[Gemini] Failed to initialize GoogleGenAI client:', e);
     }
@@ -591,6 +1015,7 @@ async function startServer() {
   await initDb();
   await cleanupStickers();
   await seedGlobalChannel();
+  await seedModerationRules();
 
   (global as any).userBotStates = new Map();
   (global as any).userBotVariables = new Map();
@@ -854,6 +1279,228 @@ async function startServer() {
     } catch (e: any) {
       console.error('[Anti-DPI API] Error processing obfuscated packet:', e);
       res.status(500).json({ error: e.message });
+    }
+  });
+
+  // Free AI Legal Shield Violation Checker using Gemini 3.8 Flash
+  app.post('/api/legal-shield/analyze', async (req, res) => {
+    try {
+      const { text } = req.body;
+      if (!text || typeof text !== 'string' || !text.trim()) {
+        return res.json({
+          hasRisks: false,
+          riskLevel: 'none',
+          category: 'none',
+          lawArticle: '',
+          riskTitle: 'Нарушений не выявлено',
+          riskDescription: '',
+          safeReplacement: '',
+          matchedText: ''
+        });
+      }
+
+      const ai = getAiClient();
+      if (!ai) {
+        return res.json({
+          hasRisks: false,
+          riskLevel: 'none',
+          category: 'none',
+          lawArticle: '',
+          riskTitle: 'ИИ-сервис временно недоступен',
+          riskDescription: 'Используется встроенный фильтр безопасности.',
+          safeReplacement: '',
+          matchedText: ''
+        });
+      }
+
+      // Load violation rules from the database to ground AI analysis
+      let dbRules: any[] = [];
+      try {
+        const { rows } = await pool.query('SELECT * FROM moderation_rules');
+        dbRules = rows.length > 0 ? rows : DEFAULT_MODERATION_RULES;
+      } catch (e) {
+        dbRules = DEFAULT_MODERATION_RULES;
+      }
+
+      const dbRulesContext = dbRules.map((r: any, idx: number) => 
+        `${idx + 1}. [${r.lawArticle || 'Законодательство РФ'}] "${r.title}": ${r.description}. Рискованные фразы/паттерны на русском: ${r.pattern}. Безопасный аналог: "${r.replacement}".`
+      ).join('\n');
+
+      const prompt = `Ты — строгий юридический ИИ-аналитик «Правовой щит», проверяющий текст сообщения НА РУССКОМ ЯЗЫКЕ в мессенджере на соблюдение законодательства РФ (КоАП РФ, УК РФ, Конституция РФ).
+
+БАЗА НАРУШЕНИЙ И ПАТТЕРНОВ:
+${dbRulesContext}
+
+ВНИМАНИЕ: Проверяй текст исключительно на русском языке. Если текст содержит мат, оскорбления (ст. 5.61 КоАП), угрозы насилия или убийства (ст. 119 УК РФ), вымогательство (ст. 163 УК РФ), мошенничество, призывы к незаконным действиям или деанон — ТЫ ОБЯЗАН ВЕРНУТЬ hasRisks: true. Не принимай токсичный или агрессивный текст за безопасный.
+
+Если сообщение АБСОЛЮТНО БЕЗОПАСНО и нарушений нет, верни JSON:
+{
+  "hasRisks": false,
+  "riskLevel": "none",
+  "category": "none",
+  "lawArticle": "",
+  "riskTitle": "Нарушений не выявлено",
+  "riskDescription": "Сообщение не нарушает правила и законодательство РФ.",
+  "safeReplacement": "",
+  "matchedText": ""
+}
+
+Если сообщение СОДЕРЖИТ правовой риск или нарушение на русском языке, верни JSON:
+{
+  "hasRisks": true,
+  "riskLevel": "critical",
+  "category": "conflict" | "defamation" | "self_incrimination" | "privacy" | "corruption" | "criminal" | "extremism",
+  "lawArticle": "Статья закона (например, 'ст. 119 УК РФ', 'ст. 5.61 КоАП РФ', 'ст. 163 УК РФ')",
+  "riskTitle": "Название нарушения",
+  "riskDescription": "Понятное юридическое предупреждение о последствиях на русском языке.",
+  "safeReplacement": "Юридически корректная, законная и вежливая формулировка мысли на русском языке.",
+  "matchedText": "Точный опасный фрагмент или фраза из текста."
+}
+
+Ответ верни СТРОГО в формате валидного JSON без markdown кавычек и дополнительных пояснений.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              { text: `Проверяемый текст сообщения на русском:\n"""${text.slice(0, 2000)}"""` }
+            ]
+          }
+        ],
+        config: {
+          responseMimeType: 'application/json'
+        }
+      });
+
+      let jsonText = response.text || '{}';
+      jsonText = jsonText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      const parsed = JSON.parse(jsonText);
+      res.json(parsed);
+    } catch (err: any) {
+      console.error('[LegalShield AI] Error during AI message check:', err);
+      res.status(500).json({ error: 'AI analysis failed', details: err?.message });
+    }
+  });
+
+  // Get violation rules from database
+  app.get('/api/moderation/rules', async (req, res) => {
+    try {
+      const { rows } = await pool.query('SELECT * FROM moderation_rules ORDER BY "createdAt" ASC');
+      res.json({ total: rows.length, rules: rows.length > 0 ? rows : DEFAULT_MODERATION_RULES });
+    } catch (e: any) {
+      res.json({ total: DEFAULT_MODERATION_RULES.length, rules: DEFAULT_MODERATION_RULES });
+    }
+  });
+
+  // Add custom violation rule to database
+  app.post('/api/moderation/rules', async (req, res) => {
+    try {
+      const { category, title, lawArticle, pattern, description, replacement } = req.body;
+      if (!title || !description) {
+        return res.status(400).json({ error: 'Заголовок и описание обязательны' });
+      }
+      const id = 'rule_' + uuidv4().slice(0, 8);
+      const createdAt = new Date().toISOString();
+      await pool.query(
+        'INSERT INTO moderation_rules (id, category, title, "lawArticle", pattern, description, replacement, "createdAt") VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+        [id, category || 'custom', title, lawArticle || '', pattern || '', description, replacement || '', createdAt]
+      );
+      res.json({ status: 'ok', id });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // AI Music Scanner endpoint for device/phone tracks characterization
+  app.post('/api/music/ai-scan', async (req, res) => {
+    try {
+      const { tracks } = req.body;
+      if (!tracks || !Array.isArray(tracks)) {
+        return res.status(400).json({ error: 'Tracks array required' });
+      }
+
+      const ai = getAiClient();
+      if (!ai) {
+        const analyzed = tracks.map((t: any, idx: number) => ({
+          id: 'scanned_' + Date.now() + '_' + idx,
+          title: t.title || 'Трек ' + (idx + 1),
+          artist: t.artist || 'Неизвестный исполнитель',
+          genre: 'Поп',
+          duration: 180,
+          fileSize: 4500000,
+          fileUrl: t.fileUrl || '/music/vivaldi_summer.ogg',
+          coverUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80',
+          aiMood: 'Энергичный и бодрый',
+          aiBpm: '120 BPM',
+          aiDescription: 'Автоматически охарактеризовано ИИ-сканером.',
+          isPublic: true,
+          licenseType: 'original_user',
+          createdAt: new Date().toISOString(),
+          likes: 0,
+          likedBy: []
+        }));
+        return res.json({ scannedTracks: analyzed });
+      }
+
+      const prompt = `Ты — музыкальный ИИ-продюсер и аудио-аналитик. Проанализируй список аудиофайлов с телефона пользователя и для каждого файла определи:
+1. Жанр (Классика, Рок, Фонк, Lo-Fi, Поп, Хип-хоп / Рэп, Джаз / Блюз, Электроника).
+2. Настроение / вайб (на русском языке).
+3. Примерный BPM.
+4. Краткое описание трека (на русском языке).
+
+Входной список треков:
+${JSON.stringify(tracks, null, 2)}
+
+Верни ответ СТРОГО в формате JSON-массива объектов со следующей структурой:
+[
+  {
+    "title": "...",
+    "artist": "...",
+    "genre": "...",
+    "duration": 180,
+    "aiMood": "...",
+    "aiBpm": "...",
+    "aiDescription": "..."
+  }
+]
+Без markdown кавычек, только чистый JSON.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: { responseMimeType: 'application/json' }
+      });
+
+      let jsonText = response.text || '[]';
+      jsonText = jsonText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+      const analyzedRaw = JSON.parse(jsonText);
+
+      const scannedTracks = analyzedRaw.map((t: any, idx: number) => ({
+        id: 'scanned_' + Date.now() + '_' + idx,
+        title: t.title || tracks[idx]?.title || 'Трек ' + (idx + 1),
+        artist: t.artist || tracks[idx]?.artist || 'Исполнитель',
+        genre: t.genre || 'Поп',
+        duration: t.duration || 180,
+        fileSize: 4500000,
+        fileUrl: tracks[idx]?.fileUrl || '/music/vivaldi_summer.ogg',
+        coverUrl: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80',
+        aiMood: t.aiMood || 'Мелодичный',
+        aiBpm: t.aiBpm || '120 BPM',
+        aiDescription: t.aiDescription || 'Проанализировано ИИ-сканером музыки.',
+        isPublic: true,
+        licenseType: 'original_user',
+        createdAt: new Date().toISOString(),
+        likes: 0,
+        likedBy: []
+      }));
+
+      res.json({ scannedTracks });
+    } catch (err: any) {
+      console.error('[AI Music Scan] Error:', err);
+      res.status(500).json({ error: err?.message || 'Music scan failed' });
     }
   });
 
@@ -1186,6 +1833,95 @@ async function checkAndDeleteMessage(msgId: string, msg: any, chatId: string) {
   }
 }
 
+function transliterateRussianToLatin(text: string): string {
+  const ru: Record<string, string> = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo', 'ж': 'zh',
+    'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o',
+    'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts',
+    'ч': 'ch', 'ш': 'sh', 'щ': 'sch', 'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+  };
+  return (text || '').toLowerCase().split('').map(char => ru[char] || char).join('');
+}
+
+async function isUsernameTaken(username: string, excludeUid?: string): Promise<boolean> {
+  if (!username) return false;
+  const target = username.toLowerCase().trim();
+
+  // Check in memory localDb
+  for (const [uUid, uRow] of Object.entries(localDb.users || {})) {
+    if (excludeUid && uUid === excludeUid) continue;
+    try {
+      const parsed = JSON.parse((uRow as any).data);
+      if (parsed.username && parsed.username.toLowerCase().trim() === target) {
+        return true;
+      }
+    } catch {}
+  }
+
+  // Check in postgres
+  try {
+    const { rows } = await pool.query('SELECT uid, data FROM users');
+    for (const r of rows) {
+      if (excludeUid && r.uid === excludeUid) continue;
+      try {
+        const parsed = JSON.parse(r.data);
+        if (parsed.username && parsed.username.toLowerCase().trim() === target) {
+          return true;
+        }
+      } catch {}
+    }
+  } catch {}
+
+  return false;
+}
+
+async function generateUniqueUsername(baseName: string, targetUid: string): Promise<string> {
+  let cleaned = transliterateRussianToLatin(baseName || 'user')
+    .replace(/[^a-z0-9_]/g, '')
+    .slice(0, 14);
+
+  if (!cleaned || cleaned.length < 3) cleaned = 'user';
+
+  let candidate = `${cleaned}_${Math.floor(1000 + Math.random() * 9000)}`;
+  let attempts = 0;
+
+  while (attempts < 20) {
+    attempts++;
+    const taken = await isUsernameTaken(candidate, targetUid);
+    if (!taken) return candidate;
+    candidate = `${cleaned}_${Math.floor(10000 + Math.random() * 90000)}`;
+  }
+
+  return `${cleaned}_${Date.now().toString().slice(-6)}`;
+}
+
+const RANDOM_USER_NAMES = [
+  'Странник', 'Искатель', 'Новатор', 'Ординец', 'Спутник', 
+  'Вояджер', 'Адепт', 'Горизонт', 'Феникс', 'Сокол', 
+  'Маяк', 'Исследователь', 'Хранитель', 'Квазар', 'Атлас',
+  'Вектор', 'Север', 'Пульсар', 'Орион', 'Кибернетик',
+  'Зодчий', 'Пилигрим', 'Меркурий', 'Тайфун', 'Навигатор',
+  'Комета', 'Альтаир', 'Арго', 'Антарес', 'Зенит'
+];
+
+function getRandomUserName(): string {
+  const base = RANDOM_USER_NAMES[Math.floor(Math.random() * RANDOM_USER_NAMES.length)];
+  const num = Math.floor(100 + Math.random() * 900);
+  return `${base} ${num}`;
+}
+
+const RANDOM_GROUP_NAMES = [
+  'Комната', 'Беседка', 'Сообщество', 'Узел связи', 'Отряд',
+  'Пространство', 'Клуб', 'Лаборатория', 'Гармония', 'Круг',
+  'Кают-компания', 'Орбита', 'Матрица', 'Сфера', 'Форпост'
+];
+
+function getRandomGroupName(): string {
+  const base = RANDOM_GROUP_NAMES[Math.floor(Math.random() * RANDOM_GROUP_NAMES.length)];
+  const num = Math.floor(100 + Math.random() * 900);
+  return `${base} ${num}`;
+}
+
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
@@ -1211,6 +1947,7 @@ io.on('connection', (socket) => {
           finalData = {
             ...serverData,
             ...userData,
+            displayName: userData.displayName || serverData.displayName || getRandomUserName(),
             photoURL: userData.photoURL || serverData.photoURL || '',
             bio: userData.bio || serverData.bio || '',
             username: userData.username || serverData.username || '',
@@ -1221,10 +1958,15 @@ io.on('connection', (socket) => {
             uid: uid,
             email: userData.email || serverData.email
           };
-        } else {
           if (!finalData.username) {
-            finalData.username = userData.displayName?.toLowerCase().replace(/\s+/g, '_') || `user_${uid.slice(0, 5)}`;
+            finalData.username = await generateUniqueUsername(finalData.displayName || 'user', uid);
           }
+        } else {
+          // New user: assign random unique Russian name if missing or placeholder
+          if (!userData.displayName || userData.displayName === 'Пользователь' || userData.displayName.startsWith('Гость ')) {
+            finalData.displayName = getRandomUserName();
+          }
+          finalData.username = await generateUniqueUsername(finalData.displayName || userData.username || 'user', uid);
           try {
             await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2)', [uid, JSON.stringify(finalData)]);
           } catch (e) { console.error('insert skipped'); }
@@ -2685,25 +3427,127 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('message:delete', async (data: { id: string, chatId: string }) => {
-      const { rows } = await pool.query('SELECT data FROM messages WHERE id = $1', [data.id]);
-      const row = rows[0];
-      let msg: any = null;
-      if (row) msg = JSON.parse(row.data);
+    socket.on('message:delete', async (data: { id: string, chatId?: string }) => {
+      try {
+        if (!data || !data.id) return;
+        const msgId = data.id;
+        const chatId = data.chatId;
 
-      await pool.query('DELETE FROM messages WHERE id = $1', [data.id]);
-      
-      let room = `chat:${data.chatId}`;
-      if (msg && !msg.groupId && data.chatId !== 'global_channel' && msg.receiverId) {
-        let historyId;
-        if (msg.senderId === msg.receiverId) historyId = msg.senderId;
-        else historyId = [msg.senderId, msg.receiverId].sort().join('_');
-        room = `chat:${historyId}`;
+        const { rows } = await pool.query('SELECT data FROM messages WHERE id = $1', [msgId]);
+        const row = rows[0];
+        let msg: any = null;
+        if (row && row.data) {
+          try {
+            msg = JSON.parse(row.data);
+          } catch (e) {}
+        }
+
+        await pool.query('DELETE FROM messages WHERE id = $1', [msgId]);
+        if (localDb.messages[msgId]) {
+          delete localDb.messages[msgId];
+          saveLocalDb();
+        }
+
+        const payload = { id: msgId, chatId: chatId || msg?.groupId };
+        
+        let room = chatId ? `chat:${chatId}` : null;
+        if (msg && !msg.groupId && chatId !== 'global_channel' && msg.receiverId) {
+          let historyId;
+          if (msg.senderId === msg.receiverId) historyId = msg.senderId;
+          else historyId = [msg.senderId, msg.receiverId].sort().join('_');
+          room = `chat:${historyId}`;
+        }
+
+        if (room) {
+          io.to(room).emit('message:deleted', payload);
+          io.to(room).emit('message:deleted', msgId);
+        }
+        if (msg && msg.receiverId) {
+          io.to(`user:${msg.receiverId}`).emit('message:deleted', payload);
+          io.to(`user:${msg.receiverId}`).emit('message:deleted', msgId);
+        }
+        if (msg && msg.senderId) {
+          io.to(`user:${msg.senderId}`).emit('message:deleted', payload);
+          io.to(`user:${msg.senderId}`).emit('message:deleted', msgId);
+        }
+        
+        // Also ensure sender gets immediate event
+        socket.emit('message:deleted', payload);
+        socket.emit('message:deleted', msgId);
+        // And emit globally to ensure any other opened sessions/windows clear it
+        io.emit('message:deleted', payload);
+        io.emit('message:deleted', msgId);
+      } catch (err) {
+        console.error('Error in message:delete:', err);
       }
+    });
 
-      io.to(room).emit('message:deleted', data.id);
-      if (msg && msg.receiverId) io.to(`user:${msg.receiverId}`).emit('message:deleted', data.id);
-      if (msg && msg.senderId) io.to(`user:${msg.senderId}`).emit('message:deleted', data.id);
+    socket.on('shield:ai_check', async (data: { text: string, reqId?: string }, callback) => {
+      try {
+        const text = data?.text || '';
+        if (!text.trim()) {
+          const emptyRes = { hasRisks: false, riskLevel: 'none', reqId: data?.reqId };
+          if (typeof callback === 'function') callback(emptyRes);
+          socket.emit('shield:ai_result', emptyRes);
+          return;
+        }
+
+        const ai = getAiClient();
+        if (!ai) {
+          const fallbackRes = { hasRisks: false, riskLevel: 'none', reqId: data?.reqId };
+          if (typeof callback === 'function') callback(fallbackRes);
+          socket.emit('shield:ai_result', fallbackRes);
+          return;
+        }
+
+        const prompt = `Ты — юридический ИИ-аналитик «Правовой щит», проверяющий текст сообщений в мессенджере на соблюдение законодательства РФ (КоАП РФ, УК РФ, ТК РФ).
+Определи, есть ли нарушение:
+1. Оскорбления личности, мат, нецензурная брань (ст. 5.61 КоАП РФ).
+2. Оскорбление представителей власти, президента (ст. 319 УК РФ).
+3. Признание в совершении преступлений (ст. 158 УК РФ "Кража", ст. 159 УК РФ "Мошенничество", ст. 163 УК РФ "Вымогательство" и др., например "я украл", "я своровал деньги").
+4. Угрозы убийством или насилием (ст. 119 УК РФ).
+5. Наркотики (ст. 228 УК РФ).
+6. Взятки (ст. 291 УК РФ).
+7. Слив персональных данных, деанон (ст. 137 УК РФ, ст. 13.11 КоАП РФ).
+8. Коллекторское давление, ночные звонки (ст. 14.57 КоАП РФ).
+9. Экстремизм и призывы к насилию.
+
+Если нарушений нет:
+{"hasRisks":false,"riskLevel":"none","lawArticle":"","riskTitle":"Нарушений не выявлено","riskDescription":"","safeReplacement":"","matchedText":""}
+
+Если есть нарушение:
+{"hasRisks":true,"riskLevel":"critical","lawArticle":"ст. 319 УК РФ","riskTitle":"Оскорбление представителя власти (ст. 319 УК РФ)","riskDescription":"Санкции и правовые последствия","safeReplacement":"Вежливая формулировка мысли","matchedText":"Опасная фраза"}
+Только валидный JSON.`;
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: prompt },
+                { text: `Проверяемый текст: "${text.slice(0, 2000)}"` }
+              ]
+            }
+          ],
+          config: {
+            responseMimeType: 'application/json'
+          }
+        });
+
+        let jsonText = response.text || '{}';
+        jsonText = jsonText.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
+        const parsed = JSON.parse(jsonText);
+        parsed.reqId = data?.reqId;
+
+        if (typeof callback === 'function') callback(parsed);
+        socket.emit('shield:ai_result', parsed);
+      } catch (err: any) {
+        console.error('[Socket LegalShield AI] Error:', err);
+        const errRes = { hasRisks: false, riskLevel: 'none', reqId: data?.reqId };
+        if (typeof callback === 'function') callback(errRes);
+        socket.emit('shield:ai_result', errRes);
+      }
     });
 
     socket.on('chat:delete_everyone', async (data: { user1: string, user2: string }) => {
@@ -2833,21 +3677,51 @@ io.on('connection', (socket) => {
       }
     });
 
-    socket.on('profile:update', async (data: { uid: string, profile: any }) => {
+    socket.on('profile:update', async (data: { uid?: string, profile?: any }) => {
       try {
-        const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [data.uid]);
+        const targetUid = data?.uid || (socket as any).uid;
+        if (!targetUid) return;
+
+        const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [targetUid]);
         const row = rows[0];
         
-        let finalProfile = data.profile;
+        let existing: any = {};
         if (row) {
-          const existing = JSON.parse(row.data);
-          finalProfile = { ...existing, ...data.profile, uid: data.uid };
+          try {
+            existing = JSON.parse(row.data);
+          } catch (e) {}
         }
         
-        await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2) ON CONFLICT (uid) DO UPDATE SET data = EXCLUDED.data', [data.uid, JSON.stringify(finalProfile)]);
+        if (data?.profile?.username) {
+          const desired = data.profile.username.trim();
+          if (desired !== existing.username) {
+            const taken = await isUsernameTaken(desired, targetUid);
+            if (taken) {
+              socket.emit('profile:error', { field: 'username', message: 'Этот юзернейм уже занят другим пользователем.' });
+              return;
+            }
+          }
+        }
+
+        const finalProfile = {
+          ...existing,
+          ...(data?.profile || {}),
+          uid: targetUid,
+          displayName: data?.profile?.displayName || existing.displayName || 'Пользователь'
+        };
+        
+        localDb.users = localDb.users || {};
+        localDb.users[targetUid] = {
+          id: targetUid,
+          data: JSON.stringify(finalProfile),
+          createdAt: existing.createdAt || new Date().toISOString()
+        };
+        saveLocalDb();
+
+        await pool.query('INSERT INTO users (uid, data) VALUES ($1, $2) ON CONFLICT (uid) DO UPDATE SET data = EXCLUDED.data', [targetUid, JSON.stringify(finalProfile)]);
         
         io.emit('user:updated', finalProfile);
-        io.to(`user:${data.uid}`).emit('auth:synced', finalProfile);
+        io.to(`user:${targetUid}`).emit('auth:synced', finalProfile);
       } catch (err) {
         console.error('Failed to update profile:', err);
       }
@@ -2877,8 +3751,22 @@ io.on('connection', (socket) => {
         const id = group.id || uuidv4();
         group.id = id;
         group.version = group.version || 1;
+        if (!group.name || group.name.trim() === '' || group.name === 'Новая группа' || group.name === 'Новый канал') {
+          group.name = getRandomGroupName();
+        }
         await pool.query('INSERT INTO groups (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data', [id, JSON.stringify(group)]);
-        io.emit('group:created', group);
+        
+        // Isolate group notification: only broadcast if public global channel, otherwise only notify members & creator
+        if (group.isPublic || group.id === 'global_channel') {
+          io.emit('group:created', group);
+        } else {
+          socket.emit('group:created', group);
+          if (Array.isArray(group.members)) {
+            group.members.forEach((mId: string) => {
+              io.to(`user:${mId}`).emit('group:created', group);
+            });
+          }
+        }
       } catch (err) {
         console.error('group:create error', err);
       }
@@ -3126,17 +4014,28 @@ io.on('connection', (socket) => {
       socket.emit('users:list', [...users, ...botsAsUsers]);
     });
 
-    socket.on('groups:fetch', async () => {
+    socket.on('groups:fetch', async (reqData?: { uid?: string }) => {
+      const myUid = (socket as any).uid || reqData?.uid;
+      const isAdmin = myUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' || (socket as any).isAdmin;
       const { rows } = await pool.query('SELECT data FROM groups');
-      let groups = rows.map((r: any) => JSON.parse(r.data));
-      if (!groups.some((g: any) => g.id === 'global_channel')) {
+      let allGroups = rows.map((r: any) => JSON.parse(r.data));
+
+      let visibleGroups = allGroups.filter((g: any) => {
+        if (g.id === 'global_channel') return true;
+        if (isAdmin) return true;
+        if (g.isPublic && g.type === 'channel') return true;
+        if (myUid && (g.ownerId === myUid || (Array.isArray(g.members) && g.members.includes(myUid)))) return true;
+        return false;
+      });
+
+      if (!visibleGroups.some((g: any) => g.id === 'global_channel')) {
         const globalData = {
           id: 'global_channel',
           name: 'Ордина Глобал 🌐',
           description: 'Главный канал мессенджера Ордина. Общайтесь, задавайте вопросы и делитесь идеями!',
           ownerId: 'le6qifgHZsV99qTBzSe3VZpYVlE2',
           createdAt: new Date().toISOString(),
-          photoURL: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=80',
+          photoURL: '/icon.png',
           type: 'channel',
           isPublic: true,
           isGlobal: true,
@@ -3144,10 +4043,10 @@ io.on('connection', (socket) => {
           members: ['le6qifgHZsV99qTBzSe3VZpYVlE2'],
           memberRoles: { 'le6qifgHZsV99qTBzSe3VZpYVlE2': 'owner' }
         };
-        groups.unshift(globalData);
+        visibleGroups.unshift(globalData);
         await pool.query('INSERT INTO groups (id, data) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING', ['global_channel', JSON.stringify(globalData)]).catch(() => {});
       }
-      socket.emit('groups:list', groups);
+      socket.emit('groups:list', visibleGroups);
     });
 
     socket.on('user:delete_all_data', async (uid: string) => {
@@ -3221,20 +4120,24 @@ io.on('connection', (socket) => {
     });
 
     // Pinned messages handler
-    socket.on('message:pin', async (data: { id: string, chatId: string, isPinned: boolean }) => {
+    socket.on('message:pin', async (data: any) => {
       try {
         const myUid = (socket as any).uid;
-        if (!myUid || !data.id) return;
+        const msgId = data?.id || data?.messageId;
+        const chatId = data?.chatId;
+        const isPinned = data?.isPinned !== undefined ? Boolean(data.isPinned) : Boolean(data?.pinned);
 
-        const { rows } = await pool.query('SELECT data FROM messages WHERE id = $1', [data.id]);
+        if (!myUid || !msgId) return;
+
+        const { rows } = await pool.query('SELECT data FROM messages WHERE id = $1', [msgId]);
         if (!rows[0]) return;
         const msg = JSON.parse(rows[0].data);
 
-        const isGroup = !!msg.groupId || data.chatId === 'global_channel';
+        const isGroup = !!msg.groupId || chatId === 'global_channel' || (chatId && chatId.startsWith('group_'));
         let canPin = false;
 
         if (!isGroup) {
-          canPin = (msg.senderId === myUid || msg.receiverId === myUid);
+          canPin = (msg.senderId === myUid || msg.receiverId === myUid || !msg.receiverId || msg.senderId === msg.receiverId);
         } else {
           // Check if admin or moderator or group owner/admin
           const isSuperAdmin = myUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2';
@@ -3242,7 +4145,8 @@ io.on('connection', (socket) => {
           if (isMod) {
             canPin = true;
           } else {
-            const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.chatId]);
+            const targetChatId = chatId || msg.groupId;
+            const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [targetChatId]);
             if (gRows[0]) {
               const g = JSON.parse(gRows[0].data);
               const role = g.memberRoles?.[myUid] || 'member';
@@ -3255,38 +4159,39 @@ io.on('connection', (socket) => {
 
         if (!canPin) return;
 
-        msg.isPinned = data.isPinned;
-        msg.pinnedAt = data.isPinned ? new Date().toISOString() : undefined;
-        msg.pinnedBy = data.isPinned ? myUid : undefined;
+        msg.isPinned = isPinned;
+        msg.pinnedAt = isPinned ? new Date().toISOString() : undefined;
+        msg.pinnedBy = isPinned ? myUid : undefined;
 
-        await pool.query('UPDATE messages SET data = $1 WHERE id = $2', [JSON.stringify(msg), data.id]);
+        await pool.query('UPDATE messages SET data = $1 WHERE id = $2', [JSON.stringify(msg), msgId]);
 
-        let room = `chat:${data.chatId}`;
-        if (!isGroup && data.chatId !== 'global_channel' && msg.receiverId) {
+        const targetChatId = chatId || msg.groupId || 'global_channel';
+        let room = `chat:${targetChatId}`;
+        if (!isGroup && targetChatId !== 'global_channel' && msg.receiverId) {
           let historyId = msg.senderId === msg.receiverId ? msg.senderId : [msg.senderId, msg.receiverId].sort().join('_');
           room = `chat:${historyId}`;
         }
 
         // If group, update group.pinnedMessageIds
         if (isGroup) {
-          const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.chatId]);
+          const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [targetChatId]);
           if (gRows[0]) {
             const g = JSON.parse(gRows[0].data);
             g.pinnedMessageIds = g.pinnedMessageIds || [];
-            if (data.isPinned) {
-              if (!g.pinnedMessageIds.includes(data.id)) g.pinnedMessageIds.push(data.id);
+            if (isPinned) {
+              if (!g.pinnedMessageIds.includes(msgId)) g.pinnedMessageIds.push(msgId);
             } else {
-              g.pinnedMessageIds = g.pinnedMessageIds.filter((mId: string) => mId !== data.id);
+              g.pinnedMessageIds = g.pinnedMessageIds.filter((mId: string) => mId !== msgId);
             }
-            await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(g), data.chatId]);
+            await pool.query('UPDATE groups SET data = $1 WHERE id = $2', [JSON.stringify(g), targetChatId]);
             io.emit('group:updated', g);
           }
         }
 
-        io.to(room).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
+        io.to(room).emit('message:pinned', { id: msgId, chatId: targetChatId, isPinned, message: msg });
         io.to(room).emit('message:received', msg);
-        if (msg.receiverId) io.to(`user:${msg.receiverId}`).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
-        if (msg.senderId) io.to(`user:${msg.senderId}`).emit('message:pinned', { id: data.id, chatId: data.chatId, isPinned: data.isPinned, message: msg });
+        if (msg.receiverId) io.to(`user:${msg.receiverId}`).emit('message:pinned', { id: msgId, chatId: targetChatId, isPinned, message: msg });
+        if (msg.senderId) io.to(`user:${msg.senderId}`).emit('message:pinned', { id: msgId, chatId: targetChatId, isPinned, message: msg });
       } catch (err) {
         console.error('Error in message:pin:', err);
       }
@@ -3340,6 +4245,74 @@ io.on('connection', (socket) => {
       }
     });
 
+    // Dedicated Bug & Suggestion Direct Delivery to Admin ordinalyzm25@gmail.com
+    socket.on('bug:report', async (bugData: any) => {
+      try {
+        const myUid = (socket as any).uid || bugData.userId || 'user_guest';
+        const reportId = bugData.id || uuidv4();
+        const createdAt = bugData.createdAt || new Date().toISOString();
+
+        const reportEntry = {
+          id: reportId,
+          reporterId: myUid,
+          reporterName: bugData.userName || 'Пользователь',
+          reporterEmail: bugData.userEmail || bugData.contact || '',
+          targetType: bugData.type === 'bug' ? 'bug_report' : 'feature_suggestion',
+          targetId: bugData.type || 'bug',
+          targetName: bugData.title || '',
+          description: `${bugData.description || ''}\n\n[Системная инфо: ${bugData.systemInfo || 'N/A'}]`,
+          reasonCategory: bugData.type || 'bug',
+          reasonCategoryTitle: bugData.type === 'bug' ? '🐛 Баг-репорт' : '💡 Предложение',
+          status: 'pending',
+          createdAt
+        };
+
+        // 1. Save to reports
+        localDb.reports = localDb.reports || {};
+        localDb.reports[reportId] = {
+          id: reportId,
+          data: JSON.stringify(reportEntry),
+          status: 'pending',
+          createdAt
+        };
+        saveLocalDb();
+
+        try {
+          await pool.query('INSERT INTO reports (id, data, status, "createdAt") VALUES ($1, $2, $3, $4)', [
+            reportId, JSON.stringify(reportEntry), 'pending', createdAt
+          ]);
+        } catch (e) {}
+
+        // 2. Broadcast to moderators/admins
+        io.to('role:moderators').emit('report:new', reportEntry);
+
+        // 3. Deliver directly to admin ordinalyzm25@gmail.com sockets
+        try {
+          const { rows } = await pool.query('SELECT data FROM users');
+          const adminRow = rows.find((r: any) => {
+            try {
+              const u = JSON.parse(r.data);
+              return u.email === 'ordinalyzm25@gmail.com' || u.username === 'MEGAKPYIIIuTeJIb';
+            } catch { return false; }
+          });
+          if (adminRow) {
+            const adminUser = JSON.parse(adminRow.data);
+            io.to(`user:${adminUser.uid}`).emit('report:new', reportEntry);
+            io.to(`user:${adminUser.uid}`).emit('admin:notification', {
+              title: bugData.type === 'bug' ? '🐛 Новый баг-репорт!' : '💡 Новое предложение!',
+              body: `${bugData.userName || 'Пользователь'}: ${bugData.title}`,
+              reportId
+            });
+          }
+        } catch (e) {}
+
+        socket.emit('bug:report:submitted', { success: true, reportId });
+      } catch (err) {
+        console.error('Error in bug:report handler:', err);
+        socket.emit('bug:report:submitted', { success: false, error: 'Ошибка сохранения баг-репорта' });
+      }
+    });
+
     // Get reports list (admins & moderators only)
     socket.on('reports:get', async () => {
       try {
@@ -3356,6 +4329,265 @@ io.on('connection', (socket) => {
         socket.emit('reports:list', reportsList);
       } catch (err) {
         console.error('Error in reports:get:', err);
+      }
+    });
+
+    // Music Library Socket Handlers
+    socket.on('music:fetch', async () => {
+      try {
+        const myUid = (socket as any).uid;
+        let trackList: any[] = [];
+        let playlistList: any[] = [];
+
+        try {
+          const { rows } = await pool.query('SELECT data FROM music_tracks');
+          trackList = rows.map((r: any) => JSON.parse(r.data));
+        } catch (e) {
+          trackList = Object.values(localDb.music_tracks || {}).map((r: any) => JSON.parse(r.data));
+        }
+
+        try {
+          const { rows: plRows } = await pool.query('SELECT data FROM music_playlists');
+          playlistList = plRows.map((r: any) => JSON.parse(r.data));
+        } catch (e) {
+          playlistList = Object.values(localDb.music_playlists || {}).map((r: any) => JSON.parse(r.data));
+        }
+
+        // Always ensure system default tracks have current verified local URLs
+        localDb.music_tracks = localDb.music_tracks || {};
+        DEFAULT_PUBLIC_TRACKS.forEach(t => {
+          localDb.music_tracks[t.id] = {
+            id: t.id,
+            uploaderId: t.uploaderId,
+            isPublic: true,
+            data: JSON.stringify(t),
+            createdAt: t.createdAt
+          };
+          const existingIdx = trackList.findIndex((existing: any) => existing.id === t.id);
+          if (existingIdx !== -1) {
+            trackList[existingIdx] = t;
+          } else {
+            trackList.push(t);
+          }
+        });
+        saveLocalDb();
+
+        localDb.music_playlists = localDb.music_playlists || {};
+        DEFAULT_PUBLIC_PLAYLISTS.forEach(p => {
+          localDb.music_playlists[p.id] = {
+            id: p.id,
+            userId: p.userId,
+            data: JSON.stringify(p),
+            createdAt: p.createdAt
+          };
+          const existingPlIdx = playlistList.findIndex((existing: any) => existing.id === p.id);
+          if (existingPlIdx !== -1) {
+            playlistList[existingPlIdx] = p;
+          } else {
+            playlistList.push(p);
+          }
+        });
+        saveLocalDb();
+
+        // Filter: Public tracks OR user's own tracks
+        const accessibleTracks = trackList.filter((t: any) => t.isPublic || (myUid && t.uploaderId === myUid));
+        const accessiblePlaylists = playlistList.filter((p: any) => (myUid && p.userId === myUid) || p.userId === 'system_ordina');
+
+        socket.emit('music:list', accessibleTracks);
+        socket.emit('music:playlists:list', accessiblePlaylists);
+      } catch (err) {
+        console.error('Error in music:fetch:', err);
+      }
+    });
+
+    socket.on('music:save', async (trackData: any) => {
+      try {
+        const myUid = (socket as any).uid || trackData?.uploaderId;
+        if (!trackData?.id) return;
+
+        trackData.uploaderId = trackData.uploaderId || myUid || 'user_guest';
+        const serialized = JSON.stringify(trackData);
+
+        localDb.music_tracks = localDb.music_tracks || {};
+        localDb.music_tracks[trackData.id] = {
+          id: trackData.id,
+          uploaderId: trackData.uploaderId,
+          isPublic: Boolean(trackData.isPublic),
+          data: serialized,
+          createdAt: trackData.createdAt || new Date().toISOString()
+        };
+        saveLocalDb();
+
+        try {
+          await pool.query(
+            'INSERT INTO music_tracks (id, "uploaderId", "isPublic", data, "createdAt") VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET "isPublic" = EXCLUDED."isPublic", data = EXCLUDED.data',
+            [trackData.id, trackData.uploaderId, Boolean(trackData.isPublic), serialized, trackData.createdAt || new Date().toISOString()]
+          );
+        } catch (e) {}
+
+        if (trackData.isPublic) {
+          io.emit('music:track:updated', trackData);
+        } else {
+          socket.emit('music:track:updated', trackData);
+        }
+      } catch (err) {
+        console.error('Error in music:save:', err);
+      }
+    });
+
+    socket.on('music:delete', async (data: { trackId: string; uid?: string }) => {
+      try {
+        const myUid = (socket as any).uid || data?.uid;
+        if (!data?.trackId) return;
+
+        localDb.music_tracks = localDb.music_tracks || {};
+        delete localDb.music_tracks[data.trackId];
+        saveLocalDb();
+
+        try {
+          await pool.query('DELETE FROM music_tracks WHERE id = $1', [data.trackId]);
+        } catch (e) {}
+
+        io.emit('music:track:deleted', { trackId: data.trackId });
+      } catch (err) {
+        console.error('Error in music:delete:', err);
+      }
+    });
+
+    // Real Artist Subscriptions
+    socket.on('artist:subscribe', async (data: { artistId: string; subscriberId: string }) => {
+      try {
+        const { artistId, subscriberId } = data;
+        if (!artistId || !subscriberId) return;
+        localDb.artist_subscribers = localDb.artist_subscribers || {};
+        const currentList: string[] = localDb.artist_subscribers[artistId] || [];
+        if (!currentList.includes(subscriberId)) {
+          currentList.push(subscriberId);
+          localDb.artist_subscribers[artistId] = currentList;
+          saveLocalDb();
+        }
+        const count = currentList.length;
+        io.emit('artist:subscribers_count', { artistId, count, subscribers: currentList });
+      } catch (err) {
+        console.error('Error in artist:subscribe:', err);
+      }
+    });
+
+    socket.on('artist:unsubscribe', async (data: { artistId: string; subscriberId: string }) => {
+      try {
+        const { artistId, subscriberId } = data;
+        if (!artistId || !subscriberId) return;
+        localDb.artist_subscribers = localDb.artist_subscribers || {};
+        let currentList: string[] = localDb.artist_subscribers[artistId] || [];
+        currentList = currentList.filter((id: string) => id !== subscriberId);
+        localDb.artist_subscribers[artistId] = currentList;
+        saveLocalDb();
+        const count = currentList.length;
+        io.emit('artist:subscribers_count', { artistId, count, subscribers: currentList });
+      } catch (err) {
+        console.error('Error in artist:unsubscribe:', err);
+      }
+    });
+
+    socket.on('artist:get_subscribers', (data: { artistId: string }) => {
+      try {
+        const artistId = data?.artistId;
+        if (!artistId) return;
+        localDb.artist_subscribers = localDb.artist_subscribers || {};
+        const subscribers: string[] = localDb.artist_subscribers[artistId] || [];
+        socket.emit('artist:subscribers_count', { artistId, count: subscribers.length, subscribers });
+      } catch (err) {}
+    });
+
+    socket.on('music:like', async (data: { trackId: string; uid?: string }) => {
+      try {
+        const myUid = (socket as any).uid || data?.uid;
+        if (!myUid || !data?.trackId) return;
+
+        let track: any = null;
+        if (localDb.music_tracks?.[data.trackId]) {
+          track = JSON.parse(localDb.music_tracks[data.trackId].data);
+        } else {
+          const { rows } = await pool.query('SELECT data FROM music_tracks WHERE id = $1', [data.trackId]);
+          if (rows[0]) track = JSON.parse(rows[0].data);
+        }
+
+        if (track) {
+          track.likedBy = track.likedBy || [];
+          if (track.likedBy.includes(myUid)) {
+            track.likedBy = track.likedBy.filter((u: string) => u !== myUid);
+          } else {
+            track.likedBy.push(myUid);
+          }
+          track.likes = track.likedBy.length;
+
+          const serialized = JSON.stringify(track);
+          localDb.music_tracks[data.trackId] = {
+            id: track.id,
+            uploaderId: track.uploaderId,
+            isPublic: Boolean(track.isPublic),
+            data: serialized,
+            createdAt: track.createdAt
+          };
+          saveLocalDb();
+
+          try {
+            await pool.query('UPDATE music_tracks SET data = $1 WHERE id = $2', [serialized, data.trackId]);
+          } catch (e) {}
+
+          io.emit('music:track:updated', track);
+        }
+      } catch (err) {
+        console.error('Error in music:like:', err);
+      }
+    });
+
+    socket.on('music:playlist:save', async (playlistData: any) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid || !playlistData?.id) return;
+
+        playlistData.userId = playlistData.userId || myUid;
+        const serialized = JSON.stringify(playlistData);
+
+        localDb.music_playlists = localDb.music_playlists || {};
+        localDb.music_playlists[playlistData.id] = {
+          id: playlistData.id,
+          userId: playlistData.userId,
+          data: serialized,
+          createdAt: playlistData.createdAt || new Date().toISOString()
+        };
+        saveLocalDb();
+
+        try {
+          await pool.query(
+            'INSERT INTO music_playlists (id, "userId", data, "createdAt") VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data',
+            [playlistData.id, playlistData.userId, serialized, playlistData.createdAt || new Date().toISOString()]
+          );
+        } catch (e) {}
+
+        socket.emit('music:playlist:updated', playlistData);
+      } catch (err) {
+        console.error('Error in music:playlist:save:', err);
+      }
+    });
+
+    socket.on('music:playlist:delete', async (data: { playlistId: string }) => {
+      try {
+        const myUid = (socket as any).uid;
+        if (!myUid || !data?.playlistId) return;
+
+        localDb.music_playlists = localDb.music_playlists || {};
+        delete localDb.music_playlists[data.playlistId];
+        saveLocalDb();
+
+        try {
+          await pool.query('DELETE FROM music_playlists WHERE id = $1', [data.playlistId]);
+        } catch (e) {}
+
+        socket.emit('music:playlist:deleted', { playlistId: data.playlistId });
+      } catch (err) {
+        console.error('Error in music:playlist:delete:', err);
       }
     });
 

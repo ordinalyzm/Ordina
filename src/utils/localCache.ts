@@ -1,6 +1,15 @@
 import { Capacitor } from '@capacitor/core';
 import { CapacitorSQLite, SQLiteConnection, SQLiteDBConnection } from '@capacitor-community/sqlite';
 import { Message, Chat } from '../types';
+import { safeLocalStorageSet } from './safeStorage';
+import { 
+  saveMessagesToIndexedDB, 
+  loadMessagesFromIndexedDB, 
+  deleteMessageFromIndexedDB, 
+  deleteMessagesFromIndexedDB, 
+  isMessageDeletedTombstone, 
+  addDeletedMessageTombstone 
+} from './versionManager';
 
 const DB_NAME = 'ordina_main.db';
 let sqliteConnection: SQLiteConnection | null = null;
@@ -294,11 +303,13 @@ export async function markMessagesAsReadInDb(messageIds: string[]): Promise<void
 }
 
 /**
- * Permanently deletes a single message from SQLite database, in-memory deduplication, and localStorage.
+ * Permanently deletes a single message from SQLite database, in-memory deduplication, localStorage, and IndexedDB.
  */
 export async function deleteMessageFromDb(messageId: string): Promise<void> {
   if (!messageId) return;
   recentWritesMap.delete(messageId);
+  await addDeletedMessageTombstone(messageId);
+  deleteMessageFromIndexedDB(messageId).catch(() => {});
 
   try {
     await initDatabase();
@@ -333,11 +344,15 @@ export async function deleteMessageFromDb(messageId: string): Promise<void> {
 }
 
 /**
- * Permanently deletes multiple messages from SQLite database and localStorage.
+ * Permanently deletes multiple messages from SQLite database, localStorage, and IndexedDB.
  */
 export async function deleteMessagesFromDb(messageIds: string[]): Promise<void> {
   if (!messageIds || messageIds.length === 0) return;
   messageIds.forEach(id => recentWritesMap.delete(id));
+  for (const id of messageIds) {
+    await addDeletedMessageTombstone(id);
+  }
+  deleteMessagesFromIndexedDB(messageIds).catch(() => {});
 
   try {
     await initDatabase();
@@ -535,12 +550,21 @@ export async function getMessagesForChat(chatId: string, currentUserId?: string)
       if (res.values && res.values.length > 0) {
         return res.values
           .map(v => JSON.parse(v.rawJson))
-          .filter(m => !m.deleted && !m.isDeleted);
+          .filter(m => !m.deleted && !m.isDeleted && !isMessageDeletedTombstone(m.id));
       }
     }
   } catch (err) {
     console.error('[SQLite] getMessagesForChat error:', err);
   }
+
+  // Fallback to IndexedDB (Web / PWA / Android fallback)
+  try {
+    const canonicalKey = getCanonicalChatKey(chatId, currentUserId);
+    const idbMsgs = await loadMessagesFromIndexedDB(canonicalKey);
+    if (idbMsgs && idbMsgs.length > 0) {
+      return idbMsgs.filter(m => !m.deleted && !(m as any).isDeleted && !isMessageDeletedTombstone(m.id));
+    }
+  } catch (e) {}
 
   // Fallback to localStorage
   return loadMessagesFromLocalCache(chatId, currentUserId);
@@ -561,8 +585,32 @@ function appendToStorageKey(key: string, msg: Message): void {
     } else {
       flatMsgs.push(msg);
     }
-    if (flatMsgs.length > 300) flatMsgs = flatMsgs.slice(-300);
-    localStorage.setItem(key, JSON.stringify(flatMsgs));
+    // Limit to latest 50 messages to preserve localStorage quota
+    if (flatMsgs.length > 50) flatMsgs = flatMsgs.slice(-50);
+    // Strip giant base64 payloads from localStorage cache to prevent QuotaExceededError
+    const sanitized = flatMsgs.map(m => {
+      if (m.fileUrl && m.fileUrl.startsWith('data:') && m.fileUrl.length > 4000) {
+        return { ...m, fileUrl: '' };
+      }
+      return m;
+    });
+    safeLocalStorageSet(key, JSON.stringify(sanitized));
+
+    // Also persist full messages directly into IndexedDB without arbitrary 5MB limits
+    const canonicalKey = key.replace('ordina_cache_', '');
+    if (canonicalKey) {
+      loadMessagesFromIndexedDB(canonicalKey).then(existingIdb => {
+        let list = Array.isArray(existingIdb) ? [...existingIdb] : [];
+        const idx = list.findIndex(m => m.id === msg.id);
+        if (idx !== -1) {
+          list[idx] = { ...list[idx], ...msg };
+        } else {
+          list.push(msg);
+        }
+        if (list.length > 200) list = list.slice(-200);
+        saveMessagesToIndexedDB(canonicalKey, list).catch(() => {});
+      }).catch(() => {});
+    }
   } catch (e) {}
 }
 
@@ -603,7 +651,7 @@ export function loadMessagesFromLocalCache(chatId: string, currentUserId?: strin
           const arr = JSON.parse(flatRaw);
           if (Array.isArray(arr)) {
             for (const m of arr) {
-              if (!m || !m.id) continue;
+              if (!m || !m.id || isMessageDeletedTombstone(m.id)) continue;
 
               // STRICT ISOLATION FILTER
               if (isGroup) {
@@ -623,8 +671,10 @@ export function loadMessagesFromLocalCache(chatId: string, currentUserId?: strin
                   foundMap.set(m.id, m);
                 }
               } else {
-                // If currentUserId not known yet, accept only if message matches chatId exactly
-                if (m.groupId === chatId) foundMap.set(m.id, m);
+                // If currentUserId not known yet, accept if group matches or message is sent/received by chatId
+                if (m.groupId === chatId || m.senderId === chatId || m.receiverId === chatId) {
+                  foundMap.set(m.id, m);
+                }
               }
             }
           }
@@ -651,6 +701,10 @@ export function purgeContaminatedLegacyCaches(): void {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
       if (k && k.startsWith('ordina_cache_')) {
+        // ABSOLUTE SAFEGUARD: Never delete cached groups, cached users, or global channel!
+        if (k === 'ordina_cached_groups' || k === 'ordina_cached_users' || k === 'ordina_cache_global_channel' || k.startsWith('ordina_profile_') || k.startsWith('ordina_backup_')) {
+          continue;
+        }
         const suffix = k.replace('ordina_cache_', '');
         // If it's a raw user ID without dm_ or notebook_ prefix and not a group/channel:
         if (!suffix.startsWith('dm_') && !suffix.startsWith('notebook_') && !suffix.startsWith('group_') && !suffix.startsWith('channel_') && suffix !== 'global_channel') {
@@ -683,6 +737,10 @@ export function clearChatLocalCache(chatId: string, currentUserId?: string): voi
     const canonicalKey = getCanonicalChatKey(chatId, currentUserId);
     localStorage.removeItem(`ordina_cache_${canonicalKey}`);
     localStorage.removeItem(`ordina_cache_${chatId}`);
+    saveMessagesToIndexedDB(canonicalKey, []).catch(() => {});
+    if (chatId !== canonicalKey) {
+      saveMessagesToIndexedDB(chatId, []).catch(() => {});
+    }
 
     if (dbInstance) {
       const isGroup = chatId === 'global_channel' || chatId.startsWith('group_') || chatId.startsWith('channel_');

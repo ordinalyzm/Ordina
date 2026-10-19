@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, X, Volume2, Mic, Zap } from 'lucide-react';
+import { Play, Pause, X, Volume2, Mic, Zap, Pin, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
@@ -213,6 +213,8 @@ export function VoiceBubbleWidget({
   onPlay,
   onSeek,
   isAccelerated,
+  onPinToProfile,
+  isPinned,
 }: {
   msg: { id: string; fileUrl?: string; createdAt: string; text?: string; duration?: number };
   isMe: boolean;
@@ -220,6 +222,8 @@ export function VoiceBubbleWidget({
   onPlay: () => void;
   onSeek: (time: number) => void;
   isAccelerated?: boolean;
+  onPinToProfile?: (track: { id?: string; title: string; artist?: string; url: string; duration?: number }) => void;
+  isPinned?: boolean;
 }) {
   const isThisActive = activeVoice?.msgId === msg.id;
   const isPlaying = isThisActive && activeVoice.isPlaying;
@@ -228,6 +232,7 @@ export function VoiceBubbleWidget({
   const playbackRate = isThisActive ? (activeVoice.playbackRate || 1) : 1;
 
   const [metaDuration, setMetaDuration] = useState<number>(msg.duration || 0);
+  const [showPinConfirm, setShowPinConfirm] = useState(false);
 
   useEffect(() => {
     if (!msg.duration && msg.fileUrl && metaDuration === 0) {
@@ -253,7 +258,13 @@ export function VoiceBubbleWidget({
   const progressPercent = displayDuration > 0 ? (currentTime / displayDuration) * 100 : 0;
 
   return (
-    <div className="flex flex-col min-w-[220px] max-w-full my-1 select-none">
+    <div 
+      className="flex flex-col min-w-[220px] max-w-full my-1 select-none relative"
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      data-no-menu="true"
+      data-voice-player="true"
+    >
       <div
         data-voice-player="true"
         className={`p-3 rounded-2xl flex items-center gap-3 transition-all ${
@@ -261,6 +272,8 @@ export function VoiceBubbleWidget({
         }`}
       >
         <button
+          onPointerDown={(e) => e.stopPropagation()}
+          onPointerUp={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onPlay();
@@ -312,18 +325,90 @@ export function VoiceBubbleWidget({
             />
           </div>
 
-          {/* Time and Speed indicator */}
-          <div className="flex items-center justify-between text-[11px] font-medium opacity-80 mt-1">
-            <span>{formatSecs(currentTime)} / {displayDuration > 0 ? formatSecs(displayDuration) : '0:00'}</span>
+          {/* Time, Pin button, and Speed indicator */}
+          <div className="flex items-center justify-between text-[11px] font-medium opacity-90 mt-1">
+            <span className="tabular-nums">{formatSecs(currentTime)} / {displayDuration > 0 ? formatSecs(displayDuration) : '0:00'}</span>
 
-            {(playbackRate > 1 || isAccelerated) && (
-              <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
-                <Zap size={10} className="fill-current" /> 2X
-              </span>
-            )}
+            <div className="flex items-center gap-1.5">
+              {displayDuration >= 25 && onPinToProfile && (
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onPointerUp={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowPinConfirm(true);
+                  }}
+                  className={`px-2 py-0.5 rounded-lg text-[10px] font-bold flex items-center gap-1 transition-all active:scale-95 shadow-2xs ${
+                    isPinned 
+                      ? 'bg-amber-400 text-amber-950 ring-1 ring-amber-500' 
+                      : isMe 
+                        ? 'bg-white/20 hover:bg-white/30 text-white' 
+                        : 'bg-white hover:bg-slate-200 text-slate-700 border border-slate-200'
+                  }`}
+                  title="Закрепить аудиозапись в профиле (видна всем)"
+                >
+                  <Pin size={10} className={isPinned ? 'fill-current' : ''} />
+                  <span>{isPinned ? 'Закреплен' : 'В профиль'}</span>
+                </button>
+              )}
+
+              {(playbackRate > 1 || isAccelerated) && (
+                <span className="flex items-center gap-0.5 text-[10px] font-bold bg-amber-400 text-slate-900 px-1.5 py-0.5 rounded-full animate-bounce">
+                  <Zap size={10} className="fill-current" /> 2X
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
+
+      {/* Confirmation Popover for Pinning to Profile */}
+      {showPinConfirm && (
+        <div 
+          className="absolute bottom-full left-0 mb-2 w-72 p-3 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 text-slate-800 dark:text-slate-100 z-50 animate-in fade-in zoom-in-95 duration-150"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="flex items-start gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+              <Pin size={16} />
+            </div>
+            <div className="flex-1">
+              <h4 className="text-xs font-bold">Закрепить аудио в профиле?</h4>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
+                Музыка будет видна всем посетителям вашего профиля, и ее можно будет послушать прямо со страницы.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 mt-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => setShowPinConfirm(false)}
+              className="px-2.5 py-1 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors"
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowPinConfirm(false);
+                if (onPinToProfile) {
+                  onPinToProfile({
+                    id: msg.id,
+                    title: msg.text && msg.text !== '🎤 Голосовое сообщение' ? msg.text : 'Аудиозапись из чата',
+                    artist: isMe ? 'Моя запись' : 'Аудиозапись',
+                    url: msg.fileUrl || '',
+                    duration: displayDuration,
+                  });
+                }
+              }}
+              className="px-3 py-1 text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm transition-colors"
+            >
+              Закрепить
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -372,11 +372,11 @@ export const Radar: React.FC<RadarProps> = ({ nodes, currentUserNodeId, onNodeCl
               setHwSpecs(detectDeviceHardwareSpecs());
             }}
             className="bg-black/80 hover:bg-slate-900 border border-slate-700/80 px-2.5 py-1.5 rounded-xl backdrop-blur-md text-[10px] text-slate-300 font-mono flex items-center gap-2 shadow-lg transition active:scale-95"
-            title="Калибровка дальности BLE модема для вашего смартфона"
+            title="Профиль дальности BLE радиуса для вашего устройства"
           >
             <Cpu className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
             <span>{hwSpecs.hardwareModelLabel}</span>
-            <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-sans font-bold">КАЛИБРОВКА</span>
+            <span className="text-[9px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded font-sans font-bold">РАДИУС</span>
           </button>
         </div>
 

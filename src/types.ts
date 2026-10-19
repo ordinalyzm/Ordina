@@ -106,7 +106,7 @@ export const DEFAULT_GLOBAL_CHANNEL: Group = {
   description: 'Главный канал мессенджера Ордина. Общайтесь, задавайте вопросы и делитесь идеями!',
   ownerId: 'le6qifgHZsV99qTBzSe3VZpYVlE2',
   createdAt: '2025-01-01T00:00:00.000Z',
-  photoURL: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=500&auto=format&fit=crop&q=80',
+  photoURL: '/icon.png',
   type: 'channel',
   isPublic: true,
   isGlobal: true,
@@ -182,6 +182,25 @@ export interface UserProfile {
   };
   grantedTitles?: UserTitle[];
   activeTitleId?: string;
+  profileBackgroundURL?: string;
+  birthday?: string;
+  pinnedTrack?: {
+    id?: string;
+    title: string;
+    artist?: string;
+    url?: string;
+    fileUrl?: string;
+    duration?: number;
+    addedAt?: string;
+  } | null;
+  pinnedChannelId?: string | null;
+  pinnedChannel?: {
+    id: string;
+    name: string;
+    photoURL?: string;
+    description?: string;
+    subscribersCount?: number;
+  } | null;
   [key: string]: any;
 }
 
@@ -289,5 +308,39 @@ export interface BotDefinition {
   triggers: BotTrigger[];
   welcomeMessage?: string;
   isActive: boolean;
+  createdAt: string;
+}
+
+export interface MusicTrack {
+  id: string;
+  title: string;
+  artist: string;
+  genre: string;
+  playlistId?: string;
+  playlistName?: string;
+  fileUrl: string;
+  duration: number; // in seconds, must be > 25
+  fileSize: number;
+  coverUrl?: string;
+  lyrics?: string;
+  uploaderId: string;
+  uploaderName: string;
+  isPublic: boolean;
+  originalAuthorNotice?: string;
+  licenseType?: string;
+  hasProfanityWarning?: boolean;
+  createdAt: string;
+  likes?: number;
+  likedBy?: string[];
+  [key: string]: any;
+}
+
+export interface MusicPlaylist {
+  id: string;
+  name: string;
+  description?: string;
+  coverUrl?: string;
+  userId: string;
+  trackIds: string[];
   createdAt: string;
 }

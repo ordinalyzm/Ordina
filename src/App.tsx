@@ -9,6 +9,7 @@ import {
   RouterProvider,
   useNavigate,
   useParams,
+  useRouteError,
   Navigate,
   Link
 } from 'react-router-dom';
@@ -26,9 +27,10 @@ import {
   Search, Menu, MoreVertical, Paperclip, Smile, Reply, Forward, 
   Trash2, Edit2, Copy, Check, CheckCheck, Camera, Radar as RadarIcon, Phone,
   Users, Hash, Settings, LogOut, X, ArrowLeft, Download, Shield, RotateCw, RefreshCw,
-  ShieldAlert, Lock, UserMinus, UserPlus, Globe, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
+  ShieldAlert, Lock, UserMinus, UserPlus, Globe, Eye, EyeOff, Info, Clock, MessageSquare, MessageSquareOff, AlertTriangle, FileText,
   Sword, Unlink, Play, ChevronLeft, ChevronRight, Gamepad2, Share, Share2, BarChart2, Quote, User as UserIcon, Bot, Smartphone, Monitor, Radio, Bell, BellOff, Subtitles, Sparkles, Zap,
-  Pin, Flag
+  Pin, Flag, Archive, Folder, FolderArchive, CheckSquare, Square, Volume2, VolumeX,
+  Music as MusicIcon, HelpCircle, Bug, Lightbulb, Scale, ShieldCheck, QrCode, Plus, Mic, Pause, Cake, ExternalLink, Crop
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { format } from 'date-fns';
@@ -56,7 +58,7 @@ import { Capacitor } from '@capacitor/core';
 import { bleMesh } from './services/bleMesh';
 import { Preferences } from '@capacitor/preferences';
 import { MeshTransport } from './utils/meshTransport';
-import { initializeVersionAndSyncState } from './utils/versionManager';
+import { initializeVersionAndSyncState, setPersistentBackup, getPersistentBackup, restoreAllCriticalState } from './utils/versionManager';
 import { normalizeIncomingMeshMessage } from './utils/messageAdapter';
 import { Radar } from './components/Radar';
 import { MeshRadar } from './components/MeshRadar';
@@ -88,6 +90,7 @@ import BotConstructor from './components/BotConstructor';
 import TitleManagerModal from './components/TitleManagerModal';
 import { RenderTitle } from './lib/TitleRenderer';
 import ImageCropperModal from './components/ImageCropperModal';
+import { BannerCropperModal } from './components/BannerCropperModal';
 import { useVoicePlayer, VoiceBubbleWidget, GlobalVoiceBanner } from './components/VoiceMessagePlayer';
 import { playIncomingMessageSound, playSentMessageSound, triggerHapticFeedback } from './lib/audio';
 import { showSystemNotification, openAppSettings } from './lib/notifications';
@@ -96,6 +99,8 @@ import { NotificationSettingsModal } from './components/NotificationSettingsModa
 import { MessageItem } from './components/MessageItem';
 import { OnboardingModal } from './components/OnboardingModal';
 import { SavedNotebookModal } from './components/SavedNotebookModal';
+import { ChatMediaModal } from './components/ChatMediaModal';
+import { MediaLightboxModal } from './components/MediaLightboxModal';
 import { ConfirmDeleteModal } from './components/ConfirmDeleteModal';
 import { PrivacyPolicyModal } from './components/PrivacyPolicyModal';
 import { ReportModal } from './components/ReportModal';
@@ -103,7 +108,17 @@ import { ModerationModal } from './components/ModerationModal';
 import { PinnedMessageBanner } from './components/PinnedMessageBanner';
 import { BugReportModal } from './components/BugReportModal';
 import { ShareAppModal } from './components/ShareAppModal';
+import { MusicPlayerModal } from './components/MusicPlayerModal';
+import { TextSafetyCheckerModal } from './components/LegalShield/TextSafetyCheckerModal';
+import { analyzeTextForLegalRisks, removeOffendingWordsFromText, checkTextWithAi } from './utils/textRiskAnalyzer';
+import { isMessageDeletedTombstone } from './utils/versionManager';
+import { DetectedRisk } from './types/legalShield';
+import { MiniMusicPlayer } from './components/MiniMusicPlayer';
+import { useMusicPlayer } from './hooks/useMusicPlayer';
+import { MusicTrack, MusicPlaylist } from './types';
+import { DEFAULT_PUBLIC_TRACKS, DEFAULT_PUBLIC_PLAYLISTS } from './utils/defaultMusic';
 import { MeshRouter } from './utils/meshRouter';
+import { safeLocalStorageSet, safeLocalStorageGet, safeLocalStorageRemove, purgeAllMessageCaches } from './utils/safeStorage';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -263,21 +278,97 @@ const highlightText = (text: string, query?: string) => {
 
 const createMessageId = (uid: string, timestamp: number) => `${uid}_${timestamp}_${Math.random().toString(36).substring(2, 9)}`;
 
-export default function App() {
-  const router = createBrowserRouter([
-    {
-      path: "/",
-      element: <AppContent />,
-    },
-    {
-      path: "/chat/:chatId",
-      element: <AppContent />,
+const RANDOM_USER_NAMES = [
+  'Странник', 'Искатель', 'Новатор', 'Ординец', 'Спутник', 
+  'Вояджер', 'Адепт', 'Горизонт', 'Феникс', 'Сокол', 
+  'Маяк', 'Исследователь', 'Хранитель', 'Квазар', 'Атлас',
+  'Вектор', 'Север', 'Пульсар', 'Орион', 'Кибернетик',
+  'Зодчий', 'Пилигрим', 'Меркурий', 'Тайфун', 'Навигатор',
+  'Комета', 'Альтаир', 'Арго', 'Антарес', 'Зенит'
+];
+
+export const generateRandomUserName = () => {
+  const base = RANDOM_USER_NAMES[Math.floor(Math.random() * RANDOM_USER_NAMES.length)];
+  const num = Math.floor(100 + Math.random() * 900);
+  return `${base} ${num}`;
+};
+
+const RANDOM_GROUP_NAMES = [
+  'Комната', 'Беседка', 'Сообщество', 'Узел связи', 'Отряд',
+  'Пространство', 'Клуб', 'Лаборатория', 'Гармония', 'Круг',
+  'Кают-компания', 'Орбита', 'Матрица', 'Сфера', 'Форпост'
+];
+
+export const generateRandomGroupName = () => {
+  const base = RANDOM_GROUP_NAMES[Math.floor(Math.random() * RANDOM_GROUP_NAMES.length)];
+  const num = Math.floor(100 + Math.random() * 900);
+  return `${base} ${num}`;
+};
+
+function RouteErrorFallback() {
+  const error = useRouteError();
+  console.error('[RouteErrorFallback] Caught route error:', error);
+
+  const handleReset = () => {
+    try {
+      window.location.replace('/');
+    } catch {
+      window.location.href = '/';
     }
-  ]);
+  };
+
+  const isQuota = error && (String(error).includes('Quota') || (error as any)?.name === 'QuotaExceededError');
 
   return (
+    <div className="h-full w-full min-h-screen bg-slate-900 flex items-center justify-center p-4 text-white">
+      <div className="max-w-md w-full bg-slate-800 p-8 rounded-3xl shadow-2xl border border-blue-500/30 text-center">
+        <h1 className="text-2xl font-bold mb-3 flex items-center justify-center gap-2 text-blue-400">
+          <Shield className="w-8 h-8" />
+          Восстановление сессии
+        </h1>
+        <p className="text-slate-300 mb-6 text-sm">
+          {isQuota
+            ? 'Локальная память оптимизирована. Нажмите кнопку ниже для продолжения.'
+            : 'Произошла перезагрузка навигации. Нажмите для продолжения работы.'}
+        </p>
+        <button 
+          onClick={handleReset}
+          className="w-full bg-blue-600 hover:bg-blue-700 py-3 rounded-xl font-bold transition-all text-white shadow-lg shadow-blue-600/30 active:scale-95"
+        >
+          Продолжить работу
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const appRouter = createBrowserRouter([
+  {
+    path: "/",
+    element: <AppContent />,
+    errorElement: <RouteErrorFallback />
+  },
+  {
+    path: "/index.html",
+    element: <AppContent />,
+    errorElement: <RouteErrorFallback />
+  },
+  {
+    path: "/chat/:chatId",
+    element: <AppContent />,
+    errorElement: <RouteErrorFallback />
+  },
+  {
+    path: "*",
+    element: <Navigate to="/" replace />,
+    errorElement: <RouteErrorFallback />
+  }
+]);
+
+export default function App() {
+  return (
     <ErrorBoundary>
-      <RouterProvider router={router} />
+      <RouterProvider router={appRouter} />
     </ErrorBoundary>
   );
 }
@@ -342,7 +433,7 @@ function AppContent() {
     let id = localStorage.getItem('ordina_device_id_token');
     if (!id) {
       id = 'device_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-      localStorage.setItem('ordina_device_id_token', id);
+      safeLocalStorageSet('ordina_device_id_token', id);
     }
     return id;
   });
@@ -358,7 +449,7 @@ function AppContent() {
       } else {
         name = 'Персональный компьютер (ПК)';
       }
-      localStorage.setItem('ordina_device_name', name);
+      safeLocalStorageSet('ordina_device_name', name);
     }
     return name;
   });
@@ -404,6 +495,114 @@ function AppContent() {
       return JSON.parse(localStorage.getItem('ordina_cached_users') || '[]');
     } catch { return []; }
   });
+
+  // Music library state with quota-safe dual persistence (IndexedDB + compact localStorage)
+  // Guarantees zero memory lapses for shared music!
+  const [musicTracks, setMusicTracks] = useState<MusicTrack[]>(() => {
+    try {
+      const saved = localStorage.getItem('ordina_music_tracks');
+      const map = new Map<string, MusicTrack>();
+      DEFAULT_PUBLIC_TRACKS.forEach(t => map.set(t.id, t));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(t => {
+            if (t && t.id) map.set(t.id, t);
+          });
+        }
+      }
+      return Array.from(map.values());
+    } catch {
+      return DEFAULT_PUBLIC_TRACKS;
+    }
+  });
+  const [musicPlaylists, setMusicPlaylists] = useState<MusicPlaylist[]>(() => {
+    try {
+      const saved = localStorage.getItem('ordina_music_playlists');
+      const map = new Map<string, MusicPlaylist>();
+      DEFAULT_PUBLIC_PLAYLISTS.forEach(p => map.set(p.id, p));
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          parsed.forEach(p => {
+            if (p && p.id) map.set(p.id, p);
+          });
+        }
+      }
+      return Array.from(map.values());
+    } catch {
+      return DEFAULT_PUBLIC_PLAYLISTS;
+    }
+  });
+
+  const persistMusicTracks = useCallback((tracks: MusicTrack[]) => {
+    setPersistentBackup('ordina_music_tracks', tracks).catch(() => {});
+    try {
+      const compact = (Array.isArray(tracks) ? tracks : []).map(t => ({
+        id: t.id,
+        title: t.title,
+        artist: t.artist,
+        genre: t.genre,
+        duration: t.duration,
+        fileSize: t.fileSize,
+        fileUrl: t.fileUrl,
+        coverUrl: t.coverUrl,
+        lyrics: t.lyrics,
+        isPublic: t.isPublic,
+        uploaderId: t.uploaderId,
+        uploaderName: t.uploaderName,
+        likes: t.likes,
+        likedBy: t.likedBy,
+        createdAt: t.createdAt
+      }));
+      safeLocalStorageSet('ordina_music_tracks', JSON.stringify(compact));
+    } catch (e) {}
+  }, []);
+
+  const persistMusicPlaylists = useCallback((pls: MusicPlaylist[]) => {
+    setPersistentBackup('ordina_music_playlists', pls).catch(() => {});
+    try {
+      safeLocalStorageSet('ordina_music_playlists', JSON.stringify(Array.isArray(pls) ? pls : []));
+    } catch (e) {}
+  }, []);
+
+  // Hydrate full music library from IndexedDB on startup (dual persistence with fallback protection)
+  useEffect(() => {
+    getPersistentBackup<MusicTrack[]>('ordina_music_tracks').then(saved => {
+      if (saved && Array.isArray(saved) && saved.length > 0) {
+        setMusicTracks(prev => {
+          const map = new Map<string, MusicTrack>();
+          DEFAULT_PUBLIC_TRACKS.forEach(t => map.set(t.id, t));
+          prev.forEach(t => map.set(t.id, t));
+          saved.forEach(t => {
+            if (t && t.id) map.set(t.id, t);
+          });
+          return Array.from(map.values());
+        });
+      }
+    }).catch(() => {});
+
+    getPersistentBackup<MusicPlaylist[]>('ordina_music_playlists').then(saved => {
+      if (saved && Array.isArray(saved) && saved.length > 0) {
+        setMusicPlaylists(prev => {
+          const map = new Map<string, MusicPlaylist>();
+          saved.forEach(p => {
+            if (p.userId !== 'system_ordina') {
+              map.set(p.id, p);
+            }
+          });
+          DEFAULT_PUBLIC_PLAYLISTS.forEach(p => map.set(p.id, p));
+          prev.forEach(p => {
+            if (p.userId !== 'system_ordina') {
+              map.set(p.id, p);
+            }
+          });
+          return Array.from(map.values());
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
   const [selectedChat, setSelectedChat] = useState<{ type: 'user' | 'group' | 'channel', id: string } | null>(null);
   const [notifications, setNotifications] = useState<{ [chatId: string]: number }>({});
   const [recentPreviews, setRecentPreviews] = useState<{ [chatId: string]: Message }>(() => {
@@ -446,14 +645,73 @@ function AppContent() {
     }
   });
 
-  // Automatically persist recentPreviews whenever updated
+  // Automatically persist recentPreviews whenever updated to both localStorage and IndexedDB
   useEffect(() => {
     if (Object.keys(recentPreviews).length > 0) {
-      try {
-        localStorage.setItem('ordina_recent_previews', JSON.stringify(recentPreviews));
-      } catch (e) {}
+      safeLocalStorageSet('ordina_recent_previews', JSON.stringify(recentPreviews));
+      setPersistentBackup('ordina_recent_previews', recentPreviews).catch(() => {});
     }
   }, [recentPreviews]);
+
+  // Resilient multi-tier restoration from IndexedDB (survives browser storage wipes, quota evictions, and rebuilds)
+  useEffect(() => {
+    initializeVersionAndSyncState().then(async () => {
+      const restored = await restoreAllCriticalState();
+      if (restored.groups && restored.groups.length > 0) {
+        setGroups(prev => {
+          if (prev.length <= 1) {
+            let nextGroups = [...restored.groups!];
+            if (!nextGroups.some(g => g.id === 'global_channel')) {
+              nextGroups.unshift(DEFAULT_GLOBAL_CHANNEL);
+            }
+            return nextGroups;
+          }
+          return prev;
+        });
+      }
+      if (restored.users && restored.users.length > 0) {
+        setUsers(prev => prev.length === 0 ? restored.users! : prev);
+      }
+      if (restored.previews && Object.keys(restored.previews).length > 0) {
+        setRecentPreviews(prev => Object.keys(prev).length === 0 ? restored.previews! : { ...restored.previews, ...prev });
+      }
+      if (restored.profile) {
+        setProfile(prev => {
+          if (!prev) return restored.profile!;
+          const mergedActive = Array.from(new Set([
+            'global_channel',
+            ...(prev.activeChats || []),
+            ...(restored.profile!.activeChats || [])
+          ]));
+          return { ...restored.profile!, ...prev, activeChats: mergedActive };
+        });
+      }
+    }).catch(err => {
+      console.warn('[VersionSync] Error restoring persistent state:', err);
+    });
+  }, []);
+
+  // Self-heal activeChats: ensure only chats where current user actually participated are in activeChats
+  useEffect(() => {
+    if (!profile || !user) return;
+    const currentActive = new Set(profile.activeChats || ['global_channel']);
+    let hasNew = false;
+    Object.entries(recentPreviews).forEach(([cid, msg]) => {
+      if (!msg) return;
+      const isMyConversation = cid === 'global_channel' || 
+        msg.senderId === user.uid || 
+        msg.receiverId === user.uid ||
+        (msg.groupId === 'global_channel');
+      if (isMyConversation && !currentActive.has(cid)) {
+        currentActive.add(cid);
+        hasNew = true;
+      }
+    });
+    if (hasNew) {
+      const nextActive = Array.from(currentActive);
+      setProfile(p => p ? { ...p, activeChats: nextActive } : null);
+    }
+  }, [recentPreviews, profile?.uid, user?.uid]);
 
   // Configure native Mobile Safe Area & Transparent Status Bar
   useEffect(() => {
@@ -634,7 +892,7 @@ function AppContent() {
   const [moderatorsList, setModeratorsList] = useState<string[]>([]);
   const [reportModal, setReportModal] = useState<{
     isOpen: boolean;
-    targetType: 'message' | 'user' | 'group';
+    targetType: 'message' | 'user' | 'group' | 'song';
     targetId: string;
     targetName?: string;
     chatId?: string;
@@ -686,9 +944,8 @@ function AppContent() {
   useEffect(() => {
     profileRef.current = profile;
     if (profile?.uid) {
-      try {
-        localStorage.setItem(`ordina_profile_${profile.uid}`, JSON.stringify(profile));
-      } catch (e) {}
+      safeLocalStorageSet(`ordina_profile_${profile.uid}`, JSON.stringify(profile));
+      setPersistentBackup(`ordina_profile_${profile.uid}`, profile).catch(() => {});
     }
   }, [profile]);
 
@@ -913,10 +1170,11 @@ function AppContent() {
         console.error('Error initiating delta sync:', e);
       }
 
-      // Always fetch groups, users, stickers on connect for resilience
+      // Always fetch groups, users, stickers, music on connect for resilience
       newSocket.emit('users:fetch');
       newSocket.emit('groups:fetch');
       newSocket.emit('stickers:list');
+      newSocket.emit('music:fetch');
       if (user?.uid) {
         newSocket.emit('bots:list', user.uid);
       }
@@ -1139,12 +1397,33 @@ function AppContent() {
     });
 
     newSocket.on('chat:history', ({ chatId, messages: histMsgs }: { chatId: string, messages: Message[] }) => {
-      console.log('Received chat history for:', chatId, histMsgs.length, 'messages');
+      console.log('Received chat history for:', chatId, (histMsgs || []).length, 'messages');
       try {
-        const localCached = loadMessagesFromLocalCache(chatId);
+        const localCached = loadMessagesFromLocalCache(chatId, user?.uid);
+        const hiddenList = profileRef.current?.hiddenMessages || [];
+
+        // 1. Filter out deleted tombstones and hidden messages from server history
+        const filteredServerMsgs = (Array.isArray(histMsgs) ? histMsgs : []).filter(
+          m => m && m.id && !isMessageDeletedTombstone(m.id) && !hiddenList.includes(m.id)
+        );
+
+        // 2. Map existing server messages by id
         const mergedMap = new Map<string, Message>();
-        localCached.forEach(m => mergedMap.set(m.id, m));
-        histMsgs.forEach(m => mergedMap.set(m.id, m));
+        filteredServerMsgs.forEach(m => mergedMap.set(m.id, m));
+
+        // 3. Preserve ALL local and cached messages so they never disappear or get overwritten
+        const currentMsgs = messageCacheRef.current[chatId] || [];
+        currentMsgs.forEach(m => {
+          if (m && m.id && !isMessageDeletedTombstone(m.id) && !hiddenList.includes(m.id)) {
+            mergedMap.set(m.id, m);
+          }
+        });
+        localCached.forEach(m => {
+          if (m && m.id && !isMessageDeletedTombstone(m.id) && !hiddenList.includes(m.id)) {
+            mergedMap.set(m.id, m);
+          }
+        });
+
         const mergedList = Array.from(mergedMap.values()).sort(
           (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
         );
@@ -1154,15 +1433,25 @@ function AppContent() {
         
         const currentChat = selectedChatRef.current;
         if (currentChat?.id === chatId) {
-          setMessages(mergedList);
+          // Compare with current messages to avoid flickering re-render
+          setMessages(prev => {
+            if (
+              prev.length === mergedList.length &&
+              prev.every((p, idx) => p.id === mergedList[idx].id && p.status === mergedList[idx].status && p.text === mergedList[idx].text)
+            ) {
+              return prev;
+            }
+            return mergedList;
+          });
           setIsLoadingMessages(false);
         }
       } catch (e) {
         console.error('Error merging chat history:', e);
-        messageCacheRef.current[chatId] = histMsgs;
+        const filtered = (histMsgs || []).filter(m => m && m.id && !isMessageDeletedTombstone(m.id));
+        messageCacheRef.current[chatId] = filtered;
         const currentChat = selectedChatRef.current;
         if (currentChat?.id === chatId) {
-          setMessages(histMsgs);
+          setMessages(filtered);
           setIsLoadingMessages(false);
         }
       }
@@ -1170,7 +1459,8 @@ function AppContent() {
 
     newSocket.on('users:list', (uList: UserProfile[]) => {
       setUsers(uList);
-      try { localStorage.setItem('ordina_cached_users', JSON.stringify(uList)); } catch (e) {}
+      safeLocalStorageSet('ordina_cached_users', JSON.stringify(uList));
+      setPersistentBackup('ordina_cached_users', uList).catch(() => {});
     });
 
     newSocket.on('groups:list', (gList: Group[]) => {
@@ -1179,7 +1469,8 @@ function AppContent() {
         finalGroups.unshift(DEFAULT_GLOBAL_CHANNEL);
       }
       setGroups(finalGroups);
-      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(finalGroups)); } catch (e) {}
+      safeLocalStorageSet('ordina_cached_groups', JSON.stringify(finalGroups));
+      setPersistentBackup('ordina_cached_groups', finalGroups).catch(() => {});
     });
 
     newSocket.on('group:updated', (updatedGroup: Group) => {
@@ -1190,7 +1481,8 @@ function AppContent() {
         if (!next.some(g => g.id === 'global_channel')) {
           next.unshift(DEFAULT_GLOBAL_CHANNEL);
         }
-        try { localStorage.setItem('ordina_cached_groups', JSON.stringify(next)); } catch (e) {}
+        safeLocalStorageSet('ordina_cached_groups', JSON.stringify(next));
+        setPersistentBackup('ordina_cached_groups', next).catch(() => {});
         return next;
       });
     });
@@ -1198,35 +1490,32 @@ function AppContent() {
     newSocket.on('message:updated', (updatedMsg: Message) => {
       setMessages(prev => prev.map(m => m.id === updatedMsg.id ? updatedMsg : m));
     });
+
     newSocket.on('message:deleted', (data: { id: string, chatId?: string } | string) => {
-      // For backwards compatibility or simplified events
-      const deletedId = typeof data === 'string' ? data : data.id;
-      const chatId = typeof data === 'object' ? data.chatId : undefined;
+      const deletedId = typeof data === 'string' ? data : data?.id;
+      const chatId = typeof data === 'object' ? data?.chatId : undefined;
       
-      // Permanently remove from SQLite database and durable local cache
-      if (deletedId) {
-        deleteMessageFromDb(deletedId).catch(() => {});
-      }
+      if (!deletedId) return;
       
-      setMessages(prev => {
-        const next = prev.filter(m => m.id !== deletedId);
-        // If we know the chatId, update the cache
-        if (chatId && messageCacheRef.current[chatId]) {
-          messageCacheRef.current[chatId] = messageCacheRef.current[chatId].filter(m => m.id !== deletedId);
-        } else {
-          // Fallback: try to update the current chat cache
-          const current = selectedChatRef.current;
-          if (current && messageCacheRef.current[current.id]) {
-            messageCacheRef.current[current.id] = messageCacheRef.current[current.id].filter(m => m.id !== deletedId);
+      // Permanently remove from SQLite, localStorage, and IndexedDB
+      deleteMessageFromDb(deletedId).catch(() => {});
+      
+      setMessages(prev => prev.filter(m => m.id !== deletedId));
+      
+      // Update cache across all chats or target chat
+      for (const cid in messageCacheRef.current) {
+        if (!chatId || cid === chatId || cid === selectedChatRef.current?.id) {
+          if (messageCacheRef.current[cid]) {
+            messageCacheRef.current[cid] = messageCacheRef.current[cid].filter(m => m.id !== deletedId);
           }
         }
-        return next;
-      });
+      }
+
       setRecentPreviews(prev => {
         const next = { ...prev };
         for (const cid in next) {
           if (next[cid]?.id === deletedId) {
-            const cached = messageCacheRef.current[cid || chatId || ''] || [];
+            const cached = (messageCacheRef.current[cid] || []).filter(m => m.id !== deletedId);
             if (cached.length > 0) {
               next[cid] = cached[cached.length - 1];
             } else {
@@ -1243,7 +1532,8 @@ function AppContent() {
         const index = prev.findIndex(u => u.uid === updatedUser.uid);
         const next = index === -1 ? [...prev, updatedUser] : [...prev];
         if (index !== -1) next[index] = updatedUser;
-        try { localStorage.setItem('ordina_cached_users', JSON.stringify(next)); } catch (e) {}
+        safeLocalStorageSet('ordina_cached_users', JSON.stringify(next));
+        setPersistentBackup('ordina_cached_users', next).catch(() => {});
         return next;
       });
       // Use functional update to avoid stale profile closure
@@ -1456,25 +1746,14 @@ function AppContent() {
       setIsLoadingMessages(false);
     });
 
-    newSocket.on('users:list', (usersList: UserProfile[]) => {
-      setUsers(usersList);
-    });
-
-    newSocket.on('groups:list', (groupsList: Group[]) => {
-      let finalGroups = Array.isArray(groupsList) ? [...groupsList] : [];
-      if (!finalGroups.some(g => g.id === 'global_channel')) {
-        finalGroups.unshift(DEFAULT_GLOBAL_CHANNEL);
-      }
-      setGroups(finalGroups);
-      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(finalGroups)); } catch (e) {}
-    });
-
     newSocket.on('group:created', (newGroup: Group) => {
       setGroups(prev => {
         const next = [...prev, newGroup];
         if (!next.some(g => g.id === 'global_channel')) {
           next.unshift(DEFAULT_GLOBAL_CHANNEL);
         }
+        safeLocalStorageSet('ordina_cached_groups', JSON.stringify(next));
+        setPersistentBackup('ordina_cached_groups', next).catch(() => {});
         return next;
       });
     });
@@ -1517,6 +1796,68 @@ function AppContent() {
 
     newSocket.on('report:updated', (upd: Report) => {
       setReports(prev => prev.map(r => r.id === upd.id ? upd : r));
+    });
+
+    // Music library socket events (merges safely with defaults to prevent memory loss)
+    newSocket.on('music:list', (tracks: MusicTrack[]) => {
+      if (Array.isArray(tracks) && tracks.length > 0) {
+        setMusicTracks(prev => {
+          const map = new Map<string, MusicTrack>();
+          DEFAULT_PUBLIC_TRACKS.forEach(t => map.set(t.id, t));
+          prev.forEach(t => map.set(t.id, t));
+          tracks.forEach(t => map.set(t.id, t));
+          const merged = Array.from(map.values());
+          persistMusicTracks(merged);
+          return merged;
+        });
+      }
+    });
+
+    newSocket.on('music:track:updated', (track: MusicTrack) => {
+      if (track?.id) {
+        setMusicTracks(prev => {
+          const next = prev.some(t => t.id === track.id) 
+            ? prev.map(t => t.id === track.id ? track : t) 
+            : [track, ...prev];
+          persistMusicTracks(next);
+          return next;
+        });
+      }
+    });
+
+    newSocket.on('music:track:deleted', ({ trackId }: { trackId: string }) => {
+      setMusicTracks(prev => {
+        const next = prev.filter(t => t.id !== trackId);
+        persistMusicTracks(next);
+        return next;
+      });
+    });
+
+    newSocket.on('music:playlists:list', (pls: MusicPlaylist[]) => {
+      if (Array.isArray(pls)) {
+        setMusicPlaylists(pls);
+        persistMusicPlaylists(pls);
+      }
+    });
+
+    newSocket.on('music:playlist:updated', (pl: MusicPlaylist) => {
+      if (pl?.id) {
+        setMusicPlaylists(prev => {
+          const next = prev.some(p => p.id === pl.id) 
+            ? prev.map(p => p.id === pl.id ? pl : p) 
+            : [pl, ...prev];
+          persistMusicPlaylists(next);
+          return next;
+        });
+      }
+    });
+
+    newSocket.on('music:playlist:deleted', ({ playlistId }: { playlistId: string }) => {
+      setMusicPlaylists(prev => {
+        const next = prev.filter(p => p.id !== playlistId);
+        persistMusicPlaylists(next);
+        return next;
+      });
     });
 
     newSocket.on('moderators:list', (mods: string[]) => {
@@ -1566,16 +1907,18 @@ function AppContent() {
     }
   }, [user?.uid, profile?.displayName, user?.displayName, socket]);
 
-  // Automatically sync users & groups cache to localStorage whenever they are added, updated, or removed
+  // Automatically sync users & groups cache to localStorage and IndexedDB whenever they are added, updated, or removed
   useEffect(() => {
     if (users.length > 0) {
-      try { localStorage.setItem('ordina_cached_users', JSON.stringify(users)); } catch (e) {}
+      safeLocalStorageSet('ordina_cached_users', JSON.stringify(users));
+      setPersistentBackup('ordina_cached_users', users).catch(() => {});
     }
   }, [users]);
 
   useEffect(() => {
     if (groups.length > 0) {
-      try { localStorage.setItem('ordina_cached_groups', JSON.stringify(groups)); } catch (e) {}
+      safeLocalStorageSet('ordina_cached_groups', JSON.stringify(groups));
+      setPersistentBackup('ordina_cached_groups', groups).catch(() => {});
     }
   }, [groups]);
 
@@ -1977,7 +2320,7 @@ function AppContent() {
   // Offline Caching & Relay Sync
   useEffect(() => {
     if (selectedChat?.id && messages.length > 0) {
-      localStorage.setItem(`ordina_cache_${selectedChat.id}`, JSON.stringify(messages.slice(-100)));
+      safeLocalStorageSet(`ordina_cache_${selectedChat.id}`, JSON.stringify(messages.slice(-50)));
     }
   }, [messages, selectedChat]);
 
@@ -2104,16 +2447,26 @@ function AppContent() {
 
   const handlePinMessage = (msg: Message, pin: boolean) => {
     if (!selectedChat || !user) return;
+    setMessages(prev => prev.map(m => m.id === msg.id ? {
+      ...m,
+      isPinned: pin,
+      pinnedAt: pin ? new Date().toISOString() : undefined,
+      pinnedBy: pin ? user.uid : undefined
+    } : m));
+
     socket?.emit('message:pin', {
+      id: msg.id,
       messageId: msg.id,
       chatId: selectedChat.id,
+      isPinned: pin,
       pinned: pin,
       pinnedBy: user.uid
     });
+    addToast(pin ? 'Сообщение закреплено' : 'Сообщение откреплено', 'info');
   };
 
   const handleOpenReport = (
-    targetType: 'message' | 'user' | 'group',
+    targetType: 'message' | 'user' | 'group' | 'song',
     targetId: string,
     targetName?: string,
     chatId?: string,
@@ -2130,7 +2483,7 @@ function AppContent() {
   };
 
   const handleReportSubmit = (data: {
-    targetType: 'message' | 'user' | 'group';
+    targetType: 'message' | 'user' | 'group' | 'song';
     targetId: string;
     targetName?: string;
     chatId?: string;
@@ -2257,8 +2610,58 @@ function AppContent() {
   const edgeSwipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const [edgeSwipeDx, setEdgeSwipeDx] = useState(0);
 
+  const isInteractiveMessageElement = (target: any) => {
+    if (!target) return false;
+    let curr: Element | null = target instanceof Element ? target : (target as any)?.parentElement;
+    let depth = 0;
+    while (curr && depth < 12) {
+      depth++;
+      const tag = curr.tagName?.toLowerCase() || '';
+      if (
+        tag === 'button' || tag === 'a' || tag === 'input' || tag === 'select' ||
+        tag === 'textarea' || tag === 'audio' || tag === 'video' || tag === 'label' ||
+        tag === 'svg' || tag === 'path' ||
+        curr.getAttribute?.('role') === 'button' ||
+        curr.getAttribute?.('data-interactive') === 'true' ||
+        curr.getAttribute?.('data-no-menu') === 'true' ||
+        curr.getAttribute?.('data-voice-player') === 'true' ||
+        curr.getAttribute?.('data-audio-player') === 'true' ||
+        curr.getAttribute?.('data-action') === 'true' ||
+        curr.getAttribute?.('data-reaction') !== null ||
+        curr.getAttribute?.('data-subtitle-btn') === 'true' ||
+        curr.getAttribute?.('data-quote') === 'true' ||
+        curr.getAttribute?.('data-poll-option') === 'true' ||
+        curr.getAttribute?.('data-game') === 'true' ||
+        curr.classList?.contains('interactive-action') ||
+        curr.classList?.contains('reaction-button') ||
+        curr.classList?.contains('action-pill') ||
+        curr.classList?.contains('copy-btn') ||
+        curr.classList?.contains('msg-action-btn') ||
+        curr.classList?.contains('poll-option') ||
+        curr.classList?.contains('reply-quote')
+      ) {
+        return true;
+      }
+      if (typeof curr.closest === 'function') {
+        const found = curr.closest(
+          'button, a, input, select, textarea, audio, video, label, ' +
+          '[role="button"], [data-interactive="true"], .interactive-action, ' +
+          '.reaction-button, [data-reaction], [data-no-menu="true"], ' +
+          '[data-subtitle-btn="true"], [data-quote="true"], [data-reply-quote="true"], ' +
+          '.reply-quote, [data-voice-player="true"], [data-audio-player="true"], [data-poll-option="true"], .poll-option, ' +
+          '.game-board, [data-game="true"], .quote-block, .copy-btn, .msg-action-btn, ' +
+          '[data-action="true"], .action-pill'
+        );
+        if (found) return true;
+      }
+      curr = curr.parentElement;
+    }
+    return false;
+  };
+
   const handleMsgPointerDown = (e: React.PointerEvent, msg: Message) => {
     if (e.button && e.button !== 0) return;
+    if (isInteractiveMessageElement(e.target as HTMLElement)) return;
 
     const clientX = e.clientX;
     const clientY = e.clientY;
@@ -2303,6 +2706,8 @@ function AppContent() {
       clearTimeout(msgLongPressTimerRef.current);
       msgLongPressTimerRef.current = null;
     }
+
+    if (isInteractiveMessageElement(e.target as HTMLElement)) return;
 
     if (msgLongPressTriggeredRef.current) {
       msgLongPressTriggeredRef.current = false;
@@ -2378,8 +2783,153 @@ function AppContent() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
   const [authMode, setAuthMode] = useState<'email_login' | 'email_register' | 'forgot_password'>('email_login');
   const [isSending, setIsSending] = useState(false);
+
+  // Chat folders & multi-selection states
+  const [chatFolder, setChatFolder] = useState<'all' | 'direct' | 'groups' | 'channels' | 'archive'>('all');
+  const [isChatListSelectionMode, setIsChatListSelectionMode] = useState(false);
+  const [selectedChatListIds, setSelectedChatListIds] = useState<string[]>([]);
+  const [archivedChats, setArchivedChats] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ordina_archived_chats') || '[]');
+    } catch {
+      return [];
+    }
+  });
+
+  // Music Library & Player state (Библиотека музыки - альфа)
+  const [showMusicModal, setShowMusicModal] = useState(false);
+  const musicPlayer = useMusicPlayer();
+
+  // Calculate dynamic counts for chat folders: Все, Личные, Группы, Каналы
+  const directChatsCount = useMemo(() => {
+    return users.filter(u => {
+      if (u.uid === user?.uid) return false;
+      if (archivedChats.includes(u.uid)) return false;
+      return ((profile?.activeChats || []).includes(u.uid) || Boolean(recentPreviews[u.uid]) || Boolean(lastMessages[u.uid])) && 
+             !(profile?.hiddenChats || []).includes(u.uid);
+    }).length;
+  }, [users, user, archivedChats, profile, recentPreviews, lastMessages]);
+
+  const groupChatsCount = useMemo(() => {
+    return groups.filter(g => g.type === 'group' && !archivedChats.includes(g.id)).length;
+  }, [groups, archivedChats]);
+
+  const channelChatsCount = useMemo(() => {
+    return groups.filter(g => (g.type === 'channel' || g.isGlobal) && !archivedChats.includes(g.id)).length;
+  }, [groups, archivedChats]);
+
+  const allChatsCount = useMemo(() => {
+    return directChatsCount + groupChatsCount + channelChatsCount;
+  }, [directChatsCount, groupChatsCount, channelChatsCount]);
+
+  const handleSaveMusicTrack = async (track: MusicTrack) => {
+    setMusicTracks(prev => {
+      const next = prev.some(t => t.id === track.id) 
+        ? prev.map(t => t.id === track.id ? track : t) 
+        : [track, ...prev];
+      persistMusicTracks(next);
+      return next;
+    });
+    socket?.emit('music:save', track);
+  };
+
+  const handleDeleteMusicTrack = async (trackId: string) => {
+    setMusicTracks(prev => {
+      const next = prev.filter(t => t.id !== trackId);
+      persistMusicTracks(next);
+      return next;
+    });
+    socket?.emit('music:delete', { trackId });
+  };
+
+  const [subscriptions, setSubscriptions] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('ordina_music_subscriptions');
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const handleToggleSubscribe = (uploaderId: string) => {
+    if (!user) return;
+    setSubscriptions(prev => {
+      const next = prev.includes(uploaderId)
+        ? prev.filter(id => id !== uploaderId)
+        : [...prev, uploaderId];
+      try {
+        localStorage.setItem('ordina_music_subscriptions', JSON.stringify(next));
+      } catch {}
+      addToast(next.includes(uploaderId) ? 'Вы подписались на автора!' : 'Вы отписались от автора', 'success');
+      return next;
+    });
+  };
+
+  const handleToggleLikeMusicTrack = (trackId: string) => {
+    if (!user) return;
+    setMusicTracks(prev => {
+      const next = prev.map(t => {
+        if (t.id !== trackId) return t;
+        const liked = t.likedBy?.includes(user.uid);
+        const nextLikedBy = liked 
+          ? (t.likedBy || []).filter(u => u !== user.uid)
+          : [...(t.likedBy || []), user.uid];
+        return {
+          ...t,
+          likedBy: nextLikedBy,
+          likes: nextLikedBy.length
+        };
+      });
+      persistMusicTracks(next);
+      return next;
+    });
+    socket?.emit('music:like', { trackId });
+  };
+
+  const handleSaveMusicPlaylist = async (playlist: MusicPlaylist) => {
+    setMusicPlaylists(prev => {
+      const next = prev.some(p => p.id === playlist.id) 
+        ? prev.map(p => p.id === playlist.id ? playlist : p) 
+        : [playlist, ...prev];
+      persistMusicPlaylists(next);
+      return next;
+    });
+    socket?.emit('music:playlist:save', playlist);
+  };
+
+  const handleShareMusicTrackToChat = (track: MusicTrack) => {
+    const text = `🎵 Рекомендую послушать трек: "${track.title}" — ${track.artist}`;
+    if (selectedChat && socket) {
+      socket.emit('message:send', {
+        chatId: selectedChat.id,
+        text,
+        senderId: user?.uid || 'user_guest',
+        senderName: profile?.displayName || user?.displayName || 'Пользователь',
+        type: 'text'
+      });
+      addToast(`Трек "${track.title}" отправлен в чат!`, 'success');
+    } else {
+      navigator.clipboard?.writeText(text);
+      addToast(`Название трека "${track.title}" скопировано в буфер!`, 'info');
+    }
+  };
+
+  // Universal Chat Media Modal state
+  const [showChatMediaModal, setShowChatMediaModal] = useState(false);
+
+  // Ownership transfer modal
+  const [transferOwnershipGroup, setTransferOwnershipGroup] = useState<Group | null>(null);
+  const [selectedNewOwnerId, setSelectedNewOwnerId] = useState<string>('');
+
+  // Delete modal with countdown timer
+  const [chatListDeleteModal, setChatListDeleteModal] = useState<{
+    chatIds: string[];
+    timer: number;
+    canDeleteForEveryone?: boolean;
+  } | null>(null);
   
   useEffect(() => {
     // Configure black status bar and safe areas for mobile cutouts (like Telegram & VK)
@@ -2412,6 +2962,8 @@ function AppContent() {
   const [viewedProfile, setViewedProfile] = useState<UserProfile | null>(null);
   
   const [cropModalInfo, setCropModalInfo] = useState<{ src: string, type: 'user' | 'group', groupId?: string } | null>(null);
+  const [cropBannerSrc, setCropBannerSrc] = useState<string | null>(null);
+  const backgroundFileInputRef = useRef<HTMLInputElement>(null);
   const [showFullAvatar, setShowFullAvatar] = useState<{ src: string } | null>(null);
   const [fullImgScale, setFullImgScale] = useState(1);
   const [fullImgRotation, setFullImgRotation] = useState(0);
@@ -2644,6 +3196,81 @@ function AppContent() {
   const [showOnboardingModal, setShowOnboardingModal] = useState(false);
   const [showBugReportModal, setShowBugReportModal] = useState(false);
   const [showShareAppModal, setShowShareAppModal] = useState(false);
+  const [showTextSafetyModal, setShowTextSafetyModal] = useState(false);
+  const [dismissedRiskText, setDismissedRiskText] = useState<string>('');
+  const [showInlineRiskDetails, setShowInlineRiskDetails] = useState<boolean>(false);
+  const [aiRiskResult, setAiRiskResult] = useState<DetectedRisk | null>(null);
+  const [isAiChecking, setIsAiChecking] = useState<boolean>(false);
+  const [aiCheckStatus, setAiCheckStatus] = useState<'idle' | 'checking' | 'verified_safe' | 'risk_detected'>('idle');
+  const aiCheckTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Automatic AI typing check disabled per user request to maximize speed and remove unwanted warnings
+
+  // Combined real-time rule engine + intelligent Gemini AI analysis
+  const textRiskAnalysis = useMemo(() => {
+    const base = analyzeTextForLegalRisks(inputText);
+    if (aiRiskResult && aiRiskResult.isAiGenerated) {
+      const alreadyHas = base.risks.some(r => 
+        Math.abs(r.index - aiRiskResult.index) < 5 || 
+        r.matchedText.toLowerCase().includes(aiRiskResult.matchedText.toLowerCase()) ||
+        aiRiskResult.matchedText.toLowerCase().includes(r.matchedText.toLowerCase())
+      );
+      if (!alreadyHas) {
+        base.risks = [aiRiskResult, ...base.risks];
+        base.hasRisks = true;
+        if (aiRiskResult.riskLevel === 'critical') base.criticalCount++;
+        else if (aiRiskResult.riskLevel === 'warning') base.warningCount++;
+        else base.infoCount++;
+        if (aiRiskResult.safeReplacement) {
+          base.suggestedSafeText = aiRiskResult.safeReplacement;
+        }
+      } else {
+        const idx = base.risks.findIndex(r => 
+          r.matchedText.toLowerCase().includes(aiRiskResult.matchedText.toLowerCase()) ||
+          aiRiskResult.matchedText.toLowerCase().includes(r.matchedText.toLowerCase())
+        );
+        if (idx !== -1) {
+          base.risks[idx] = {
+            ...base.risks[idx],
+            isAiGenerated: true,
+            aiLawArticle: aiRiskResult.aiLawArticle || base.risks[idx].statutoryReference,
+            safeReplacement: aiRiskResult.safeReplacement || base.risks[idx].safeReplacement,
+            riskDescription: aiRiskResult.riskDescription || base.risks[idx].riskDescription
+          };
+          if (aiRiskResult.safeReplacement) {
+            base.suggestedSafeText = aiRiskResult.safeReplacement;
+          }
+        }
+      }
+    }
+    return base;
+  }, [inputText, aiRiskResult]);
+
+  const handleManualAiCheck = async () => {
+    const trimmed = inputText.trim();
+    if (!trimmed) {
+      addToast('Введите текст сообщения для проверки через ИИ', 'info');
+      return;
+    }
+    setIsAiChecking(true);
+    setAiCheckStatus('checking');
+    try {
+      const result = await checkTextWithAi(trimmed);
+      setAiRiskResult(result);
+      if (result) {
+        setAiCheckStatus('risk_detected');
+        addToast(`ИИ выявил правовой риск: ${result.riskTitle}`, 'error');
+      } else {
+        setAiCheckStatus('verified_safe');
+        addToast('ИИ проверил: правовых нарушений в тексте не выявлено ✓', 'success');
+      }
+    } catch (e) {
+      setAiCheckStatus('idle');
+      addToast('Не удалось связаться с сервером ИИ', 'error');
+    } finally {
+      setIsAiChecking(false);
+    }
+  };
 
   // First-launch welcome onboarding guide immediately upon login
   useEffect(() => {
@@ -2677,19 +3304,37 @@ function AppContent() {
 
   const scrollToMessage = useCallback((id: string) => {
     if (!id) return;
-    const el = document.getElementById(`msg-${id}`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setHighlightedMsgId(id);
-      el.classList.add('ring-2', 'ring-amber-500', 'bg-amber-50/40');
-      setTimeout(() => {
-        setHighlightedMsgId(null);
-        el.classList.remove('ring-2', 'ring-amber-500', 'bg-amber-50/40');
-      }, 2500);
-    } else {
-      addToast('Сообщение находится выше в истории', 'info');
+    const findAndScroll = () => {
+      const el = document.getElementById(`msg-${id}`) || document.querySelector(`[data-msg-id="${id}"]`);
+      const container = messagesContainerRef.current;
+      if (el) {
+        if (container) {
+          const containerRect = container.getBoundingClientRect();
+          const elRect = el.getBoundingClientRect();
+          const relativeTop = elRect.top - containerRect.top + container.scrollTop;
+          const targetScrollTop = relativeTop - (container.clientHeight / 2) + (elRect.height / 2);
+          container.scrollTo({ top: Math.max(0, targetScrollTop), behavior: 'smooth' });
+        }
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setHighlightedMsgId(id);
+        setTimeout(() => {
+          setHighlightedMsgId(prev => prev === id ? null : prev);
+        }, 3500);
+        return true;
+      }
+      return false;
+    };
+
+    if (!findAndScroll()) {
+      const foundInState = messages.find(m => m.id === id);
+      if (foundInState && messagesContainerRef.current) {
+        messagesContainerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+        setTimeout(() => {
+          findAndScroll();
+        }, 300);
+      }
     }
-  }, [addToast]);
+  }, [messages]);
 
   const [pollQuestion, setPollQuestion] = useState('');
   const [pollOptions, setPollOptions] = useState(['', '']);
@@ -2768,6 +3413,8 @@ function AppContent() {
   }, [showConfirmModal]);
 
   const [showGroupInfo, setShowGroupInfo] = useState(false);
+  const [groupProfileTab, setGroupProfileTab] = useState<'info' | 'media' | 'files' | 'voice' | 'links' | 'members'>('info');
+  const [chatQrTarget, setChatQrTarget] = useState<Group | null>(null);
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [inviteSearchQuery, setInviteSearchQuery] = useState('');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -2780,6 +3427,12 @@ function AppContent() {
   const [editBio, setEditBio] = useState('');
   const [editAvatar, setEditAvatar] = useState('');
   const [editBackgroundURL, setEditBackgroundURL] = useState('');
+  const [editBirthday, setEditBirthday] = useState('');
+  const [editPinnedChannelId, setEditPinnedChannelId] = useState<string | null>(null);
+  const [userProfileTab, setUserProfileTab] = useState<'info' | 'media' | 'files' | 'voice' | 'music' | 'links' | 'common_chats'>('info');
+  const [profilePlayingTrack, setProfilePlayingTrack] = useState<{ id?: string; url: string; isPlaying: boolean; currentTime: number; duration: number } | null>(null);
+  const [musicInitialSearch, setMusicInitialSearch] = useState('');
+  const profileAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const [mobileView, setMobileView] = useState<'list' | 'chat' | 'radar'>('list');
 
@@ -2857,7 +3510,15 @@ function AppContent() {
       setShowDeleteModal(false);
       return true;
     }
+    if (cropBannerSrc) {
+      setCropBannerSrc(null);
+      return true;
+    }
     if (showProfile) {
+      if (isEditingProfile) {
+        handleCancelEditProfile();
+        return true;
+      }
       setShowProfile(false);
       setViewedProfile(null);
       return true;
@@ -2918,6 +3579,44 @@ function AppContent() {
     showInviteModal, showDeleteModal, showProfile, showSettings, showChatSearch, showRadar,
     showAttachmentMenu, showChatMenu, selectedChat
   ]);
+
+  // Handle sovereign links on mount or navigation (?u=user / ?c=channel or #u= / #c=)
+  useEffect(() => {
+    try {
+      const search = window.location.search;
+      const hash = window.location.hash;
+      const paramString = search ? search.slice(1) : (hash ? hash.replace(/^#\/?/, '') : '');
+      if (!paramString) return;
+      const params = new URLSearchParams(paramString);
+      const userParam = params.get('u') || params.get('user');
+      const channelParam = params.get('c') || params.get('channel') || params.get('join');
+      
+      if (userParam) {
+        const foundUser = users.find(u => u.uid === userParam || u.username === userParam || (u.displayName && u.displayName.toLowerCase() === userParam.toLowerCase()));
+        if (foundUser) {
+          setViewedProfile(foundUser);
+          setShowProfile(true);
+        } else if (userParam.trim()) {
+          // Open synthetic profile even before users list is fully populated
+          setViewedProfile({
+            uid: userParam,
+            displayName: userParam.startsWith('@') ? userParam.slice(1) : userParam,
+            username: userParam.replace(/^@/, ''),
+            status: 'online',
+            lastSeen: new Date().toISOString()
+          });
+          setShowProfile(true);
+        }
+      } else if (channelParam) {
+        const foundChannel = groups.find(g => g.id === channelParam || (g.name && g.name.toLowerCase().replace(/\s+/g, '_') === channelParam.toLowerCase()));
+        if (foundChannel) {
+          selectChat({ type: 'channel', id: foundChannel.id });
+        }
+      }
+    } catch (e) {
+      console.warn('Sovereign link routing failed', e);
+    }
+  }, [users, groups]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -3553,6 +4252,17 @@ function AppContent() {
       log('UPDATE_PROFILE_ERROR: No profile or user found');
       return;
     }
+
+    const pinnedChannelData = editPinnedChannelId ? (() => {
+      const ch = groups.find(g => g.id === editPinnedChannelId);
+      return ch ? {
+        id: ch.id,
+        name: ch.name,
+        photoURL: ch.photoURL,
+        description: ch.description,
+        subscribersCount: ch.members?.length || 1
+      } : null;
+    })() : null;
     
     const updatedProfile = {
       ...profile,
@@ -3561,6 +4271,9 @@ function AppContent() {
       bio: editBio,
       photoURL: editAvatar,
       profileBackgroundURL: editBackgroundURL,
+      birthday: editBirthday,
+      pinnedChannelId: editPinnedChannelId,
+      pinnedChannel: pinnedChannelData,
       status: userStatus,
       customStatus: customStatus
     };
@@ -3571,6 +4284,9 @@ function AppContent() {
     }
     
     setProfile(updatedProfile);
+    if (viewedProfile?.uid === user.uid) {
+      setViewedProfile(updatedProfile);
+    }
     setIsEditingProfile(false);
     
     // Auth profile also needs safe updating
@@ -3582,6 +4298,167 @@ function AppContent() {
       addToast('Профиль сохранен', 'success');
     } catch (e) {
       console.warn('Auth profile sync failed', e);
+    }
+  };
+
+  const handleCancelEditProfile = () => {
+    setEditName(profile?.displayName || '');
+    setEditUsername(profile?.username || '');
+    setEditAvatar(profile?.photoURL || '');
+    setEditBio(profile?.bio || '');
+    setEditBackgroundURL(profile?.profileBackgroundURL || '');
+    setEditBirthday(profile?.birthday || '');
+    setEditPinnedChannelId(profile?.pinnedChannelId || null);
+    setUserStatus((profile?.status as any) || 'online');
+    setCustomStatus(profile?.customStatus || '');
+    setCropBannerSrc(null);
+    setIsEditingProfile(false);
+    setViewedProfile(profile);
+  };
+
+  const handleOpenUserProfileFromMusic = (userIdOrName: string) => {
+    setShowMusicModal(false);
+    if (!userIdOrName) return;
+    const lower = userIdOrName.trim().toLowerCase();
+    const foundUser = users.find(u => 
+      u.uid === userIdOrName || 
+      (u.username && u.username.toLowerCase() === lower) ||
+      (u.displayName && u.displayName.toLowerCase() === lower)
+    );
+    if (foundUser) {
+      setViewedProfile(foundUser);
+      setShowProfile(true);
+    } else if (user && (user.uid === userIdOrName || profile?.displayName?.toLowerCase() === lower)) {
+      setViewedProfile(profile);
+      setShowProfile(true);
+    } else {
+      const syntheticProfile: UserProfile = {
+        uid: userIdOrName,
+        displayName: userIdOrName,
+        username: userIdOrName.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 20) || 'author',
+        status: 'online',
+        lastSeen: new Date().toISOString(),
+        bio: `Автор и исполнитель в Ордина Музыка: ${userIdOrName}`,
+        profileBackgroundURL: '',
+        isVerified: true
+      };
+      setViewedProfile(syntheticProfile);
+      setShowProfile(true);
+    }
+  };
+
+  const getSovereignProfileLink = (identifier: string) => {
+    return `${window.location.origin}${window.location.pathname}?u=${encodeURIComponent(identifier)}`;
+  };
+
+  const getSovereignChannelLink = (channelId: string) => {
+    return `${window.location.origin}${window.location.pathname}?c=${encodeURIComponent(channelId)}`;
+  };
+
+  const handlePinTrackToProfile = (track: { id?: string; title: string; artist?: string; url?: string; fileUrl?: string; duration?: number; addedAt?: string } | any | null) => {
+    if (!user || !profile) return;
+    if (!track) {
+      const updatedProfile = {
+        ...profile,
+        pinnedTrack: null
+      };
+      setProfile(updatedProfile);
+      if (viewedProfile?.uid === user.uid) {
+        setViewedProfile(updatedProfile);
+      }
+      socket?.emit('profile:update', { uid: user.uid, profile: { pinnedTrack: null } });
+      addToast('Трек откреплен от профиля', 'info');
+      return;
+    }
+    const pinnedObj = {
+      id: track.id,
+      title: track.title,
+      artist: track.artist,
+      url: track.url || track.fileUrl || '',
+      fileUrl: track.fileUrl || track.url || '',
+      duration: track.duration,
+      addedAt: track.addedAt || new Date().toISOString()
+    };
+    const updatedProfile = {
+      ...profile,
+      pinnedTrack: pinnedObj
+    };
+    setProfile(updatedProfile);
+    if (viewedProfile?.uid === user.uid) {
+      setViewedProfile(updatedProfile);
+    }
+    socket?.emit('profile:update', { uid: user.uid, profile: { pinnedTrack: pinnedObj } });
+    addToast(`Трек «${track.title}» закреплен в профиле! Теперь его слышат все посетители`, 'success');
+  };
+
+  const handlePinChannelToProfile = (channel: Group | null) => {
+    if (!user || !profile) return;
+    const pinnedChannelData = channel ? {
+      id: channel.id,
+      name: channel.name,
+      photoURL: channel.photoURL,
+      description: channel.description,
+      subscribersCount: channel.members?.length || 1
+    } : null;
+    const updatedProfile = {
+      ...profile,
+      pinnedChannelId: channel?.id || null,
+      pinnedChannel: pinnedChannelData
+    };
+    setProfile(updatedProfile);
+    if (viewedProfile?.uid === user.uid) {
+      setViewedProfile(updatedProfile);
+    }
+    socket?.emit('profile:update', {
+      uid: user.uid,
+      profile: {
+        pinnedChannelId: channel?.id || null,
+        pinnedChannel: pinnedChannelData
+      }
+    });
+    if (channel) {
+      addToast(`Канал «${channel.name}» закреплен в вашем профиле!`, 'success');
+    } else {
+      addToast('Канал откреплен от профиля', 'info');
+    }
+  };
+
+  const toggleProfileTrack = (track: { url?: string; fileUrl?: string; title: string }) => {
+    const playUrl = track.url || track.fileUrl;
+    if (!playUrl) {
+      addToast('Ссылка на трек недоступна', 'error');
+      return;
+    }
+    if (!profileAudioRef.current) {
+      profileAudioRef.current = new Audio();
+    }
+    const audio = profileAudioRef.current;
+    if (profilePlayingTrack?.isPlaying && profilePlayingTrack.url === playUrl) {
+      audio.pause();
+      setProfilePlayingTrack(prev => prev ? { ...prev, isPlaying: false } : null);
+    } else {
+      audio.src = playUrl;
+      audio.play().then(() => {
+        setProfilePlayingTrack({
+          url: playUrl,
+          isPlaying: true,
+          currentTime: 0,
+          duration: audio.duration || 0
+        });
+      }).catch(err => {
+        console.warn('Playback error', err);
+        addToast('Не удалось воспроизвести аудио', 'error');
+      });
+      audio.ontimeupdate = () => {
+        setProfilePlayingTrack(prev => prev ? {
+          ...prev,
+          currentTime: audio.currentTime,
+          duration: audio.duration || prev.duration
+        } : null);
+      };
+      audio.onended = () => {
+        setProfilePlayingTrack(prev => prev ? { ...prev, isPlaying: false } : null);
+      };
     }
   };
 
@@ -3613,23 +4490,28 @@ function AppContent() {
       }
     }
     
-    // Clear messages and show loading ONLY if not cached to prevent flashing/blinking
+    // Seamless message transition: do not blank out messages if already displayed or cached
     if (!cached || cached.length === 0) {
-      setMessages([]);
-      setIsLoadingMessages(true);
+      if (selectedChatRef.current?.id !== chat.id) {
+        setMessages([]);
+        setIsLoadingMessages(true);
+      }
+      // Asynchronously fetch from local DB only when cache is missing
+      getMessagesForChat(chat.id, myUid).then(dbMsgs => {
+        if (dbMsgs && dbMsgs.length > 0) {
+          messageCacheRef.current[chat.id] = dbMsgs;
+          setMessages(dbMsgs);
+          setIsLoadingMessages(false);
+        } else {
+          setIsLoadingMessages(false);
+        }
+      }).catch(() => {
+        setIsLoadingMessages(false);
+      });
     } else {
       setMessages(cached);
       setIsLoadingMessages(false);
     }
-
-    // Also asynchronously fetch from SQLite database to guarantee instant offline messages
-    getMessagesForChat(chat.id, myUid).then(dbMsgs => {
-      if (dbMsgs && dbMsgs.length > 0) {
-        messageCacheRef.current[chat.id] = dbMsgs;
-        setMessages(dbMsgs);
-        setIsLoadingMessages(false);
-      }
-    }).catch(() => {});
     
     setActiveThread(null); // Clear active thread too
     
@@ -3681,33 +4563,35 @@ function AppContent() {
       }
     }
 
-    // Also fetch from SQLite database
-    getMessagesForChat(selectedChat.id, myUid).then(dbMsgs => {
-      if (dbMsgs && dbMsgs.length > 0) {
-        messageCacheRef.current[selectedChat.id] = dbMsgs;
-        setMessages(dbMsgs);
-        setIsLoadingMessages(false);
-      }
-    }).catch(() => {});
-    
     // Determine the actual limit we should request. If the user scrolled up previously,
     // we want to honor that cached length.
     let requiredLimit = messageLimit;
     if (cached && requiredLimit < cached.length) {
       requiredLimit = cached.length;
-      // Also update the state so next scroll starts from the correct length
       setMessageLimit(requiredLimit);
     }
 
     if (cached && cached.length > 0) {
-      setMessages(cached);
+      setMessages(prev => (prev === cached || (prev.length === cached.length && prev[0]?.id === cached[0]?.id)) ? prev : cached);
       setIsLoadingMessages(false);
-      // We still join the room to get new messages and real-time updates
+      // Join room to receive real-time messages and updates
       socket?.emit('chat:join', { ...selectedChat, limit: requiredLimit, _uid: user?.uid });
     } else {
-      if (messages.length === 0) {
-        setIsLoadingMessages(true);
-      }
+      setMessages(prev => {
+        if (prev.length === 0) setIsLoadingMessages(true);
+        return prev;
+      });
+      getMessagesForChat(selectedChat.id, myUid).then(dbMsgs => {
+        if (dbMsgs && dbMsgs.length > 0) {
+          messageCacheRef.current[selectedChat.id] = dbMsgs;
+          setMessages(dbMsgs);
+          setIsLoadingMessages(false);
+        } else {
+          setIsLoadingMessages(false);
+        }
+      }).catch(() => {
+        setIsLoadingMessages(false);
+      });
       // Fetch from Socket.io
       socket?.emit('chat:join', { ...selectedChat, limit: requiredLimit, _uid: user?.uid });
     }
@@ -3919,21 +4803,29 @@ function AppContent() {
     try {
       const savedGuestId = localStorage.getItem('ordina_guest_id');
       const guestId = savedGuestId || 'guest_' + Math.random().toString(36).substr(2, 9);
-      if (!savedGuestId) localStorage.setItem('ordina_guest_id', guestId);
+      if (!savedGuestId) safeLocalStorageSet('ordina_guest_id', guestId);
+      
+      const guestSuffix = Math.floor(1000 + Math.random() * 9000);
+      const uniqueUsername = `guest_${guestId.replace(/[^a-zA-Z0-9]/g, '').slice(-4)}_${guestSuffix}`;
+
       const guestUser = {
         uid: guestId,
         displayName: 'Гость ' + guestId.substr(6, 4),
+        username: uniqueUsername,
         isAnonymous: true
       } as any;
       
       const guestProfile: UserProfile = {
         uid: guestId,
         displayName: guestUser.displayName,
+        username: uniqueUsername,
         status: 'online',
         lastSeen: new Date().toISOString(),
         activeChats: ['global_channel']
       };
       
+      safeLocalStorageSet(`ordina_profile_${guestId}`, JSON.stringify(guestProfile));
+      socket?.emit('auth:sync', { ...guestUser, username: uniqueUsername });
       socket?.emit('profile:update', { uid: guestId, profile: guestProfile });
       setUser(guestUser);
       setProfile(guestProfile);
@@ -4243,6 +5135,8 @@ function AppContent() {
       if (!inputText.trim()) return;
     }
 
+    // Legal shield verification block removed per user request (message checking removed, legal recommendations remain intact)
+
     if (isSending) return;
 
     try {
@@ -4295,7 +5189,7 @@ function AppContent() {
         createdAt: new Date().toISOString(),
         isEncrypted: !!shouldEncrypt,
         asChannel: isChannelSend,
-        silent: !!isSilentSend,
+        silent: (selectedChat.type === 'channel' || (activeChatData as Group)?.type === 'channel') ? !!isSilentSend : false,
       };
 
       if (replyTo && replyTo.id) newMessage.replyToId = replyTo.id;
@@ -4742,27 +5636,48 @@ function AppContent() {
 
     const performDelete = async () => {
       const currentChatId = selectedChat?.id || 'global_channel';
+      const targetMsg = messages.find(m => m.id === id);
+      const isMyMessage = targetMsg ? targetMsg.senderId === user.uid : true;
+      const isNotebook = selectedChat?.id === 'notebook' || selectedChat?.id === user.uid;
+      const shouldDeleteEverywhere = forEveryone || isMyMessage || isNotebook || isGlobalAdmin;
+
       // Optimistic removal from active state
       setMessages(prev => prev.filter(m => m.id !== id));
       if (messageCacheRef.current[currentChatId]) {
         messageCacheRef.current[currentChatId] = messageCacheRef.current[currentChatId].filter(m => m.id !== id);
       }
       
-      // Permanently remove from local SQLite database and localStorage cache
+      // Permanently remove from local SQLite database, localStorage cache, and IndexedDB
       await deleteMessageFromDb(id);
 
-      if (forEveryone) {
+      // Always update hiddenMessages as safety net
+      const currentHidden = profile?.hiddenMessages || [];
+      const newHidden = currentHidden.includes(id) ? currentHidden : [...currentHidden, id];
+      setProfile(prev => prev ? { ...prev, hiddenMessages: newHidden } : null);
+
+      if (shouldDeleteEverywhere) {
         if (socket) {
-          socket.emit('message:delete', { id, chatId: selectedChat?.id });
-        }
-      } else {
-        const currentHidden = profile?.hiddenMessages || [];
-        if (!currentHidden.includes(id)) {
-          const newHidden = [...currentHidden, id];
-          setProfile(prev => prev ? { ...prev, hiddenMessages: newHidden } : null);
-          if (socket) socket.emit('profile:update', { uid: user.uid, profile: { hiddenMessages: newHidden } });
+          socket.emit('message:delete', { id, chatId: selectedChat?.id || targetMsg?.groupId || currentChatId });
         }
       }
+      if (socket) {
+        socket.emit('profile:update', { uid: user.uid, profile: { hiddenMessages: newHidden } });
+      }
+
+      setRecentPreviews(prev => {
+        const next = { ...prev };
+        for (const cid in next) {
+          if (next[cid]?.id === id) {
+            const cached = (messageCacheRef.current[cid] || []).filter(m => m.id !== id);
+            if (cached.length > 0) {
+              next[cid] = cached[cached.length - 1];
+            } else {
+              delete next[cid];
+            }
+          }
+        }
+        return next;
+      });
     };
 
     if (delayMs > 0) {
@@ -4913,6 +5828,10 @@ function AppContent() {
 
   const handlePinChat = (chatId: string) => {
     if (!user) return;
+    if (chatId === 'global_channel' || chatId === user.uid) {
+      addToast('"Ордина Глобал" и Блокнот всегда закреплены', 'info');
+      return;
+    }
     const pinnedChats = [...(profile?.pinnedChats || [])];
     const index = pinnedChats.indexOf(chatId);
     if (index > -1) {
@@ -4924,8 +5843,251 @@ function AppContent() {
     if (profile) setProfile({...profile, pinnedChats});
   };
 
+  const handleToggleSelectChatList = (chatId: string) => {
+    setSelectedChatListIds(prev => {
+      const next = prev.includes(chatId) ? prev.filter(id => id !== chatId) : [...prev, chatId];
+      if (next.length === 0) {
+        setIsChatListSelectionMode(false);
+      }
+      return next;
+    });
+  };
+
+  const handlePinMultipleChats = (chatIds: string[]) => {
+    if (!user) return;
+    const eligibleIds = chatIds.filter(id => id !== 'global_channel' && id !== user.uid);
+    if (eligibleIds.length === 0) {
+      addToast('"Ордина Глобал" и Блокнот всегда закреплены', 'info');
+      return;
+    }
+    const currentPinned = profile?.pinnedChats || [];
+    const areAllPinned = eligibleIds.every(id => currentPinned.includes(id));
+    let newPinned: string[];
+    if (areAllPinned) {
+      newPinned = currentPinned.filter(id => !eligibleIds.includes(id));
+      addToast(`Откреплено чатов: ${eligibleIds.length}`, 'info');
+    } else {
+      newPinned = Array.from(new Set([...currentPinned, ...eligibleIds]));
+      addToast(`Закреплено чатов: ${eligibleIds.length}`, 'success');
+    }
+    socket?.emit('profile:update', { uid: user.uid, profile: { pinnedChats: newPinned } });
+    if (profile) setProfile({ ...profile, pinnedChats: newPinned });
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const handleMuteMultipleChats = (chatIds: string[]) => {
+    if (!user) return;
+    const areAllMuted = chatIds.every(id => mutedChats.includes(id));
+    let nextMuted: string[];
+    if (areAllMuted) {
+      nextMuted = mutedChats.filter(id => !chatIds.includes(id));
+      addToast(`Звук включен для ${chatIds.length} чатов`, 'info');
+    } else {
+      nextMuted = Array.from(new Set([...mutedChats, ...chatIds]));
+      addToast(`Без звука: ${chatIds.length} чатов`, 'info');
+    }
+    setMutedChats(nextMuted);
+    safeLocalStorageSet('ordina_muted_chats', JSON.stringify(nextMuted));
+    
+    const profileMuted = { ...(profile?.mutedChats || {}) };
+    chatIds.forEach(id => {
+      if (areAllMuted) {
+        delete profileMuted[id];
+      } else {
+        profileMuted[id] = -1;
+      }
+    });
+    socket?.emit('profile:update', { uid: user.uid, profile: { mutedChats: profileMuted } });
+    if (profile) setProfile({ ...profile, mutedChats: profileMuted });
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const handleArchiveMultipleChats = (chatIds: string[]) => {
+    if (!user) return;
+    const eligibleIds = chatIds.filter(id => id !== 'global_channel' && id !== user.uid);
+    if (eligibleIds.length === 0) {
+      addToast('"Ордина Глобал" и Блокнот нельзя архивировать', 'info');
+      return;
+    }
+    const areAllArchived = eligibleIds.every(id => archivedChats.includes(id));
+    let newArchived: string[];
+    if (areAllArchived) {
+      newArchived = archivedChats.filter(id => !eligibleIds.includes(id));
+      addToast(`Извлечено из архива: ${eligibleIds.length}`, 'info');
+    } else {
+      newArchived = Array.from(new Set([...archivedChats, ...eligibleIds]));
+      addToast(`Перемещено в архив: ${eligibleIds.length}`, 'success');
+    }
+    setArchivedChats(newArchived);
+    safeLocalStorageSet('ordina_archived_chats', JSON.stringify(newArchived));
+    socket?.emit('profile:update', { uid: user.uid, profile: { archivedChats: newArchived } });
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const handleMarkAsReadMultipleChats = (chatIds: string[]) => {
+    if (!user) return;
+    setNotifications(prev => {
+      const next = { ...prev };
+      chatIds.forEach(id => {
+        next[id] = 0;
+      });
+      return next;
+    });
+    chatIds.forEach(id => {
+      socket?.emit('chat:read', { chatId: id, userId: user.uid });
+    });
+    addToast('Помечено как прочитанное', 'success');
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const handleDeleteMultipleFromSelection = () => {
+    if (!user) return;
+    const eligibleIds = selectedChatListIds.filter(id => id !== 'global_channel' && id !== user.uid);
+    if (selectedChatListIds.includes('global_channel') || selectedChatListIds.includes(user.uid)) {
+      addToast('"Ордина Глобал" и Блокнот нельзя удалить, покинуть или открепить', 'info');
+    }
+    if (eligibleIds.length === 0) {
+      setSelectedChatListIds([]);
+      setIsChatListSelectionMode(false);
+      return;
+    }
+
+    // Check if any selected is a group/channel where current user is owner
+    const ownedGroup = groups.find(g => eligibleIds.includes(g.id) && g.ownerId === user.uid && g.id !== 'global_channel');
+    if (ownedGroup) {
+      setTransferOwnershipGroup(ownedGroup);
+      const otherMembers = (ownedGroup.members || []).filter(m => m !== user.uid);
+      setSelectedNewOwnerId(otherMembers[0] || '');
+      return;
+    }
+
+    // Regular chats or member groups -> show 5-second countdown timer modal
+    const canDeleteEveryone = eligibleIds.every(id => !groups.some(g => g.id === id));
+    setChatListDeleteModal({
+      chatIds: eligibleIds,
+      timer: 5,
+      canDeleteForEveryone: canDeleteEveryone
+    });
+  };
+
+  const executeDeleteChatListForMe = (chatIds: string[]) => {
+    if (!user) return;
+    chatIds.forEach(id => {
+      const isGroup = groups.some(g => g.id === id);
+      deleteChatForMeById(id, isGroup ? 'group' : 'user');
+    });
+    addToast(`Удалено чатов: ${chatIds.length}`, 'info');
+    setChatListDeleteModal(null);
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const executeDeleteChatListForEveryone = (chatIds: string[]) => {
+    if (!user) return;
+    chatIds.forEach(id => {
+      const isGroup = groups.some(g => g.id === id);
+      deleteChatForEveryoneById(id, isGroup ? 'group' : 'user');
+    });
+    addToast(`Удалено для всех: ${chatIds.length}`, 'info');
+    setChatListDeleteModal(null);
+    setSelectedChatListIds([]);
+    setIsChatListSelectionMode(false);
+  };
+
+  const handleTransferOwnershipAndLeave = (groupId: string, newOwnerUid: string) => {
+    if (!user || !newOwnerUid) return;
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+
+    const memberRoles = { ...(group.memberRoles || {}) };
+    memberRoles[newOwnerUid] = 'owner';
+    delete memberRoles[user.uid];
+    const members = (group.members || []).filter(m => m !== user.uid);
+
+    socket?.emit('group:update', {
+      id: groupId,
+      update: {
+        ownerId: newOwnerUid,
+        members,
+        memberRoles
+      }
+    });
+
+    purgeChatDataLocally(groupId);
+    if (selectedChat?.id === groupId) {
+      setSelectedChat(null);
+      setMobileView('list');
+    }
+    setTransferOwnershipGroup(null);
+    setSelectedChatListIds(prev => prev.filter(id => id !== groupId));
+    addToast(`Права переданы. Вы покинули группу.`, 'success');
+  };
+
+  const handleDeleteGroupForEveryone = (groupId: string) => {
+    if (!user) return;
+    socket?.emit('group:delete', { id: groupId });
+    purgeChatDataLocally(groupId);
+    if (selectedChat?.id === groupId) {
+      setSelectedChat(null);
+      setMobileView('list');
+    }
+    setTransferOwnershipGroup(null);
+    setSelectedChatListIds(prev => prev.filter(id => id !== groupId));
+    addToast(`Группа удалена для всех`, 'info');
+  };
+
+  // 5-second countdown timer effect for selection deletion
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (chatListDeleteModal && chatListDeleteModal.timer > 0) {
+      interval = setInterval(() => {
+        setChatListDeleteModal(prev => {
+          if (!prev) return null;
+          if (prev.timer <= 1) {
+            clearInterval(interval);
+            return { ...prev, timer: 0 };
+          }
+          return { ...prev, timer: prev.timer - 1 };
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [chatListDeleteModal?.chatIds]);
+
   const chatListTouchTimerRef = useRef<NodeJS.Timeout | null>(null);
   const touchStartPosRef = useRef<{x: number, y: number} | null>(null);
+
+  const handleChatPointerDown = (e: React.PointerEvent, chat: { id: string; type: 'user' | 'group' | 'channel' }) => {
+    if (e.button && e.button !== 0) return;
+    const pageX = e.clientX;
+    const pageY = e.clientY;
+    touchStartPosRef.current = { x: pageX, y: pageY };
+    
+    if (chatListTouchTimerRef.current) clearTimeout(chatListTouchTimerRef.current);
+    chatListTouchTimerRef.current = setTimeout(() => {
+      chatListTouchTimerRef.current = null;
+      triggerHapticFeedback();
+      setIsChatListSelectionMode(true);
+      setSelectedChatListIds(prev => prev.includes(chat.id) ? prev : [...prev, chat.id]);
+    }, 450);
+  };
+
+  const handleChatPointerMove = (e: React.PointerEvent) => {
+    if (!touchStartPosRef.current) return;
+    const dx = Math.abs(e.clientX - touchStartPosRef.current.x);
+    const dy = Math.abs(e.clientY - touchStartPosRef.current.y);
+    if (dx > 8 || dy > 8) {
+      clearChatListTouchTimer();
+    }
+  };
+
+  const handleChatPointerUp = () => {
+    clearChatListTouchTimer();
+  };
 
   const startChatListTouchTimer = (e: React.TouchEvent, chat: {id: string, type: 'user'|'group'|'channel'}) => {
     const pageX = e.touches[0].pageX;
@@ -4934,15 +6096,18 @@ function AppContent() {
     
     if (chatListTouchTimerRef.current) clearTimeout(chatListTouchTimerRef.current);
     chatListTouchTimerRef.current = setTimeout(() => {
-      handleChatContextMenu({ preventDefault: () => {}, pageX, pageY } as any, chat);
-    }, 500);
+      chatListTouchTimerRef.current = null;
+      triggerHapticFeedback();
+      setIsChatListSelectionMode(true);
+      setSelectedChatListIds(prev => prev.includes(chat.id) ? prev : [...prev, chat.id]);
+    }, 450);
   };
   
   const handleChatListTouchMove = (e: React.TouchEvent) => {
     if (!touchStartPosRef.current) return;
     const dx = Math.abs(e.touches[0].pageX - touchStartPosRef.current.x);
     const dy = Math.abs(e.touches[0].pageY - touchStartPosRef.current.y);
-    if (dx > 10 || dy > 10) {
+    if (dx > 8 || dy > 8) {
       clearChatListTouchTimer();
     }
   };
@@ -5045,37 +6210,11 @@ function AppContent() {
               <Reply size={20} />
             </button>
           )}
-          <button 
-            onClick={() => {
-              const currentUrl = getServerUrl(socketUrl);
-              const newUrl = prompt('Введите адрес сервера:', currentUrl);
-              if (newUrl !== null) {
-                const trimmed = newUrl.trim();
-                if (trimmed) {
-                  localStorage.setItem('ordina_server_url', trimmed);
-                  setSocketUrl(trimmed);
-                  addToast('Адрес сервера успешно обновлен! Перезапуск...', 'success');
-                  setTimeout(() => window.location.reload(), 1500);
-                } else {
-                  localStorage.removeItem('ordina_server_url');
-                  setSocketUrl(undefined);
-                  addToast('Сброшено на адрес по умолчанию! Перезапуск...', 'info');
-                  setTimeout(() => window.location.reload(), 1500);
-                }
-              }
-            }}
-            className="absolute top-4 right-4 p-2 text-slate-400 hover:text-slate-600 transition-colors animate-fade-in"
-            title="Настройка сервера"
-          >
-            <Settings size={20} />
-          </button>
           <div className="w-20 h-20 bg-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-amber-200 relative overflow-hidden">
             <Unlink className="text-white/40 w-12 h-12 absolute" />
             <Sword className="text-white w-10 h-10 relative z-10 rotate-45" />
           </div>
           <h1 className="text-3xl font-bold text-slate-900 mb-2">Ордина</h1>
-          
-
 
           {(authMode === 'email_login' || authMode === 'email_register') && (
             <form onSubmit={authMode === 'email_login' ? handleEmailLogin : handleEmailRegister} className="text-left">
@@ -5093,20 +6232,30 @@ function AppContent() {
                 type="email"
                 value={authEmail}
                 onChange={e => setAuthEmail(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-4 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-4 text-slate-900 font-medium placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500 focus:outline-none focus:bg-white transition-all text-sm"
                 placeholder="yours@email.com"
                 required
               />
 
               <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Пароль</label>
-              <input
-                type="password"
-                value={authPassword}
-                onChange={e => setAuthPassword(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-6 focus:ring-2 focus:ring-blue-500 focus:outline-none"
-                placeholder="Минимум 6 символов"
-                required
-              />
+              <div className="relative mb-6">
+                <input
+                  type={showAuthPassword ? "text" : "password"}
+                  value={authPassword}
+                  onChange={e => setAuthPassword(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-4 pr-12 py-3 text-slate-900 font-medium placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500 focus:outline-none focus:bg-white transition-all text-sm"
+                  placeholder="Минимум 6 символов"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAuthPassword(!showAuthPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 transition-colors"
+                  title={showAuthPassword ? "Скрыть пароль" : "Показать пароль"}
+                >
+                  {showAuthPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
 
               <button 
                 type="submit"
@@ -5157,7 +6306,7 @@ function AppContent() {
                 type="email"
                 value={authEmail}
                 onChange={e => setAuthEmail(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-6 focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 mb-6 text-slate-900 font-medium placeholder:text-slate-400 focus:ring-2 focus:ring-blue-500 focus:outline-none focus:bg-white transition-all text-sm"
                 placeholder="yours@email.com"
                 required
               />
@@ -5205,9 +6354,25 @@ function AppContent() {
 
   return (
     <div className="flex h-full w-full bg-slate-50 text-slate-900 overflow-hidden flex-col relative">
+      {/* Situational Offline Advice */}
       {!isOnline && (
-        <div className="bg-red-500 text-white py-1 px-4 text-[10px] font-bold text-center uppercase tracking-widest animate-pulse z-[1000]">
-          ОТСУТСТВУЕТ ПОДКЛЮЧЕНИЕ К СЕТИ
+        <div className="bg-gradient-to-r from-red-600 via-amber-600 to-red-600 text-white py-2 px-3 sm:px-4 text-xs font-semibold flex items-center justify-between shadow-md z-[1000] animate-in fade-in">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle size={18} className="shrink-0 text-amber-200 animate-bounce" />
+            <span className="truncate sm:whitespace-normal">
+              <strong>Пропал интернет!</strong> Рекомендация: включите Радар (Mesh-сеть), чтобы находить собеседников рядом и общаться офлайн по Bluetooth/Wi-Fi!
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setShowRadar(true);
+              setMobileView('radar');
+            }}
+            className="ml-2 sm:ml-3 px-3 py-1 bg-white text-red-700 hover:bg-red-50 rounded-xl font-bold text-xs shrink-0 shadow-sm active:scale-95 transition-all"
+          >
+            Включить Радар
+          </button>
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
@@ -5223,78 +6388,235 @@ function AppContent() {
               mobileView === 'chat' ? "absolute inset-0 z-0 lg:relative lg:z-20 lg:w-80 lg:flex" : "relative z-20 w-full lg:w-80"
             )}
           >
-            <div className="p-4 pt-[calc(12px+env(safe-area-inset-top,0px))] border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
-                setViewedProfile(profile);
-                setShowProfile(true);
-              }}>
-                <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center text-white font-bold overflow-hidden shrink-0">
-                  {profile?.photoURL ? (
-                    <img src={profile.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                  ) : (
-                    profile?.displayName?.[0] || 'U'
-                  )}
-                </div>
-                <div>
-                  <h2 className="font-bold text-sm">{profile?.displayName || 'Пользователь'}</h2>
+            <div className="p-3.5 pt-[calc(12px+env(safe-area-inset-top,0px))] border-b border-slate-100 flex items-center justify-between min-h-[70px]">
+              {isChatListSelectionMode ? (
+                <div className="flex items-center justify-between w-full bg-slate-900 text-white p-2.5 rounded-2xl shadow-md gap-2 animate-fade-in">
                   <div className="flex items-center gap-2">
-                    <p className={cn(
-                      "text-[10px] font-medium",
-                      isOnline ? "text-emerald-500" : "text-red-500"
-                    )}>
-                      {isOnline ? 'Онлайн' : 'Оффлайн'}
-                    </p>
-                    <span className="w-1 h-1 rounded-full bg-slate-300" />
-                    <button 
+                    <button
+                      type="button"
                       onClick={() => {
-                        if (!socketConnected) {
-                          addToast('Переподключение к серверу...', 'info');
-                          if (socket) socket.connect();
-                          const targetServerUrl = getServerUrl(socketUrl);
-                          fetch(`${targetServerUrl}/api/health`).catch(() => {});
-                        }
+                        setIsChatListSelectionMode(false);
+                        setSelectedChatListIds([]);
                       }}
-                      className={cn(
-                        "text-[10px] font-medium transition-all text-left",
-                        socketConnected 
-                          ? "text-emerald-500" 
-                          : serverWakingUp 
-                            ? "text-amber-500 animate-pulse font-semibold" 
-                            : "text-amber-500 font-semibold hover:underline"
-                      )}
-                      title={socketConnected ? "Сервер работает корректно" : "Нажмите для повторной попытки подключения"}
+                      className="p-1.5 hover:bg-white/10 rounded-full transition-colors text-white"
+                      title="Отмена"
                     >
-                      {socketConnected 
-                        ? 'Сервер: OK' 
-                        : serverWakingUp 
-                          ? 'Сервер: просыпается...' 
-                          : 'Сервер: подключение...'}
+                      <X size={18} />
+                    </button>
+                    <span className="font-bold text-xs whitespace-nowrap">Выбрано: {selectedChatListIds.length}</span>
+                  </div>
+                  <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar py-0.5">
+                    {/* Pin / Unpin */}
+                    <button
+                      type="button"
+                      onClick={() => handlePinMultipleChats(selectedChatListIds)}
+                      disabled={selectedChatListIds.length === 0}
+                      className="p-1.5 px-2.5 bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Закрепить / Открепить: закрепить выбранные диалоги в самом верху списка"
+                    >
+                      <Pin size={14} />
+                      <span className="text-xs">Закрепить</span>
+                    </button>
+
+                    {/* Mute / Unmute */}
+                    <button
+                      type="button"
+                      onClick={() => handleMuteMultipleChats(selectedChatListIds)}
+                      disabled={selectedChatListIds.length === 0}
+                      className="p-1.5 px-2.5 bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Без звука: отключить или включить уведомления для выбранных диалогов"
+                    >
+                      <BellOff size={14} />
+                      <span className="text-xs">Без звука</span>
+                    </button>
+
+                    {/* Archive / Unarchive */}
+                    <button
+                      type="button"
+                      onClick={() => handleArchiveMultipleChats(selectedChatListIds)}
+                      disabled={selectedChatListIds.length === 0}
+                      className="p-1.5 px-2.5 bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="В архив: переместить чаты в папку 'Архив' или восстановить"
+                    >
+                      <Archive size={14} />
+                      <span className="text-xs">В архив</span>
+                    </button>
+
+                    {/* Mark as read */}
+                    <button
+                      type="button"
+                      onClick={() => handleMarkAsReadMultipleChats(selectedChatListIds)}
+                      disabled={selectedChatListIds.length === 0}
+                      className="p-1.5 px-2.5 bg-white/10 hover:bg-white/20 disabled:opacity-40 rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Прочитано: отметить все сообщения в выбранных чатах как прочитанные"
+                    >
+                      <CheckCheck size={14} />
+                      <span className="text-xs">Прочитано</span>
+                    </button>
+
+                    {/* Delete / Leave */}
+                    <button
+                      type="button"
+                      onClick={handleDeleteMultipleFromSelection}
+                      disabled={selectedChatListIds.length === 0}
+                      className="p-1.5 px-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shrink-0"
+                      title="Удалить: очистить переписку или покинуть выбранные группы"
+                    >
+                      <Trash2 size={14} />
+                      <span className="text-xs">Удалить</span>
                     </button>
                   </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-1">
-                <button 
-                  onClick={() => {
-                    setShowRadar(true);
-                    setMobileView('radar');
-                  }}
-                  className={cn("p-2 rounded-xl transition-colors", showRadar ? "bg-blue-50 text-blue-600" : "hover:bg-slate-100 text-slate-600")}
-                  title="Mesh Network (P2P Радар)"
-                >
-                  <RadarIcon size={20} />
-                </button>
-                <button 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowSettings(true);
-                  }}
-                  className="p-2 rounded-xl transition-colors hover:bg-slate-100 active:scale-95 text-slate-600"
-                  title="Настройки"
-                >
-                  <Settings size={20} />
-                </button>
-              </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 cursor-pointer min-w-0" onClick={() => {
+                    setViewedProfile(profile);
+                    setShowProfile(true);
+                  }}>
+                    <div className="relative group shrink-0">
+                      <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-slate-200/80 flex items-center justify-center overflow-hidden shadow-xs">
+                        {profile?.photoURL || user?.photoURL ? (
+                          <img 
+                            src={profile?.photoURL || user?.photoURL || ''} 
+                            alt={profile?.displayName || 'Профиль'} 
+                            className="w-full h-full object-cover" 
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gradient-to-tr from-amber-500 to-indigo-600 flex items-center justify-center text-white font-extrabold text-sm">
+                            {(profile?.displayName || user?.displayName || 'Я').slice(0, 1).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                      <div className={cn(
+                        "absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white",
+                        isOnline ? "bg-emerald-500" : "bg-red-500"
+                      )} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <h2 className="font-extrabold text-sm tracking-tight text-slate-900 truncate">
+                          {profile?.displayName || user?.displayName || 'Мой профиль'}
+                        </h2>
+                        {profile?.isVerified && (
+                          <Shield size={12} className="text-blue-500 fill-blue-50 shrink-0" />
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <p className={cn(
+                          "text-[10px] font-medium",
+                          isOnline ? "text-emerald-500" : "text-red-500"
+                        )}>
+                          {isOnline ? 'Онлайн' : 'Оффлайн'}
+                        </p>
+                        <span className="w-1 h-1 rounded-full bg-slate-300" />
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (!socketConnected) {
+                              addToast('Переподключение к серверу...', 'info');
+                              if (socket) socket.connect();
+                              const targetServerUrl = getServerUrl(socketUrl);
+                              fetch(`${targetServerUrl}/api/health`).catch(() => {});
+                            }
+                          }}
+                          className={cn(
+                            "text-[10px] font-medium transition-all text-left",
+                            socketConnected 
+                              ? "text-emerald-500" 
+                              : serverWakingUp 
+                                ? "text-amber-500 animate-pulse font-semibold" 
+                                : "text-amber-500 font-semibold hover:underline"
+                          )}
+                          title={socketConnected ? "Сервер работает корректно" : "Нажмите для повторной попытки подключения"}
+                        >
+                          {socketConnected 
+                            ? 'Сервер: OK' 
+                            : serverWakingUp 
+                              ? 'Сервер: просыпается...' 
+                              : 'Сервер: подключение...'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button 
+                      onClick={() => setShowMusicModal(true)}
+                      className={cn(
+                        "p-2 rounded-xl transition-colors relative flex items-center justify-center w-9 h-9 active:scale-95", 
+                        showMusicModal ? "bg-red-50 text-red-600" : "hover:bg-slate-100 text-slate-600"
+                      )}
+                      title="Музыкальный плеер"
+                    >
+                      <MusicIcon size={20} />
+                      {musicPlayer.isPlaying && (
+                        <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                      )}
+                    </button>
+
+                    <button 
+                      onClick={() => {
+                        setShowRadar(true);
+                        setMobileView('radar');
+                      }}
+                      className={cn("p-2 rounded-xl transition-colors flex items-center justify-center w-9 h-9 active:scale-95", showRadar ? "bg-blue-50 text-blue-600" : "hover:bg-slate-100 text-slate-600")}
+                      title="Mesh Network (P2P Радар)"
+                    >
+                      <RadarIcon size={20} />
+                    </button>
+
+                    <button 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowSettings(true);
+                      }}
+                      className="p-2 rounded-xl transition-colors hover:bg-slate-100 active:scale-95 text-slate-600 flex items-center justify-center w-9 h-9"
+                      title="Настройки"
+                    >
+                      <Settings size={20} />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Folder tabs (Рассортировать: Все, Личные, Группы, Каналы, Архив) */}
+            <div className="flex border-b border-slate-100 px-3 bg-white overflow-x-auto custom-scrollbar gap-1 shrink-0 py-1.5">
+              {[
+                { key: 'all', label: 'Все', count: allChatsCount },
+                { key: 'direct', label: 'Личные', count: directChatsCount },
+                { key: 'groups', label: 'Группы', count: groupChatsCount },
+                { key: 'channels', label: 'Каналы', count: channelChatsCount },
+                { key: 'archive', label: 'Архив', count: archivedChats.length }
+              ].map(f => {
+                const isActive = chatFolder === f.key;
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => {
+                      setChatFolder(f.key as any);
+                      if (isChatListSelectionMode) {
+                        setSelectedChatListIds([]);
+                      }
+                    }}
+                    className={cn(
+                      "px-3 py-1.5 text-xs font-bold rounded-xl transition-all whitespace-nowrap flex items-center gap-1.5",
+                      isActive 
+                        ? "bg-blue-600 text-white shadow-sm shadow-blue-200" 
+                        : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                    )}
+                  >
+                    <span>{f.label}</span>
+                    <span className={cn(
+                      "px-1.5 py-0.2 rounded-full text-[10px]",
+                      isActive ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700 font-semibold"
+                    )}>
+                      {f.count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="p-4 relative z-50">
@@ -5302,10 +6624,39 @@ function AppContent() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                 <input 
                   type="text" 
-                  placeholder="Поиск по имени, @юзернейму или ID..." 
-                  className="w-full bg-slate-100 border-none rounded-xl py-2.5 pl-10 pr-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all"
+                  placeholder="Поиск по имени, @юзернейму или суверенной ссылке / ID..." 
+                  className="w-full bg-slate-100 dark:bg-slate-800 border-none rounded-xl py-2.5 pl-10 pr-4 text-sm focus:ring-2 focus:ring-blue-500 transition-all text-slate-900 dark:text-slate-100 placeholder:text-slate-400"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setSearchQuery(val);
+                    const trimmed = val.trim();
+                    // Handle sovereign link or code pasted into search
+                    if (trimmed.includes('?c=') || trimmed.includes('/c/') || trimmed.includes('&c=')) {
+                      const match = trimmed.match(/(?:[?&]c=|\/c\/)([a-zA-Z0-9_\-]+)/);
+                      if (match && match[1]) {
+                        const channelId = match[1];
+                        const foundChannel = groups.find(g => g.id === channelId || (g.name && g.name.toLowerCase().replace(/\s+/g, '_') === channelId.toLowerCase()));
+                        if (foundChannel) {
+                          selectChat({ type: 'channel', id: foundChannel.id });
+                          setSearchQuery('');
+                          addToast(`Переход к каналу «${foundChannel.name}»`, 'success');
+                        }
+                      }
+                    } else if (trimmed.includes('?u=') || trimmed.includes('/u/') || trimmed.includes('&u=')) {
+                      const match = trimmed.match(/(?:[?&]u=|\/u\/)([a-zA-Z0-9_\-]+)/);
+                      if (match && match[1]) {
+                        const userIdOrName = match[1];
+                        const foundUser = users.find(u => u.uid === userIdOrName || u.username === userIdOrName || (u.displayName && u.displayName.toLowerCase() === userIdOrName.toLowerCase()));
+                        if (foundUser) {
+                          setViewedProfile(foundUser);
+                          setShowProfile(true);
+                          setSearchQuery('');
+                          addToast(`Открыт профиль: ${foundUser.displayName}`, 'success');
+                        }
+                      }
+                    }
+                  }}
                 />
               </div>
 
@@ -5448,223 +6799,328 @@ function AppContent() {
               className="flex-1 overflow-y-auto px-2 space-y-1 touch-pan-y"
               style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}
             >
-              <div className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Чаты</div>
-              
-              {user && (
+              {/* NOTEPAD (Мой блокнот) - Show in 'all' and 'direct' tabs when not in archive tab */}
+              {user && (chatFolder === 'all' || chatFolder === 'direct') && (
                 <motion.button 
                   layout
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  onClick={() => selectChat({ type: 'user', id: user.uid })}
+                  onClick={() => {
+                    if (isChatListSelectionMode) {
+                      handleToggleSelectChatList(user.uid);
+                    } else {
+                      selectChat({ type: 'user', id: user.uid });
+                    }
+                  }}
+                  onContextMenu={(e) => handleChatContextMenu(e, {id: user.uid, type: 'user'})}
+                  onPointerDown={(e) => handleChatPointerDown(e, {id: user.uid, type: 'user'})}
+                  onPointerMove={handleChatPointerMove}
+                  onPointerUp={handleChatPointerUp}
+                  onTouchStart={(e) => startChatListTouchTimer(e, {id: user.uid, type: 'user'})}
+                  onTouchEnd={clearChatListTouchTimer}
+                  onTouchMove={handleChatListTouchMove}
+                  onTouchCancel={clearChatListTouchTimer}
                   className={cn(
                     "w-full flex items-center gap-3 p-3 rounded-2xl transition-all select-none",
-                    selectedChat?.id === user.uid ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100"
+                    selectedChat?.id === user.uid && !isChatListSelectionMode ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100",
+                    isChatListSelectionMode && selectedChatListIds.includes(user.uid) && "bg-blue-50 ring-2 ring-blue-500"
                   )}
                 >
+                  {isChatListSelectionMode && (
+                    <div className="shrink-0">
+                      {selectedChatListIds.includes(user.uid) ? (
+                        <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white shadow-sm ring-2 ring-white transform -rotate-12">
+                          <Check size={13} strokeWidth={3} />
+                        </div>
+                      ) : (
+                        <div className="w-5 h-5 rounded-full border-2 border-slate-300 bg-white/80" />
+                      )}
+                    </div>
+                  )}
                   <div className="relative">
                     <div className="w-12 h-12 rounded-2xl bg-blue-100 flex items-center justify-center text-blue-600 overflow-hidden shrink-0">
                       <FileIcon size={24} />
                     </div>
                   </div>
                   <div className="flex-1 min-w-0 text-left">
-                            <div className="flex justify-between items-baseline mb-1">
-                              <h3 className={cn("font-bold truncate", selectedChat?.id === user.uid ? "text-white" : "text-slate-900")}>Мой блокнот</h3>
-                              <span className={cn("text-[10px] shrink-0 ml-2", selectedChat?.id === user.uid ? "text-blue-100" : "text-slate-400")}>
-                                {lastMessages[user.uid] ? new Date(lastMessages[user.uid].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
-                              </span>
-                            </div>
-                            <p className={cn("text-xs truncate", selectedChat?.id === user.uid ? "text-blue-100" : "text-slate-500")}>
-                              {lastMessages[user.uid] ? (lastMessages[user.uid].text || '[Вложение]') : 'Заметки и сохраненное'}
-                            </p>
+                    <div className="flex justify-between items-baseline mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <h3 className={cn("font-bold truncate", selectedChat?.id === user.uid && !isChatListSelectionMode ? "text-white" : "text-slate-900")}>
+                          Мой блокнот
+                        </h3>
+                        <Pin size={12} className={cn(selectedChat?.id === user.uid && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400")} />
+                      </div>
+                      <span className={cn("text-[10px] shrink-0 ml-2", selectedChat?.id === user.uid && !isChatListSelectionMode ? "text-blue-100" : "text-slate-400")}>
+                        {lastMessages[user.uid] ? new Date(lastMessages[user.uid].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
+                      </span>
+                    </div>
+                    <p className={cn("text-xs truncate", selectedChat?.id === user.uid && !isChatListSelectionMode ? "text-blue-100" : "text-slate-500")}>
+                      {lastMessages[user.uid] ? (lastMessages[user.uid].text || '[Вложение]') : 'Заметки и сохраненное'}
+                    </p>
                   </div>
                 </motion.button>
               )}
 
-              {users.filter(u => u.uid !== user?.uid && 
-                ((profile?.activeChats || []).includes(u.uid) || Boolean(recentPreviews[u.uid]) || Boolean(lastMessages[u.uid])) && 
-                !(profile?.hiddenChats || []).includes(u.uid))
+              {/* Direct Messages (ЛС) */}
+              {(chatFolder === 'all' || chatFolder === 'direct' || chatFolder === 'archive') && (
+                users.filter(u => {
+                  if (u.uid === user?.uid) return false;
+                  const isArchived = archivedChats.includes(u.uid);
+                  if (chatFolder === 'archive') return isArchived;
+                  if (isArchived) return false;
+                  return ((profile?.activeChats || []).includes(u.uid) || Boolean(recentPreviews[u.uid]) || Boolean(lastMessages[u.uid])) && 
+                         !(profile?.hiddenChats || []).includes(u.uid);
+                })
                 .sort((a,b) => {
                    const aPinned = (profile?.pinnedChats || []).includes(a.uid);
                    const bPinned = (profile?.pinnedChats || []).includes(b.uid);
                    if (aPinned && !bPinned) return -1;
                    if (!aPinned && bPinned) return 1;
                    return 0;
-                }).map(u => (
-                <motion.button 
-                  layout
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  key={u.uid}
-                  onClick={() => selectChat({ type: 'user', id: u.uid })}
-                  onContextMenu={(e) => handleChatContextMenu(e, {id: u.uid, type: 'user'})}
-                  onTouchStart={(e) => startChatListTouchTimer(e, {id: u.uid, type: 'user'})}
-                  onTouchEnd={clearChatListTouchTimer}
-                  onTouchMove={handleChatListTouchMove}
-                  onTouchCancel={clearChatListTouchTimer}
-                  className={cn(
-                    "w-full flex items-center gap-3 p-3 rounded-2xl transition-all select-none",
-                    selectedChat?.id === u.uid ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100"
-                  )}
-                >
-                  <div className="relative">
-                    <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden shrink-0">
-                      {u.photoURL ? (
-                        <img src={u.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                      ) : (
-                        <span className="font-bold">{(u.displayName || (u as any).name || '?')[0]}</span>
-                      )}
-                    </div>
-                    <div className={cn(
-                      "absolute -bottom-1 -right-1 w-4 h-4 border-4 border-white rounded-full",
-                      isUserOnline(u) ? "bg-emerald-500" : 
-                      u.status === 'busy' ? "bg-red-500" : 
-                      u.status === 'away' ? "bg-amber-500" : 
-                      u.status === 'dnd' ? "bg-purple-500" : "bg-slate-400"
-                    )} />
-                  </div>
-                  <div className="flex-1 text-left min-w-0">
-                    <div className="flex justify-between items-center mb-0.5">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <h3 className="font-bold text-sm truncate">{u.displayName}</h3>
-                        {u.activeTitleId && u.grantedTitles && (
-                          <RenderTitle 
-                            title={u.grantedTitles.find(t => t.id === u.activeTitleId)!} 
-                            className="scale-75 origin-left shrink-0"
-                          />
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                        {unreadCounts[u.uid] > 0 && (
-                          <div className={cn("px-1.5 py-0.5 rounded-lg text-[8px] font-bold", selectedChat?.id === u.uid ? "bg-white text-blue-600" : "bg-blue-500 text-white")}>
-                            {unreadCounts[u.uid]}
-                          </div>
-                        )}
-                        <span className={cn("text-[10px]", selectedChat?.id === u.uid ? "text-blue-100" : "text-slate-400")}>
-                          {lastMessages[u.uid] ? new Date(lastMessages[u.uid].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '12:45'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {lastMessages[u.uid]?.senderId === user?.uid && (
-                        <div className="flex shrink-0">
-                          {lastMessages[u.uid]?.status === 'failed' ? (
-                            <AlertTriangle size={12} className="text-amber-400" />
-                          ) : (lastMessages[u.uid]?.status === 'pending' || (!socketConnected && lastMessages[u.uid]?.status !== 'sent' && lastMessages[u.uid]?.status !== 'delivered' && lastMessages[u.uid]?.status !== 'read')) ? (
-                            <Clock size={11} className={cn(selectedChat?.id === u.uid ? "text-blue-100 opacity-80" : "text-amber-500 opacity-80")} />
-                          ) : (lastMessages[u.uid]?.readBy?.length || lastMessages[u.uid]?.status === 'read') ? (
-                            <CheckCheck size={12} className={cn(selectedChat?.id === u.uid ? "text-blue-100" : "text-blue-500")} />
-                          ) : (
-                            <Check size={12} className={cn(selectedChat?.id === u.uid ? "text-blue-200" : "text-slate-400")} />
-                          )}
-                        </div>
-                      )}
-                      <p className={cn("text-xs truncate", selectedChat?.id === u.uid ? "text-blue-50" : "text-slate-500")}>
-                        {lastMessages[u.uid] ? (
-                          lastMessages[u.uid].type === 'sticker' ? '[Стикер]' :
-                          lastMessages[u.uid].type === 'image' ? '[Фото]' :
-                          lastMessages[u.uid].type === 'video' ? '[Видео]' :
-                          lastMessages[u.uid].type === 'audio' ? '[Голос]' :
-                          lastMessages[u.uid].type === 'poll' ? '[Опрос]' :
-                          (lastMessages[u.uid].text?.slice(-5) || '...')
-                        ) : (u.customStatus || (isUserOnline(u) ? 'В сети' : formatLastSeen(u)))}
-                      </p>
-                    </div>
-                  </div>
-                </motion.button>
-              ))}
+                }).map(u => {
+                  const isPinned = (profile?.pinnedChats || []).includes(u.uid);
+                  const isMuted = mutedChats.includes(u.uid) || (profile?.mutedChats?.[u.uid] && (profile.mutedChats[u.uid] === -1 || profile.mutedChats[u.uid] > Date.now()));
+                  const isSelected = selectedChatListIds.includes(u.uid);
 
-              <div className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-4">Каналы и Группы</div>
-              {Array.from(new Map(groups.map(g => [g.id, g])).values())
-                .filter(g => 
-                  g.id === 'global_channel' || 
-                  g.ownerId === user?.uid || 
-                  (g.members || []).includes(user?.uid || '') || 
-                  (profile?.activeChats || []).includes(g.id) ||
-                  Boolean(lastMessages[g.id])
-                )
-                .sort((a, b) => {
-                  if (a.id === 'global_channel') return -1;
-                  if (b.id === 'global_channel') return 1;
-                  
-                  const aPinned = (profile?.pinnedChats || []).includes(a.id);
-                  const bPinned = (profile?.pinnedChats || []).includes(b.id);
-                   if (aPinned && !bPinned) return -1;
-                   if (!aPinned && bPinned) return 1;
-                  
-                  return 0;
-                })
-                .map(g => (
-                <motion.button 
-                  layout
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  key={`group_btn_${g.id}`}
-                  onClick={() => selectChat({ type: g.type as any, id: g.id })}
-                  onContextMenu={(e) => handleChatContextMenu(e, {id: g.id, type: (g.type as any) || 'group'})}
-                  onTouchStart={(e) => startChatListTouchTimer(e, {id: g.id, type: (g.type as any) || 'group'})}
-                  onTouchEnd={clearChatListTouchTimer}
-                  onTouchMove={handleChatListTouchMove}
-                  onTouchCancel={clearChatListTouchTimer}
-                  className={cn(
-                    "w-full flex items-center gap-3 p-3 rounded-2xl transition-all select-none",
-                    selectedChat?.id === g.id ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100"
-                  )}
-                >
-                  <div className={cn(
-                    "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 overflow-hidden",
-                    selectedChat?.id === g.id ? "bg-white/20 text-white" : 
-                    g.isGlobal ? "bg-blue-100 text-blue-600 shadow-sm shadow-blue-100" : "bg-indigo-100 text-indigo-600"
-                  )}>
-                    {g.photoURL ? (
-                      <img src={g.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                    ) : g.isGlobal ? <Globe size={24} /> : (g.type === 'group' ? <Users size={24} /> : <Hash size={24} />)}
-                  </div>
-                  <div className="flex-1 text-left min-w-0">
-                    <div className="flex justify-between items-center mb-0.5">
-                      <div className="flex items-center gap-1 min-w-0">
-                        <h3 className="font-bold text-sm truncate">{g.name}</h3>
-                        {g.isVerified && <Shield size={14} className="text-blue-500 fill-blue-50 shrink-0" />}
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                        {unreadCounts[g.id] > 0 && (
-                          <div className={cn("px-1.5 py-0.5 rounded-lg text-[8px] font-bold", selectedChat?.id === g.id ? "bg-white text-blue-600" : "bg-blue-500 text-white")}>
-                            {unreadCounts[g.id]}
-                          </div>
-                        )}
-                        <span className={cn("text-[10px]", selectedChat?.id === g.id ? "text-blue-100" : "text-slate-400")}>
-                          {lastMessages[g.id] ? new Date(lastMessages[g.id].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      {lastMessages[g.id]?.senderId === user?.uid && (
-                        <div className="flex shrink-0">
-                          {lastMessages[g.id]?.readBy?.length && lastMessages[g.id].readBy.length > 1 ? (
-                            <CheckCheck size={12} className={cn(selectedChat?.id === g.id ? "text-blue-100" : "text-blue-400")} />
+                  return (
+                    <motion.button 
+                      layout
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      key={u.uid}
+                      onClick={() => {
+                        if (isChatListSelectionMode) {
+                          handleToggleSelectChatList(u.uid);
+                        } else {
+                          selectChat({ type: 'user', id: u.uid });
+                        }
+                      }}
+                      onContextMenu={(e) => handleChatContextMenu(e, {id: u.uid, type: 'user'})}
+                      onPointerDown={(e) => handleChatPointerDown(e, {id: u.uid, type: 'user'})}
+                      onPointerMove={handleChatPointerMove}
+                      onPointerUp={handleChatPointerUp}
+                      onTouchStart={(e) => startChatListTouchTimer(e, {id: u.uid, type: 'user'})}
+                      onTouchEnd={clearChatListTouchTimer}
+                      onTouchMove={handleChatListTouchMove}
+                      onTouchCancel={clearChatListTouchTimer}
+                      className={cn(
+                        "w-full flex items-center gap-3 p-3 rounded-2xl transition-all select-none",
+                        selectedChat?.id === u.uid && !isChatListSelectionMode ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100",
+                        isChatListSelectionMode && isSelected && "bg-blue-50 ring-2 ring-blue-500"
+                      )}
+                    >
+                      {isChatListSelectionMode && (
+                        <div className="shrink-0">
+                          {isSelected ? (
+                            <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white shadow-sm ring-2 ring-white transform -rotate-12">
+                              <Check size={13} strokeWidth={3} />
+                            </div>
                           ) : (
-                            <Check size={12} className={cn(selectedChat?.id === g.id ? "text-blue-200" : "text-slate-400")} />
+                            <div className="w-5 h-5 rounded-full border-2 border-slate-300 bg-white/80" />
                           )}
                         </div>
                       )}
-                      <p className={cn("text-xs truncate", selectedChat?.id === g.id ? "text-blue-50" : "text-slate-500")}>
-                        {lastMessages[g.id] ? (
-                          <>
-                            <span className="font-medium opacity-80 mr-1">
-                              {users.find(u => u.uid === lastMessages[g.id].senderId)?.displayName?.split(' ')[0] || 'Аноним'}:
+                      <div className="relative">
+                        <div className="w-12 h-12 rounded-full bg-slate-200 flex items-center justify-center overflow-hidden shrink-0">
+                          {u.photoURL ? (
+                            <img src={u.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : (
+                            <span className="font-bold">{(u.displayName || (u as any).name || '?')[0]}</span>
+                          )}
+                        </div>
+                        <div className={cn(
+                          "absolute -bottom-1 -right-1 w-4 h-4 border-4 border-white rounded-full",
+                          isUserOnline(u) ? "bg-emerald-500" : 
+                          u.status === 'busy' ? "bg-red-500" : 
+                          u.status === 'away' ? "bg-amber-500" : 
+                          u.status === 'dnd' ? "bg-purple-500" : "bg-slate-400"
+                        )} />
+                      </div>
+                      <div className="flex-1 text-left min-w-0">
+                        <div className="flex justify-between items-center mb-0.5">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <h3 className="font-bold text-sm truncate">{u.displayName}</h3>
+                            {isPinned && <Pin size={12} className={selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400"} />}
+                            {isMuted && <BellOff size={12} className={selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-200" : "text-amber-500"} />}
+                            {u.activeTitleId && u.grantedTitles && (
+                              <RenderTitle 
+                                title={u.grantedTitles.find(t => t.id === u.activeTitleId)!} 
+                                className="scale-75 origin-left shrink-0"
+                              />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                            {unreadCounts[u.uid] > 0 && (
+                              <div className={cn("px-1.5 py-0.5 rounded-lg text-[8px] font-bold", selectedChat?.id === u.uid && !isChatListSelectionMode ? "bg-white text-blue-600" : "bg-blue-500 text-white")}>
+                                {unreadCounts[u.uid]}
+                              </div>
+                            )}
+                            <span className={cn("text-[10px]", selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-100" : "text-slate-400")}>
+                              {lastMessages[u.uid] ? new Date(lastMessages[u.uid].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : '12:45'}
                             </span>
-                            {lastMessages[g.id].type === 'sticker' ? '[Стикер]' :
-                             lastMessages[g.id].type === 'image' ? '[Фото]' :
-                             lastMessages[g.id].type === 'video' ? '[Видео]' :
-                             lastMessages[g.id].type === 'audio' ? '[Голос]' :
-                             lastMessages[g.id].type === 'poll' ? '[Опрос]' :
-                             (lastMessages[g.id].text || '...')}
-                          </>
-                        ) : (g.isGlobal ? 'Главный канал мессенджера' : (g.type === 'group' ? 'Группа' : 'Канал'))}
-                      </p>
-                    </div>
-                  </div>
-                </motion.button>
-              ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {lastMessages[u.uid]?.senderId === user?.uid && (
+                            <div className="flex shrink-0">
+                              {lastMessages[u.uid]?.status === 'failed' ? (
+                                <AlertTriangle size={12} className="text-amber-400" />
+                              ) : (lastMessages[u.uid]?.status === 'pending' || (!socketConnected && lastMessages[u.uid]?.status !== 'sent' && lastMessages[u.uid]?.status !== 'delivered' && lastMessages[u.uid]?.status !== 'read')) ? (
+                                <Clock size={11} className={cn(selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-100 opacity-80" : "text-amber-500 opacity-80")} />
+                              ) : (lastMessages[u.uid]?.readBy?.length || lastMessages[u.uid]?.status === 'read') ? (
+                                <CheckCheck size={12} className={cn(selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-100" : "text-blue-500")} />
+                              ) : (
+                                <Check size={12} className={cn(selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400")} />
+                              )}
+                            </div>
+                          )}
+                          <p className={cn("text-xs truncate", selectedChat?.id === u.uid && !isChatListSelectionMode ? "text-blue-50" : "text-slate-500")}>
+                            {lastMessages[u.uid] ? (
+                              lastMessages[u.uid].type === 'sticker' ? '[Стикер]' :
+                              lastMessages[u.uid].type === 'image' ? '[Фото]' :
+                              lastMessages[u.uid].type === 'video' ? '[Видео]' :
+                              lastMessages[u.uid].type === 'audio' ? '[Голос]' :
+                              lastMessages[u.uid].type === 'poll' ? '[Опрос]' :
+                              (lastMessages[u.uid].text?.slice(-5) || '...')
+                            ) : (u.customStatus || (isUserOnline(u) ? 'В сети' : formatLastSeen(u)))}
+                          </p>
+                        </div>
+                      </div>
+                    </motion.button>
+                  );
+                })
+              )}
+
+              {/* Groups & Channels */}
+              {(chatFolder === 'all' || chatFolder === 'groups' || chatFolder === 'channels' || chatFolder === 'archive') && (
+                Array.from(new Map(groups.map(g => [g.id, g])).values())
+                  .filter(g => {
+                    const isArchived = archivedChats.includes(g.id);
+                    if (chatFolder === 'archive') return isArchived;
+                    if (isArchived) return false;
+
+                    if (chatFolder === 'groups' && g.type !== 'group') return false;
+                    if (chatFolder === 'channels' && g.type !== 'channel' && g.id !== 'global_channel') return false;
+
+                    return g.id === 'global_channel' || 
+                           g.ownerId === user?.uid || 
+                           (g.members || []).includes(user?.uid || '') || 
+                           (profile?.activeChats || []).includes(g.id) ||
+                           Boolean(lastMessages[g.id]);
+                  })
+                  .sort((a, b) => {
+                    if (a.id === 'global_channel') return -1;
+                    if (b.id === 'global_channel') return 1;
+                    
+                    const aPinned = (profile?.pinnedChats || []).includes(a.id);
+                    const bPinned = (profile?.pinnedChats || []).includes(b.id);
+                    if (aPinned && !bPinned) return -1;
+                    if (!aPinned && bPinned) return 1;
+                    
+                    return 0;
+                  })
+                  .map(g => {
+                    const isPinned = g.id === 'global_channel' || (profile?.pinnedChats || []).includes(g.id);
+                    const isMuted = mutedChats.includes(g.id) || (profile?.mutedChats?.[g.id] && (profile.mutedChats[g.id] === -1 || profile.mutedChats[g.id] > Date.now()));
+                    const isSelected = selectedChatListIds.includes(g.id);
+
+                    return (
+                      <motion.button 
+                        layout
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        key={`group_btn_${g.id}`}
+                        onClick={() => {
+                          if (isChatListSelectionMode) {
+                            handleToggleSelectChatList(g.id);
+                          } else {
+                            selectChat({ type: g.type as any, id: g.id });
+                          }
+                        }}
+                        onContextMenu={(e) => handleChatContextMenu(e, {id: g.id, type: (g.type as any) || 'group'})}
+                        onPointerDown={(e) => handleChatPointerDown(e, {id: g.id, type: (g.type as any) || 'group'})}
+                        onPointerMove={handleChatPointerMove}
+                        onPointerUp={handleChatPointerUp}
+                        onTouchStart={(e) => startChatListTouchTimer(e, {id: g.id, type: (g.type as any) || 'group'})}
+                        onTouchEnd={clearChatListTouchTimer}
+                        onTouchMove={handleChatListTouchMove}
+                        onTouchCancel={clearChatListTouchTimer}
+                        className={cn(
+                          "w-full flex items-center gap-3 p-3 rounded-2xl transition-all select-none",
+                          selectedChat?.id === g.id && !isChatListSelectionMode ? "bg-blue-600 text-white shadow-lg shadow-blue-100" : "hover:bg-slate-100",
+                          isChatListSelectionMode && isSelected && "bg-blue-50 ring-2 ring-blue-500"
+                        )}
+                      >
+                        {isChatListSelectionMode && (
+                          <div className="shrink-0">
+                            {isSelected ? (
+                              <div className="w-5 h-5 rounded-full bg-blue-600 flex items-center justify-center text-white shadow-sm ring-2 ring-white transform -rotate-12">
+                                <Check size={13} strokeWidth={3} />
+                              </div>
+                            ) : (
+                              <div className="w-5 h-5 rounded-full border-2 border-slate-300 bg-white/80" />
+                            )}
+                          </div>
+                        )}
+                        <div className={cn(
+                          "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 overflow-hidden",
+                          selectedChat?.id === g.id && !isChatListSelectionMode ? "bg-white/20 text-white" : 
+                          g.isGlobal ? "bg-blue-100 text-blue-600 shadow-sm shadow-blue-100" : "bg-indigo-100 text-indigo-600"
+                        )}>
+                          {g.photoURL ? (
+                            <img src={g.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          ) : g.isGlobal ? <Globe size={24} /> : (g.type === 'group' ? <Users size={24} /> : <Hash size={24} />)}
+                        </div>
+                        <div className="flex-1 text-left min-w-0">
+                          <div className="flex justify-between items-center mb-0.5">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <h3 className="font-bold text-sm truncate">{g.name}</h3>
+                              {g.isVerified && <Shield size={14} className="text-blue-500 fill-blue-50 shrink-0" />}
+                              {isPinned && <Pin size={12} className={selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400"} />}
+                              {isMuted && <BellOff size={12} className={selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-200" : "text-amber-500"} />}
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                              {unreadCounts[g.id] > 0 && (
+                                <div className={cn("px-1.5 py-0.5 rounded-lg text-[8px] font-bold", selectedChat?.id === g.id && !isChatListSelectionMode ? "bg-white text-blue-600" : "bg-blue-500 text-white")}>
+                                  {unreadCounts[g.id]}
+                                </div>
+                              )}
+                              <span className={cn("text-[10px]", selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-100" : "text-slate-400")}>
+                                {lastMessages[g.id] ? new Date(lastMessages[g.id].createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : ''}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            {lastMessages[g.id]?.senderId === user?.uid && (
+                              <div className="flex shrink-0">
+                                {lastMessages[g.id]?.readBy?.length && lastMessages[g.id].readBy.length > 1 ? (
+                                  <CheckCheck size={12} className={cn(selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-100" : "text-blue-400")} />
+                                ) : (
+                                  <Check size={12} className={cn(selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400")} />
+                                )}
+                              </div>
+                            )}
+                            <p className={cn("text-xs truncate", selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-50" : "text-slate-500")}>
+                              {lastMessages[g.id] ? (
+                                <>
+                                  <span className="font-medium opacity-80 mr-1">
+                                    {users.find(u => u.uid === lastMessages[g.id].senderId)?.displayName?.split(' ')[0] || 'Аноним'}:
+                                  </span>
+                                  {lastMessages[g.id].type === 'sticker' ? '[Стикер]' :
+                                   lastMessages[g.id].type === 'image' ? '[Фото]' :
+                                   lastMessages[g.id].type === 'video' ? '[Видео]' :
+                                   lastMessages[g.id].type === 'audio' ? '[Голос]' :
+                                   lastMessages[g.id].type === 'poll' ? '[Опрос]' :
+                                   (lastMessages[g.id].text || '...')}
+                                </>
+                              ) : (g.isGlobal ? 'Главный канал мессенджера' : (g.type === 'group' ? 'Группа' : 'Канал'))}
+                            </p>
+                          </div>
+                        </div>
+                      </motion.button>
+                    );
+                  })
+              )}
             </div>
             
             {!user?.isAnonymous && (
@@ -5803,7 +7259,7 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {/* Profile Modal */}
+      {/* Profile Modal (Upgraded Telegram-style with Banner, Tabs, Pinned Track & Channel) */}
       <AnimatePresence>
         {showProfile && (
           <motion.div 
@@ -5816,173 +7272,400 @@ function AppContent() {
             <motion.div 
               initial={{ scale: 0.9, y: 20 }}
               animate={{ scale: 1, y: 0 }}
-              className="bg-white rounded-3xl w-full max-w-md overflow-hidden shadow-2xl max-h-[85vh] sm:max-h-[90vh] flex flex-col"
+              className="bg-white rounded-3xl w-full max-w-lg overflow-hidden shadow-2xl max-h-[88vh] sm:max-h-[92vh] flex flex-col border border-slate-100"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="relative h-40 bg-blue-600 flex items-center justify-center shrink-0">
-                {(viewedProfile || profile)?.profileBackgroundURL ? (
-                  <div className="absolute inset-0">
-                    <img 
-                      src={(viewedProfile || profile)?.profileBackgroundURL} 
-                      className="w-full h-full object-cover" 
-                      alt="" 
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 bg-black/30" />
-                  </div>
-                ) : (viewedProfile || profile)?.photoURL ? (
-                  <div className="absolute inset-0">
-                    <img 
-                      src={(viewedProfile || profile)?.photoURL} 
-                      className="w-full h-full object-cover blur-md scale-110 opacity-50" 
-                      alt="" 
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="absolute inset-0 bg-black/30" />
-                  </div>
-                ) : null}
-                <button 
-                  onClick={() => {
-                    setShowProfile(false);
-                    setTimeout(() => setViewedProfile(null), 300);
-                  }}
-                  className="absolute top-3 left-3 p-3 pr-4 rounded-r-2xl rounded-l-md bg-black/40 hover:bg-black/60 text-white z-10 transition-all active:scale-95 flex items-center gap-1 backdrop-blur-md text-xs font-bold"
-                  title="Назад"
-                >
-                  <ArrowLeft size={22} />
-                  <span>Назад</span>
-                </button>
-                <div className="w-20 h-20 rounded-full bg-white/20 border-4 border-white/30 flex items-center justify-center text-white text-3xl font-bold relative z-10 overflow-hidden group/avatar">
-                  {(viewedProfile || profile)?.photoURL ? (
-                    <img 
-                      src={(viewedProfile || profile)!.photoURL} 
-                      className="w-full h-full object-cover cursor-pointer" 
-                      onClick={(e) => {
-                        const isSelf = !viewedProfile || viewedProfile.uid === user?.uid;
-                        if (isSelf && isEditingProfile) {
-                          avatarInputRef.current?.click();
-                        } else if ((viewedProfile || profile)?.photoURL) {
-                          setShowFullAvatar({ src: (viewedProfile || profile)!.photoURL! });
-                        }
-                      }}
-                      alt="" 
-                      referrerPolicy="no-referrer"
-                    />
-                  ) : (
-                    (viewedProfile || profile)?.displayName?.[0]
-                  )}
-                  {(!viewedProfile || viewedProfile?.uid === user?.uid) && isEditingProfile && (
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click() }}
-                      className="absolute bottom-0 right-0 p-1.5 bg-blue-500 rounded-full text-white shadow-lg pointer-events-auto"
-                    >
-                      <Camera size={16} />
-                    </button>
-                  )}
-                  {isUploadingAvatar && (
-                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
-                      <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              {(() => {
+                const targetProfile = viewedProfile || profile;
+                const isSelf = !viewedProfile || viewedProfile.uid === user?.uid;
+                const isBlocked = !!(targetProfile?.uid && profile?.blockedUsers?.includes(targetProfile.uid));
+                const userOwnedChannels = groups.filter(g => 
+                  g.type === 'channel' && 
+                  (g.ownerId === user?.uid || g.memberRoles?.[user?.uid || ''] === 'owner' || g.members?.[0] === user?.uid)
+                );
+
+                // Dialog messages between current user and target user
+                const userDialogMessages = messages.filter(m => {
+                  if (!targetProfile) return false;
+                  if (isSelf) return true;
+                  return (m.senderId === user?.uid && m.receiverId === targetProfile.uid) ||
+                         (m.senderId === targetProfile.uid && m.receiverId === user?.uid);
+                });
+
+                const mediaItems = userDialogMessages.filter(m => (m.type === 'image' || m.type === 'video') && m.fileUrl && m.fileName !== 'sticker.jpg');
+                const fileItems = userDialogMessages.filter(m => m.type === 'file' && m.fileUrl);
+                const voiceItems = userDialogMessages.filter(m => m.type === 'audio' && m.fileUrl);
+                const linkItems = userDialogMessages.filter(m => m.text && /(https?:\/\/[^\s]+)/g.test(m.text));
+                const authorMusicTracks = musicTracks.filter(t => 
+                  t.uploaderId === targetProfile?.uid || 
+                  (targetProfile?.displayName && t.artist?.toLowerCase().includes(targetProfile.displayName.toLowerCase()))
+                );
+                const commonChats = groups.filter(g => 
+                  isSelf 
+                    ? g.members?.includes(user?.uid || '') 
+                    : (g.members?.includes(user?.uid || '') && g.members?.includes(targetProfile?.uid || ''))
+                );
+
+                return (
+                  <>
+                    {/* Header Banner (Photo with overlay & Back / Actions buttons) */}
+                    <div className="relative h-44 sm:h-48 bg-slate-800 flex items-center justify-center shrink-0 overflow-hidden">
+                      {targetProfile?.profileBackgroundURL ? (
+                        <div className="absolute inset-0">
+                          <img 
+                            src={targetProfile.profileBackgroundURL} 
+                            className="w-full h-full object-cover" 
+                            alt="" 
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/20 to-black/60" />
+                        </div>
+                      ) : targetProfile?.photoURL ? (
+                        <div className="absolute inset-0">
+                          <img 
+                            src={targetProfile.photoURL} 
+                            className="w-full h-full object-cover blur-md scale-110 opacity-60" 
+                            alt="" 
+                            referrerPolicy="no-referrer"
+                          />
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/50 via-black/20 to-black/60" />
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700" />
+                      )}
+
+                      {/* Top Left: Back Button */}
+                      <button 
+                        onClick={() => {
+                          if (isEditingProfile) {
+                            handleCancelEditProfile();
+                          } else {
+                            setShowProfile(false);
+                            setTimeout(() => setViewedProfile(null), 300);
+                          }
+                        }}
+                        className="absolute top-3 left-3 p-2.5 rounded-full bg-black/40 hover:bg-black/60 text-white z-10 transition-all active:scale-95 flex items-center gap-1.5 backdrop-blur-md text-xs font-bold shadow-md"
+                        title={isEditingProfile ? "Отменить изменения и вернуться к просмотру профиля" : "Назад"}
+                      >
+                        <ArrowLeft size={18} />
+                        {isEditingProfile && <span className="pr-1 text-xs">Отмена</span>}
+                      </button>
+
+                      {/* Top Right: Edit (if self) or More Menu (if other) */}
+                      <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+                        {isSelf && !isEditingProfile ? (
+                          <button 
+                            onClick={() => {
+                              setEditName(profile?.displayName || '');
+                              setEditUsername(profile?.username || '');
+                              setEditAvatar(profile?.photoURL || '');
+                              setEditBio(profile?.bio || '');
+                              setEditBackgroundURL(profile?.profileBackgroundURL || '');
+                              setEditBirthday(profile?.birthday || '');
+                              setEditPinnedChannelId(profile?.pinnedChannelId || null);
+                              setUserStatus((profile?.status as any) || 'online');
+                              setCustomStatus(profile?.customStatus || '');
+                              setIsEditingProfile(true);
+                            }}
+                            className="px-3 py-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white transition-all active:scale-95 flex items-center gap-1.5 backdrop-blur-md text-xs font-bold shadow-md"
+                            title="Редактировать профиль"
+                          >
+                            <Edit2 size={14} />
+                            <span>Редактировать</span>
+                          </button>
+                        ) : !isSelf ? (
+                          <button
+                            onClick={() => {
+                              handleOpenReport(
+                                'user',
+                                targetProfile?.uid || '',
+                                targetProfile?.displayName || targetProfile?.username || 'Пользователь'
+                              );
+                              setShowProfile(false);
+                            }}
+                            className="p-2 rounded-full bg-black/40 hover:bg-black/60 text-white transition-all active:scale-95 backdrop-blur-md shadow-md"
+                            title="Пожаловаться"
+                          >
+                            <Flag size={16} />
+                          </button>
+                        ) : null}
+                      </div>
+
+                      {/* Centered Large Avatar */}
+                      <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-white/20 border-4 border-white shadow-xl flex items-center justify-center text-white text-3xl font-black relative z-10 overflow-hidden group/avatar">
+                        {targetProfile?.photoURL ? (
+                          <img 
+                            src={targetProfile.photoURL} 
+                            className="w-full h-full object-cover cursor-pointer" 
+                            onClick={(e) => {
+                              if (isSelf && isEditingProfile) {
+                                avatarInputRef.current?.click();
+                              } else if (targetProfile?.photoURL) {
+                                setShowFullAvatar({ src: targetProfile.photoURL });
+                              }
+                            }}
+                            alt="" 
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          targetProfile?.displayName?.[0] || '?'
+                        )}
+                        {isSelf && isEditingProfile && (
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); avatarInputRef.current?.click(); }}
+                            className="absolute inset-0 bg-black/40 hover:bg-black/60 flex items-center justify-center text-white transition-colors cursor-pointer"
+                            title="Изменить фото профиля"
+                          >
+                            <Camera size={24} />
+                          </button>
+                        )}
+                        {isUploadingAvatar && (
+                          <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                            <div className="w-6 h-6 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          </div>
+                        )}
+                        <input 
+                          type="file" 
+                          ref={avatarInputRef} 
+                          className="hidden" 
+                          accept="image/*"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            if (!file || !user) return;
+                            try {
+                              const content = await fileToBase64(file);
+                              setCropModalInfo({ src: content, type: 'user' });
+                              if (e.target) e.target.value = '';
+                            } catch (err) {
+                              console.error(err);
+                            }
+                          }}
+                        />
+                      </div>
                     </div>
-                  )}
-                  <input 
-                    type="file" 
-                    ref={avatarInputRef} 
-                    className="hidden" 
-                    accept="image/*"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file || !user) return;
-                      try {
-                        const content = await fileToBase64(file);
-                        setCropModalInfo({ src: content, type: 'user' });
-                        if (e.target) e.target.value = '';
-                      } catch (err) {
-                        console.error(err);
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-              <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
-                <div className="flex justify-between items-start mb-6">
-                  <div className="flex-1">
-                    {isEditingProfile && viewedProfile?.uid === user?.uid ? (
-                      <div className="space-y-3">
-                        <input 
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                          placeholder="Имя"
-                          className="w-full p-2 border border-slate-200 rounded-xl text-sm"
-                        />
-                        <input 
-                          value={editUsername}
-                          onChange={(e) => setEditUsername(e.target.value)}
-                          placeholder="Никнейм"
-                          className="w-full p-2 border border-slate-200 rounded-xl text-sm"
-                        />
-                        <input 
-                          value={editAvatar}
-                          onChange={(e) => setEditAvatar(e.target.value)}
-                          placeholder="URL Аватарки"
-                          className="w-full p-2 border border-slate-200 rounded-xl text-sm"
-                        />
-                        <input 
-                          value={editBackgroundURL}
-                          onChange={(e) => setEditBackgroundURL(e.target.value)}
-                          placeholder="URL Фона профиля"
-                          className="w-full p-2 border border-slate-200 rounded-xl text-sm"
-                        />
-                        <textarea 
-                          value={editBio}
-                          onChange={(e) => setEditBio(e.target.value)}
-                          placeholder="О себе"
-                          className="w-full p-2 border border-slate-200 rounded-xl text-sm h-20"
-                        />
-                        <div className="space-y-2">
-                          <p className="text-xs font-bold text-slate-400 uppercase">Статус профиля</p>
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setUserStatus('auto')}
-                              className={cn(
-                                "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 shadow-sm",
-                                userStatus === 'auto' || !userStatus
-                                  ? "bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-500/30"
-                                  : "bg-emerald-50 text-emerald-700 border-emerald-200/80 hover:bg-emerald-100"
+
+                    {/* Profile Body */}
+                    <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1 custom-scrollbar">
+                      {isEditingProfile && isSelf ? (
+                        /* ================== EDIT PROFILE FORM ================== */
+                        <div className="space-y-4 animate-fade-in">
+                          <h3 className="text-base font-bold text-slate-900 border-b border-slate-100 pb-2">
+                            Редактирование профиля
+                          </h3>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700 uppercase">Отображаемое имя</label>
+                            <input 
+                              value={editName}
+                              onChange={(e) => setEditName(e.target.value)}
+                              placeholder="Ваше имя"
+                              className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700 uppercase">Юзернейм (@username)</label>
+                            <input 
+                              value={editUsername}
+                              onChange={(e) => setEditUsername(e.target.value.replace(/[^a-zA-Z0-9_]/g, ''))}
+                              placeholder="username"
+                              className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm font-mono text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                              <Cake size={14} className="text-pink-500" />
+                              <span>Дата рождения (ДР)</span>
+                            </label>
+                            <input 
+                              type="date"
+                              value={editBirthday}
+                              onChange={(e) => setEditBirthday(e.target.value)}
+                              className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                            />
+                            <p className="text-[10px] text-slate-500 font-medium">Изначально пустое, указывается добровольно</p>
+                          </div>
+
+                          {/* Pinned Channel selection */}
+                          <div className="space-y-1.5 p-3.5 bg-blue-50/60 border border-blue-200/80 rounded-2xl">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-bold text-blue-900 uppercase flex items-center gap-1.5">
+                                <Radio size={14} className="text-blue-600" />
+                                <span>Закрепленный канал автора</span>
+                              </label>
+                              {editPinnedChannelId && (
+                                <button 
+                                  type="button" 
+                                  onClick={() => setEditPinnedChannelId(null)}
+                                  className="text-[10px] font-bold text-rose-600 hover:underline"
+                                >
+                                  ✕ Открепить
+                                </button>
                               )}
-                            >
-                              <div className={cn("w-2 h-2 rounded-full", isUserOnline(profile) ? "bg-emerald-400 animate-pulse" : "bg-slate-300")} />
-                              <span>⚡ Вернуть реальный статус: ({isUserOnline(profile) ? 'В сети' : formatLastSeen(profile)})</span>
-                            </button>
-                            {(['online', 'away', 'busy', 'dnd'] as const).map(s => (
+                            </div>
+                            <p className="text-[11px] text-blue-700">
+                              Канал, где вы являетесь владельцем. Будет отображаться в вашем профиле для всех.
+                            </p>
+                            {userOwnedChannels.length > 0 ? (
+                              <select
+                                value={editPinnedChannelId || ''}
+                                onChange={(e) => setEditPinnedChannelId(e.target.value || null)}
+                                className="w-full bg-white border border-blue-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 outline-none focus:ring-2 focus:ring-blue-500"
+                              >
+                                <option value="">Без закрепленного канала</option>
+                                {userOwnedChannels.map(ch => (
+                                  <option key={ch.id} value={ch.id}>📢 {ch.name} ({ch.members?.length || 1} подп.)</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="p-2.5 bg-white border border-blue-200 rounded-xl text-xs text-slate-600 flex items-center justify-between">
+                                <span>У вас пока нет созданных каналов</span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsEditingProfile(false);
+                                    setShowProfile(false);
+                                    setCreateChatType('channel');
+                                    setShowCreateChatModal(true);
+                                  }}
+                                  className="px-2.5 py-1 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 transition-colors"
+                                >
+                                  + Создать канал
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Profile Background Banner with Photo Upload & Cutout Cropping */}
+                          <div className="space-y-2 p-3.5 bg-slate-50 border border-slate-200 rounded-2xl">
+                            <div className="flex items-center justify-between">
+                              <label className="text-xs font-bold text-slate-700 uppercase flex items-center gap-1.5">
+                                <ImageIcon size={15} className="text-blue-500" />
+                                <span>Фон шапки профиля</span>
+                              </label>
+                              {editBackgroundURL && (
+                                <button
+                                  type="button"
+                                  onClick={() => setEditBackgroundURL('')}
+                                  className="text-[11px] font-bold text-rose-500 hover:text-rose-600 hover:underline"
+                                >
+                                  ✕ Удалить фон
+                                </button>
+                              )}
+                            </div>
+
+                            {editBackgroundURL ? (
+                              <div className="relative rounded-2xl overflow-hidden border border-slate-200 h-28 group">
+                                <img src={editBackgroundURL} alt="Фон профиля" className="w-full h-full object-cover" />
+                                <div className="absolute inset-0 bg-black/45 flex items-center justify-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => backgroundFileInputRef.current?.click()}
+                                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-900 text-xs font-bold shadow-md transition-all active:scale-95 flex items-center gap-1.5"
+                                  >
+                                    <Camera size={14} />
+                                    <span>Сменить</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setCropBannerSrc(editBackgroundURL)}
+                                    className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold shadow-md transition-all active:scale-95 flex items-center gap-1.5"
+                                  >
+                                    <Crop size={14} />
+                                    <span>Кадрировать с вырезом</span>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
                               <button
-                                key={s}
                                 type="button"
-                                onClick={() => setUserStatus(s)}
+                                onClick={() => backgroundFileInputRef.current?.click()}
+                                className="w-full py-4 px-3 border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-2xl flex flex-col items-center justify-center gap-2 text-slate-600 hover:text-blue-600 transition-colors bg-white cursor-pointer shadow-2xs"
+                              >
+                                <div className="w-10 h-10 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center">
+                                  <Camera size={20} />
+                                </div>
+                                <span className="text-xs font-bold text-slate-800">Добавить фото для фона шапки</span>
+                                <span className="text-[10px] text-slate-400">С предпросмотром и вырезом под круглую аватарку</span>
+                              </button>
+                            )}
+                            <input
+                              type="file"
+                              ref={backgroundFileInputRef}
+                              className="hidden"
+                              accept="image/*"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                if (!file) return;
+                                try {
+                                  const base64 = await fileToBase64(file);
+                                  setCropBannerSrc(base64);
+                                  if (e.target) e.target.value = '';
+                                } catch (err) {
+                                  console.error(err);
+                                }
+                              }}
+                            />
+                          </div>
+
+                          <div className="space-y-1">
+                            <label className="text-xs font-bold text-slate-700 uppercase">О себе (Bio)</label>
+                            <textarea 
+                              value={editBio}
+                              onChange={(e) => setEditBio(e.target.value)}
+                              placeholder="Расскажите о себе..."
+                              className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-500 h-20 resize-none shadow-2xs"
+                            />
+                          </div>
+
+                          {/* Status selection */}
+                          <div className="space-y-2">
+                            <p className="text-xs font-bold text-slate-400 uppercase">Статус профиля</p>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setUserStatus('auto')}
                                 className={cn(
-                                  "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all",
-                                  userStatus === s ? "bg-blue-600 text-white border-blue-600 shadow-sm" : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                  "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all flex items-center gap-1.5 shadow-xs",
+                                  userStatus === 'auto' || !userStatus
+                                    ? "bg-emerald-600 text-white border-emerald-600 ring-2 ring-emerald-500/30"
+                                    : "bg-emerald-50 text-emerald-700 border-emerald-200/80 hover:bg-emerald-100"
                                 )}
                               >
-                                {s === 'online' ? '🟢 Принудительно В сети' : s === 'away' ? '🟡 Нет на месте' : s === 'busy' ? '🔴 Занят' : '🟣 Не беспокоить'}
+                                <div className={cn("w-2 h-2 rounded-full", isUserOnline(profile) ? "bg-emerald-400 animate-pulse" : "bg-slate-300")} />
+                                <span>⚡ Реальный статус ({isUserOnline(profile) ? 'В сети' : formatLastSeen(profile)})</span>
                               </button>
-                            ))}
+                              {(['online', 'away', 'busy', 'dnd'] as const).map(s => (
+                                <button
+                                  key={s}
+                                  type="button"
+                                  onClick={() => setUserStatus(s)}
+                                  className={cn(
+                                    "px-3 py-1.5 rounded-full text-[10px] font-bold border transition-all",
+                                    userStatus === s ? "bg-blue-600 text-white border-blue-600 shadow-xs" : "bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100"
+                                  )}
+                                >
+                                  {s === 'online' ? '🟢 Принудительно В сети' : s === 'away' ? '🟡 Нет на месте' : s === 'busy' ? '🔴 Занят' : '🟣 Не беспокоить'}
+                                </button>
+                              ))}
+                            </div>
+                            <input 
+                              value={customStatus}
+                              onChange={(e) => setCustomStatus(e.target.value)}
+                              placeholder="Текстовый статус (например: На созвоне)..."
+                              className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-sm font-medium text-slate-900 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs"
+                            />
                           </div>
-                          <input 
-                            value={customStatus}
-                            onChange={(e) => setCustomStatus(e.target.value)}
-                            placeholder="Текстовый статус (например: На созвоне)..."
-                            className="w-full p-2 border border-slate-200 rounded-xl text-sm"
-                          />
-                        </div>
 
-                        {profile?.grantedTitles && profile.grantedTitles.length > 0 && (
-                          <div className="space-y-2 mt-4">
-                             <p className="text-xs font-bold text-slate-400 uppercase">Активный титул</p>
-                             <select 
-                               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
-                               value={profile.activeTitleId || ''}
-                               onChange={async (e) => {
+                          {/* Active Title */}
+                          {profile?.grantedTitles && profile.grantedTitles.length > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-xs font-bold text-slate-400 uppercase">Активный титул</p>
+                              <select 
+                                className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
+                                value={profile.activeTitleId || ''}
+                                onChange={async (e) => {
                                   const newId = e.target.value;
                                   if (profile) setProfile({...profile, activeTitleId: newId});
                                   if (viewedProfile) setViewedProfile({...viewedProfile, activeTitleId: newId});
@@ -5992,170 +7675,733 @@ function AppContent() {
                                   } catch (err) {
                                     addToast('Ошибка', 'error');
                                   }
-                               }}
-                             >
+                                }}
+                              >
                                 <option value="">Скрыть титул</option>
                                 {profile.grantedTitles.map(t => (
                                   <option key={t.id} value={t.id}>{t.text}</option>
                                 ))}
-                             </select>
-                          </div>
-                        )}
-
-                        <div className="flex flex-col gap-2">
-                          {showGroupSettings && (
-                             <button 
-                               onClick={() => setShowProfile(false)}
-                               className="w-full bg-slate-100 text-slate-700 py-3 rounded-xl text-sm font-bold flex items-center justify-center gap-2"
-                             >
-                               <ArrowLeft size={16} /> Назад к группе
-                             </button>
+                              </select>
+                            </div>
                           )}
-                          <button 
-                            onClick={async () => {
-                              await handleUpdateProfile();
-                              if ((window as any).addToast) {
-                                (window as any).addToast('Профиль сохранен', 'success');
-                              }
-                            }}
-                            className="w-full bg-blue-600 text-white py-3 rounded-xl text-sm font-bold shadow-lg shadow-blue-200"
-                          >
-                            Сохранить
-                          </button>
-                          <button 
-                            onClick={() => setIsEditingProfile(false)}
-                            className="w-full bg-slate-100 text-slate-600 py-3 rounded-xl text-sm font-bold"
-                          >
-                            Отмена
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <h2 className="text-2xl font-bold text-slate-900">{(viewedProfile || profile)?.displayName}</h2>
-                          {(() => {
-                             const p = viewedProfile || profile;
-                             if (!p || !p.activeTitleId || !p.grantedTitles) return null;
-                             const activeT = p.grantedTitles.find(t => t.id === p.activeTitleId);
-                             if (!activeT) return null;
-                             return (
-                               <RenderTitle title={activeT} />
-                             );
-                          })()}
-                        </div>
-                        <p className="text-slate-500 text-xs">@{(viewedProfile || profile)?.username}</p>
-                        <p className="text-[10px] text-slate-400 font-mono mt-1">UID: {(viewedProfile || profile)?.uid}</p>
-                        
-                        {isGlobalAdmin && (
-                          <button 
-                            onClick={() => setShowTitleManager(true)}
-                            className="mt-2 text-xs text-blue-600 hover:underline font-medium"
-                          >
-                            Управление титулами (Admin)
-                          </button>
-                        )}
-                        {(viewedProfile || profile)?.grantedTitles && ((viewedProfile || profile)?.grantedTitles?.length || 0) > 0 && (viewedProfile?.uid === user?.uid || !viewedProfile) && (
-                          <div className="mt-2 flex flex-col items-start">
-                             <label className="text-[10px] text-slate-500 font-bold uppercase mb-1">Активный титул</label>
-                             <select 
-                               className="bg-slate-100 border-none rounded-lg text-xs py-1 px-2 text-slate-700 outline-none"
-                               value={(viewedProfile || profile)?.activeTitleId || ''}
-                               onChange={async (e) => {
-                                  const newId = e.target.value;
-                                  if (profile) setProfile({...profile, activeTitleId: newId});
-                                  if (viewedProfile) setViewedProfile({...viewedProfile, activeTitleId: newId});
-                                  socket?.emit('profile:update', { uid: user!.uid, profile: { activeTitleId: newId } });
-                               }}
-                             >
-                                <option value="">Скрыть титул</option>
-                                {(viewedProfile || profile)?.grantedTitles?.map(t => (
-                                  <option key={t.id} value={t.id}>{t.text}</option>
-                                ))}
-                             </select>
+
+                          {/* Actions */}
+                          <div className="flex flex-col gap-2 pt-2">
+                            <button 
+                              onClick={async () => {
+                                await handleUpdateProfile();
+                              }}
+                              className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-2xl text-sm font-bold shadow-lg shadow-blue-200 transition-colors"
+                            >
+                              Сохранить изменения
+                            </button>
+                            <button 
+                              onClick={handleCancelEditProfile}
+                              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-2xl text-sm font-bold transition-colors"
+                            >
+                              Отмена
+                            </button>
                           </div>
-                        )}
+                        </div>
+                      ) : (
+                        /* ================== TELEGRAM-STYLE PROFILE VIEW ================== */
+                        <div className="space-y-4 animate-fade-in">
+                          {/* Top Identity Block */}
+                          <div className="text-center sm:text-left flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3">
+                            <div>
+                              <div className="flex items-center justify-center sm:justify-start gap-2">
+                                <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{targetProfile?.displayName}</h2>
+                                {(() => {
+                                  if (!targetProfile?.activeTitleId || !targetProfile?.grantedTitles) return null;
+                                  const activeT = targetProfile.grantedTitles.find(t => t.id === targetProfile.activeTitleId);
+                                  if (!activeT) return null;
+                                  return <RenderTitle title={activeT} />;
+                                })()}
+                              </div>
+                              <div className="flex items-center justify-center sm:justify-start gap-2 mt-0.5">
+                                <div className="flex items-center gap-1.5">
+                                  <div className={cn(
+                                    "w-2 h-2 rounded-full",
+                                    isUserOnline(targetProfile) ? "bg-emerald-500 animate-pulse" : "bg-slate-300"
+                                  )} />
+                                  <span className="text-xs font-semibold text-slate-600">
+                                    {targetProfile?.customStatus || (isUserOnline(targetProfile) ? 'В сети' : formatLastSeen(targetProfile))}
+                                  </span>
+                                </div>
+                                <span className="text-xs text-slate-300">•</span>
+                                <span className="text-xs font-mono text-slate-500">
+                                  @{targetProfile?.username || 'user'}
+                                </span>
+                              </div>
+                            </div>
 
-                        <div className="mt-4 flex items-center gap-2">
-                          <div className={cn(
-                            "w-2 h-2 rounded-full",
-                            isUserOnline(viewedProfile || profile) ? "bg-emerald-500" : "bg-slate-300"
-                          )} />
-                          <span className="text-xs font-medium text-slate-600">
-                            {(viewedProfile || profile)?.customStatus || formatLastSeen(viewedProfile || profile)}
-                          </span>
+                            {/* Badge */}
+                            <div className="flex items-center justify-center sm:justify-end gap-1.5">
+                              {isBlocked && (
+                                <span className="px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 text-[10px] font-bold uppercase border border-rose-200">
+                                  Заблокирован
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Telegram-style 4-Button Action Row */}
+                          <div className="grid grid-cols-4 gap-2">
+                            {!isSelf ? (
+                              <>
+                                {/* 1. Message */}
+                                <button 
+                                  onClick={() => {
+                                    setShowProfile(false);
+                                    if (targetProfile) {
+                                      selectChat({ type: 'user', id: targetProfile.uid });
+                                    }
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Написать сообщение"
+                                >
+                                  <Send size={18} className="mb-1 text-blue-600" />
+                                  <span className="text-[10px] font-bold">Написать</span>
+                                </button>
+
+                                {/* 2. Mute/Unmute */}
+                                <button 
+                                  onClick={() => {
+                                    if (targetProfile) {
+                                      toggleMuteChat(targetProfile.uid);
+                                      addToast(mutedChats.includes(targetProfile.uid) ? "Уведомления включены" : "Уведомления отключены", "info");
+                                    }
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Звук уведомлений"
+                                >
+                                  {targetProfile && mutedChats.includes(targetProfile.uid) ? (
+                                    <>
+                                      <BellOff size={18} className="mb-1 text-amber-500" />
+                                      <span className="text-[10px] font-bold text-amber-600">Без звука</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Bell size={18} className="mb-1 text-slate-600" />
+                                      <span className="text-[10px] font-bold">Звук</span>
+                                    </>
+                                  )}
+                                </button>
+
+                                {/* 3. Music Tab in Profile */}
+                                <button 
+                                  onClick={() => {
+                                    setUserProfileTab('music');
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Музыка и треки автора в профиле"
+                                >
+                                  <MusicIcon size={18} className="mb-1 text-red-500" />
+                                  <span className="text-[10px] font-bold">Музыка</span>
+                                </button>
+
+                                {/* 4. Block / Unblock */}
+                                <button 
+                                  onClick={() => {
+                                    if (!user || !profile || !targetProfile) return;
+                                    const newBlocked = isBlocked
+                                      ? (profile.blockedUsers || []).filter(id => id !== targetProfile.uid)
+                                      : [...(profile.blockedUsers || []), targetProfile.uid];
+                                    socket?.emit('profile:update', { uid: user.uid, profile: { blockedUsers: newBlocked } });
+                                    setProfile(prev => prev ? { ...prev, blockedUsers: newBlocked } : null);
+                                    addToast(isBlocked ? 'Пользователь разблокирован' : 'Пользователь заблокирован', isBlocked ? 'info' : 'success');
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title={isBlocked ? "Разблокировать пользователя" : "Заблокировать пользователя"}
+                                >
+                                  {isBlocked ? (
+                                    <>
+                                      <Shield size={18} className="mb-1 text-emerald-500" />
+                                      <span className="text-[10px] font-bold text-emerald-600">Разблок.</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Shield size={18} className="mb-1 text-rose-500" />
+                                      <span className="text-[10px] font-bold text-rose-600">Заблокир.</span>
+                                    </>
+                                  )}
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                {/* Self 1: Edit */}
+                                <button 
+                                  onClick={() => {
+                                    setEditName(profile?.displayName || '');
+                                    setEditUsername(profile?.username || '');
+                                    setEditAvatar(profile?.photoURL || '');
+                                    setEditBio(profile?.bio || '');
+                                    setEditBackgroundURL(profile?.profileBackgroundURL || '');
+                                    setEditBirthday(profile?.birthday || '');
+                                    setEditPinnedChannelId(profile?.pinnedChannelId || null);
+                                    setUserStatus((profile?.status as any) || 'online');
+                                    setCustomStatus(profile?.customStatus || '');
+                                    setIsEditingProfile(true);
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Редактировать профиль"
+                                >
+                                  <Edit2 size={18} className="mb-1 text-blue-600" />
+                                  <span className="text-[10px] font-bold">Изменить</span>
+                                </button>
+
+                                {/* Self 2: Share / QR */}
+                                <button 
+                                  onClick={() => {
+                                    if (targetProfile) {
+                                      navigator.clipboard.writeText(getSovereignProfileLink(targetProfile.username || targetProfile.uid));
+                                      addToast('Ссылка на профиль скопирована', 'success');
+                                    }
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Скопировать ссылку на профиль"
+                                >
+                                  <Share2 size={18} className="mb-1 text-emerald-600" />
+                                  <span className="text-[10px] font-bold">Ссылка</span>
+                                </button>
+
+                                {/* Self 3: My Tracks */}
+                                <button 
+                                  onClick={() => {
+                                    setUserProfileTab('music');
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Мои треки в профиле"
+                                >
+                                  <MusicIcon size={18} className="mb-1 text-red-500" />
+                                  <span className="text-[10px] font-bold">Музыка</span>
+                                </button>
+
+                                {/* Self 4: Settings */}
+                                <button 
+                                  onClick={() => {
+                                    setShowProfile(false);
+                                    setShowSettings(true);
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Настройки мессенджера"
+                                >
+                                  <Settings size={18} className="mb-1 text-slate-600" />
+                                  <span className="text-[10px] font-bold">Опции</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Telegram Navigation Tabs: Инфо | Медиа | Файлы | Голосовые | Музыка | Ссылки | Общие чаты */}
+                          <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar border-b border-slate-100 pb-1 pt-1">
+                            {[
+                              { id: "info", label: "Инфо" },
+                              { id: "media", label: `Медиа${mediaItems.length ? ` (${mediaItems.length})` : ''}` },
+                              { id: "files", label: `Файлы${fileItems.length ? ` (${fileItems.length})` : ''}` },
+                              { id: "voice", label: `Голосовые${voiceItems.length ? ` (${voiceItems.length})` : ''}` },
+                              { id: "music", label: `Музыка${authorMusicTracks.length ? ` (${authorMusicTracks.length})` : ''}` },
+                              { id: "links", label: `Ссылки${linkItems.length ? ` (${linkItems.length})` : ''}` },
+                              { id: "common_chats", label: isSelf ? `Чаты (${commonChats.length})` : `Общие (${commonChats.length})` }
+                            ].map(tab => (
+                              <button
+                                key={tab.id}
+                                type="button"
+                                onClick={() => setUserProfileTab(tab.id as any)}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all",
+                                  userProfileTab === tab.id
+                                    ? "bg-blue-600 text-white shadow-xs"
+                                    : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                                )}
+                              >
+                                {tab.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          {/* ================== TAB: INFO ================== */}
+                          {userProfileTab === "info" && (
+                            <div className="space-y-3 animate-fade-in">
+                              {/* 1. Bio / About */}
+                              <div className="p-4 bg-slate-50 rounded-2xl space-y-1 border border-slate-100">
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">О себе</p>
+                                <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">
+                                  {targetProfile?.bio || 'Нет описания'}
+                                </p>
+                              </div>
+
+                              {/* 2. Username & Link */}
+                              <div className="p-4 bg-slate-50 rounded-2xl flex items-center justify-between border border-slate-100">
+                                <div className="space-y-0.5 min-w-0 pr-2">
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Юзернейм</p>
+                                  <p className="text-xs font-mono text-indigo-600 truncate">
+                                    @{targetProfile?.username || 'user'} • Профиль в сети
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button 
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(getSovereignProfileLink(targetProfile?.username || targetProfile?.uid));
+                                      addToast("Ссылка на профиль скопирована", "success");
+                                    }}
+                                    className="p-2.5 rounded-xl bg-white shadow-2xs border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors active:scale-95"
+                                    title="Копировать ссылку"
+                                  >
+                                    <Copy size={16} />
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* 3. Birthday (ДР) */}
+                              {targetProfile?.birthday && (
+                                <div className="p-3.5 bg-pink-50/60 rounded-2xl flex items-center gap-3 border border-pink-100">
+                                  <div className="w-10 h-10 rounded-xl bg-pink-100 text-pink-600 flex items-center justify-center shrink-0">
+                                    <Cake size={20} />
+                                  </div>
+                                  <div>
+                                    <p className="text-[10px] font-bold text-pink-700 uppercase tracking-wider">День рождения</p>
+                                    <p className="text-xs font-bold text-slate-800">
+                                      {(() => {
+                                        try {
+                                          const parts = targetProfile.birthday.split('-');
+                                          if (parts.length === 3) {
+                                            const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+                                            return dateObj.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+                                          }
+                                          return targetProfile.birthday;
+                                        } catch {
+                                          return targetProfile.birthday;
+                                        }
+                                      })()}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* 4. Pinned Track (Закрепленный трек в профиле с плеером) */}
+                              {targetProfile?.pinnedTrack && (
+                                <div className="p-4 bg-gradient-to-r from-amber-50/90 to-orange-50/90 rounded-2xl border border-amber-200/80 space-y-2.5 shadow-2xs">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 flex items-center gap-1 shadow-2xs">
+                                      <Pin size={10} className="fill-current" /> Закрепленный трек
+                                    </span>
+                                    {isSelf && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handlePinTrackToProfile(null)}
+                                        className="text-[10px] font-bold text-slate-400 hover:text-rose-600 transition-colors"
+                                        title="Открепить трек от профиля"
+                                      >
+                                        ✕ Открепить
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleProfileTrack(targetProfile.pinnedTrack!)}
+                                      className="w-11 h-11 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 flex items-center justify-center shrink-0 shadow-md transition-transform active:scale-95"
+                                    >
+                                      {profilePlayingTrack?.isPlaying && profilePlayingTrack?.url === targetProfile.pinnedTrack.url ? (
+                                        <Pause size={18} className="fill-current" />
+                                      ) : (
+                                        <Play size={18} className="fill-current ml-0.5" />
+                                      )}
+                                    </button>
+                                    <div className="flex-1 min-w-0">
+                                      <h4 className="text-xs font-bold text-slate-900 truncate">
+                                        {targetProfile.pinnedTrack.title}
+                                      </h4>
+                                      <p className="text-[11px] text-slate-600 truncate">
+                                        {targetProfile.pinnedTrack.artist || 'Аудиозапись профиля'}
+                                      </p>
+                                      <span className="text-[10px] text-amber-800 font-medium">
+                                        Слушать прямо в профиле • Доступно всем
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* 5. Pinned Channel (Закрепленный канал автора) */}
+                              {(() => {
+                                const ch = groups.find(g => g.id === (targetProfile?.pinnedChannelId || targetProfile?.pinnedChannel?.id)) || targetProfile?.pinnedChannel;
+                                if (!ch) return null;
+                                return (
+                                  <div className="p-4 bg-gradient-to-r from-blue-50/80 to-indigo-50/80 rounded-2xl border border-blue-200/80 space-y-2 shadow-2xs">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white flex items-center gap-1 shadow-2xs">
+                                        <Radio size={10} /> Закрепленный канал
+                                      </span>
+                                      {isSelf && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePinChannelToProfile(null)}
+                                          className="text-[10px] font-bold text-slate-400 hover:text-rose-600 transition-colors"
+                                          title="Открепить канал от профиля"
+                                        >
+                                          ✕ Открепить
+                                        </button>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                      <div className="w-12 h-12 rounded-xl bg-blue-600 text-white font-bold flex items-center justify-center shrink-0 overflow-hidden shadow-xs">
+                                        {ch.photoURL ? (
+                                          <img src={ch.photoURL} alt="" className="w-full h-full object-cover" />
+                                        ) : (
+                                          ch.name?.[0] || 'C'
+                                        )}
+                                      </div>
+                                      <div className="flex-1 min-w-0">
+                                        <h4 className="text-xs font-bold text-slate-900 truncate flex items-center gap-1">
+                                          <span>{ch.name}</span>
+                                          <Shield size={12} className="text-blue-500 fill-blue-500/20 shrink-0" />
+                                        </h4>
+                                        <p className="text-[11px] text-slate-500 truncate">
+                                          {ch.description || `${(ch as any).members?.length || (ch as any).subscribersCount || 1} подписчиков`}
+                                        </p>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          selectChat({ type: 'channel', id: ch.id });
+                                          setShowProfile(false);
+                                        }}
+                                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shrink-0 transition-colors shadow-xs"
+                                      >
+                                        Перейти
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              {/* 6. Button: "Треки автора в Ордина Музыка" */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const authorName = targetProfile?.displayName || targetProfile?.username || '';
+                                  setShowProfile(false);
+                                  setMusicInitialSearch(authorName);
+                                  setShowMusicModal(true);
+                                }}
+                                className="w-full p-3.5 bg-gradient-to-r from-red-500/10 via-pink-500/10 to-purple-500/10 hover:from-red-500/20 hover:via-pink-500/20 hover:to-purple-500/20 border border-red-200/80 rounded-2xl flex items-center justify-between text-left transition-all active:scale-[0.99] group shadow-2xs"
+                              >
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-red-500 to-pink-600 text-white flex items-center justify-center shadow-md shadow-red-500/20 group-hover:scale-105 transition-transform">
+                                    <MusicIcon size={20} />
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                                      <span>Треки автора в Ордина Музыка</span>
+                                      <Sparkles size={12} className="text-amber-500" />
+                                    </p>
+                                    <p className="text-[10px] text-slate-500">
+                                      Слушать авторские песни и аудиозаписи в плеере
+                                    </p>
+                                  </div>
+                                </div>
+                                <ChevronRight size={18} className="text-slate-400 group-hover:translate-x-0.5 transition-transform" />
+                              </button>
+
+                              {/* 7. Mesh Status */}
+                              <div className="flex items-center gap-3 p-3.5 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+                                <Smartphone className="text-emerald-500 shrink-0" size={24} />
+                                <div>
+                                  <p className="text-xs font-bold text-emerald-800 uppercase">Устройство в защищенной Mesh-сети</p>
+                                  <p className="text-[10px] text-emerald-600">Ordinal Node v1.0.4 (P2P E2EE Активен)</p>
+                                </div>
+                              </div>
+
+                              {/* 8. Report and Block actions for others */}
+                              {!isSelf && (
+                                <div className="space-y-2 pt-2">
+                                  <button
+                                    onClick={() => {
+                                      if (!user || !profile || !targetProfile) return;
+                                      const newBlocked = isBlocked
+                                        ? (profile.blockedUsers || []).filter(id => id !== targetProfile.uid)
+                                        : [...(profile.blockedUsers || []), targetProfile.uid];
+                                      socket?.emit('profile:update', { uid: user.uid, profile: { blockedUsers: newBlocked } });
+                                      setProfile(prev => prev ? { ...prev, blockedUsers: newBlocked } : null);
+                                      addToast(isBlocked ? 'Пользователь разблокирован' : 'Пользователь заблокирован', isBlocked ? 'info' : 'success');
+                                    }}
+                                    className={cn(
+                                      "w-full py-2.5 px-4 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border transition-colors",
+                                      isBlocked 
+                                        ? "bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border-emerald-200" 
+                                        : "bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200"
+                                    )}
+                                  >
+                                    <Shield size={16} className={isBlocked ? "text-emerald-600" : "text-slate-500"} />
+                                    <span>{isBlocked ? 'Разблокировать пользователя' : 'Заблокировать пользователя'}</span>
+                                  </button>
+
+                                  <button
+                                    onClick={() => {
+                                      handleOpenReport(
+                                        'user',
+                                        targetProfile?.uid || '',
+                                        targetProfile?.displayName || targetProfile?.username || 'Пользователь'
+                                      );
+                                      setShowProfile(false);
+                                    }}
+                                    className="w-full py-2.5 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-xs flex items-center justify-center gap-2 border border-rose-200 transition-colors"
+                                  >
+                                    <Flag size={16} />
+                                    <span>Пожаловаться на пользователя</span>
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: MEDIA ================== */}
+                          {userProfileTab === "media" && (
+                            <div className="space-y-3 animate-fade-in">
+                              {mediaItems.length === 0 ? (
+                                <div className="py-12 text-center text-slate-400 text-xs">
+                                  <ImageIcon size={32} className="mx-auto mb-2 text-slate-300" />
+                                  Нет отправленных фотографий или видео
+                                </div>
+                              ) : (
+                                <div className="grid grid-cols-3 gap-2">
+                                  {mediaItems.map((m, idx) => (
+                                    <div 
+                                      key={m.id || idx}
+                                      className="aspect-square bg-slate-100 rounded-xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity relative group"
+                                      onClick={() => {
+                                        const index = mediaItems.findIndex(item => item.id === m.id);
+                                        if (index !== -1) setSelectedMediaIndex(index);
+                                        setShowChatMediaModal(true);
+                                      }}
+                                    >
+                                      <FirestoreMedia 
+                                        url={m.fileUrl || ""} 
+                                        type={m.type as any} 
+                                        className="w-full h-full object-cover" 
+                                      />
+                                      {m.type === 'video' && (
+                                        <div className="absolute inset-0 bg-black/20 flex items-center justify-center text-white">
+                                          <Play size={18} className="fill-current" />
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: FILES ================== */}
+                          {userProfileTab === "files" && (
+                            <div className="space-y-2 animate-fade-in">
+                              {fileItems.length === 0 ? (
+                                <div className="py-12 text-center text-slate-400 text-xs">
+                                  <FileIcon size={32} className="mx-auto mb-2 text-slate-300" />
+                                  Нет файлов или документов
+                                </div>
+                              ) : (
+                                fileItems.map((m, idx) => (
+                                  <div key={m.id || idx} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl flex items-center justify-between border border-slate-100 transition-colors">
+                                    <div className="flex items-center gap-3 min-w-0 pr-2">
+                                      <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center shrink-0">
+                                        <FileIcon size={18} />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold text-slate-800 truncate">{m.fileName || 'Файл'}</p>
+                                        <p className="text-[10px] text-slate-400">{m.fileSize ? `${Math.round(m.fileSize / 1024)} КБ` : 'Документ'}</p>
+                                      </div>
+                                    </div>
+                                    <a
+                                      href={m.fileUrl}
+                                      download={m.fileName || 'document'}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-2 bg-white rounded-xl shadow-2xs text-slate-600 hover:text-blue-600 transition-colors shrink-0"
+                                      title="Скачать файл"
+                                    >
+                                      <Download size={16} />
+                                    </a>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: VOICE ================== */}
+                          {userProfileTab === "voice" && (
+                            <div className="space-y-2 animate-fade-in">
+                              {voiceItems.length === 0 ? (
+                                <div className="py-12 text-center text-slate-400 text-xs">
+                                  <Mic size={32} className="mx-auto mb-2 text-slate-300" />
+                                  Нет голосовых сообщений
+                                </div>
+                              ) : (
+                                voiceItems.map((m, idx) => (
+                                  <div key={m.id || idx} className="p-3 bg-slate-50 rounded-2xl border border-slate-100">
+                                    <VoiceBubbleWidget
+                                      msg={m}
+                                      isMe={m.senderId === user?.uid}
+                                      activeVoice={voicePlayer.activeVoice}
+                                      isAccelerated={voicePlayer.isAccelerated}
+                                      onPlay={() => {
+                                        voicePlayer.playVoice({
+                                          id: m.id,
+                                          fileUrl: m.fileUrl || '',
+                                          senderName: targetProfile?.displayName || 'Голосовое',
+                                          senderAvatar: targetProfile?.photoURL,
+                                          createdAt: m.createdAt,
+                                        });
+                                      }}
+                                      onSeek={(time) => voicePlayer.seekVoice(time)}
+                                      onPinToProfile={handlePinTrackToProfile}
+                                      isPinned={profile?.pinnedTrack?.id === m.id || profile?.pinnedTrack?.url === m.fileUrl}
+                                    />
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: MUSIC ================== */}
+                          {userProfileTab === "music" && (
+                            <div className="space-y-2 animate-fade-in">
+                              {authorMusicTracks.length === 0 ? (
+                                <div className="py-8 text-center text-slate-400 text-xs space-y-2">
+                                  <MusicIcon size={32} className="mx-auto text-slate-300" />
+                                  <p>У пользователя пока нет загруженных авторских треков в Ордина Музыка</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setShowProfile(false);
+                                      setShowMusicModal(true);
+                                    }}
+                                    className="px-3 py-1.5 bg-red-600 hover:bg-red-500 text-white rounded-xl text-xs font-bold transition-colors shadow-xs"
+                                  >
+                                    Перейти в Ордина Музыка
+                                  </button>
+                                </div>
+                              ) : (
+                                authorMusicTracks.map(track => (
+                                  <div key={track.id} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl flex items-center justify-between border border-slate-100 transition-colors">
+                                    <div className="flex items-center gap-3 min-w-0 pr-2">
+                                      <div className="w-10 h-10 rounded-xl bg-red-500 text-white flex items-center justify-center shrink-0 shadow-xs">
+                                        <MusicIcon size={18} />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold text-slate-900 truncate">{track.title}</p>
+                                        <p className="text-[10px] text-slate-500 truncate">{track.artist} • {track.genre}</p>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      {isSelf && (
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePinTrackToProfile(track)}
+                                          className={`p-2 rounded-xl text-xs font-bold transition-colors ${
+                                            profile?.pinnedTrack?.id === track.id ? 'bg-amber-400 text-slate-950' : 'bg-white text-slate-700 hover:bg-slate-200'
+                                          }`}
+                                          title="Закрепить в профиль"
+                                        >
+                                          <Pin size={14} className={profile?.pinnedTrack?.id === track.id ? "fill-current" : ""} />
+                                        </button>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setShowProfile(false);
+                                          musicPlayer.playTrack(track, authorMusicTracks);
+                                        }}
+                                        className="p-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                                        title="Слушать в плеере"
+                                      >
+                                        <Play size={14} className="fill-current" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: LINKS ================== */}
+                          {userProfileTab === "links" && (
+                            <div className="space-y-2 animate-fade-in">
+                              {linkItems.length === 0 ? (
+                                <div className="py-12 text-center text-slate-400 text-xs">
+                                  <Globe size={32} className="mx-auto mb-2 text-slate-300" />
+                                  Нет отправленных ссылок
+                                </div>
+                              ) : (
+                                linkItems.map((m, idx) => {
+                                  const matches = m.text?.match(/(https?:\/\/[^\s]+)/g) || [];
+                                  return matches.map((url, uIdx) => (
+                                    <a
+                                      key={`${m.id}-${uIdx}`}
+                                      href={url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl flex items-center justify-between border border-slate-100 transition-colors text-xs text-blue-600 font-mono truncate"
+                                    >
+                                      <span className="truncate pr-2">{url}</span>
+                                      <ExternalLink size={14} className="shrink-0 text-slate-400" />
+                                    </a>
+                                  ));
+                                })
+                              )}
+                            </div>
+                          )}
+
+                          {/* ================== TAB: COMMON CHATS ================== */}
+                          {userProfileTab === "common_chats" && (
+                            <div className="space-y-2 animate-fade-in">
+                              {commonChats.length === 0 ? (
+                                <div className="py-12 text-center text-slate-400 text-xs">
+                                  <Users size={32} className="mx-auto mb-2 text-slate-300" />
+                                  {isSelf ? 'Вы пока не состоите ни в одном чате' : 'Нет общих чатов или каналов'}
+                                </div>
+                              ) : (
+                                commonChats.map(c => (
+                                  <div
+                                    key={c.id}
+                                    onClick={() => {
+                                      selectChat({ type: c.type === 'channel' ? 'channel' : 'group', id: c.id });
+                                      setShowProfile(false);
+                                    }}
+                                    className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl flex items-center justify-between border border-slate-100 cursor-pointer transition-colors"
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0 pr-2">
+                                      <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-500 to-indigo-600 text-white font-bold flex items-center justify-center shrink-0 overflow-hidden">
+                                        {c.photoURL ? (
+                                          <img src={c.photoURL} alt="" className="w-full h-full object-cover" />
+                                        ) : (
+                                          c.name?.[0] || 'C'
+                                        )}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-bold text-slate-900 truncate flex items-center gap-1">
+                                          <span>{c.name}</span>
+                                          {c.type === 'channel' && <span className="text-[10px] text-blue-600 font-normal">[Канал]</span>}
+                                        </p>
+                                        <p className="text-[10px] text-slate-500">
+                                          {c.members?.length || 1} участников
+                                        </p>
+                                      </div>
+                                    </div>
+                                    <ChevronRight size={16} className="text-slate-400 shrink-0" />
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
                         </div>
-                      </>
-                    )}
-                  </div>
-                  {viewedProfile?.uid === user?.uid && !isEditingProfile && (
-                    <button 
-                      onClick={() => {
-                        setEditName(profile?.displayName || '');
-                        setEditUsername(profile?.username || '');
-                        setEditAvatar(profile?.photoURL || '');
-                        setEditBio(profile?.bio || '');
-                        setEditBackgroundURL(profile?.profileBackgroundURL || '');
-                        setUserStatus((profile?.status as any) || 'online');
-                        setCustomStatus(profile?.customStatus || '');
-                        setIsEditingProfile(true);
-                      }}
-                      className="p-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-slate-600 transition-all"
-                    >
-                      <Edit2 size={20} />
-                    </button>
-                  )}
-                </div>
-                
-                {!isEditingProfile && (
-                  <div className="space-y-6">
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-4 p-4 bg-indigo-500/10 rounded-2xl border border-indigo-500/20">
-                        <Smartphone className="text-indigo-500" size={32} />
-                        <div>
-                          <p className="text-xs font-bold text-indigo-700 uppercase">Устройство в Mesh-сети</p>
-                          <p className="text-[10px] text-indigo-600">Ordinal Node v1.0.4 (P2P Активен)</p>
-                        </div>
-                      </div>
+                      )}
                     </div>
-                    
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500">
-                          <Shield size={20} />
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-xs font-bold text-slate-400 uppercase">О себе</p>
-                          <p className="text-sm text-slate-700">{viewedProfile?.bio || 'Нет описания'}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {viewedProfile && viewedProfile.uid !== user?.uid && (
-                      <div className="pt-2">
-                        <button
-                          onClick={() => {
-                            handleOpenReport(
-                              'user',
-                              viewedProfile.uid,
-                              viewedProfile.displayName || viewedProfile.username || 'Пользователь'
-                            );
-                            setShowProfile(false);
-                          }}
-                          className="w-full py-3 px-4 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 font-bold text-sm flex items-center justify-center gap-2 border border-rose-200 transition-colors"
-                        >
-                          <Flag size={18} />
-                          Пожаловаться на пользователя
-                        </button>
-                      </div>
-                    )}
-
-                      {/* Removed data safety block */}
-
-
-                  </div>
-                )}
-              </div>
+                  </>
+                );
+              })()}
             </motion.div>
           </motion.div>
         )}
@@ -6820,7 +9066,7 @@ function AppContent() {
                     <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
                       Баги и предложения
                       <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-500 text-white rounded-full">
-                        СВЯЗЬ С АДМИНОМ
+                        ПОДДЕРЖКА
                       </span>
                     </p>
                     <p className="text-xs text-slate-500">
@@ -6896,41 +9142,37 @@ function AppContent() {
                   </div>
                 </button>
 
-                <a 
-                  href="mailto:ordinalyzm25@gmail.com?subject=Обратная связь - Приложение Ордина&body=Опишите вашу проблему, вопрос или предложение:%0D%0A%0D%0A"
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowTextSafetyModal(true);
+                  }}
+                  className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
+                >
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600">
+                    <Scale size={20} />
+                  </div>
+                  <div className="text-left">
+                    <p className="font-bold text-sm">Правовой щит и кодексы РФ</p>
+                    <p className="text-xs text-slate-500">Справочник КоАП, УК РФ, Конституции и фильтр рисков</p>
+                  </div>
+                </button>
+
+                <button 
+                  onClick={() => {
+                    setShowSettings(false);
+                    setShowBugReportModal(true);
+                  }}
                   className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
                 >
                   <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-500">
                     <MessageSquare size={20} />
                   </div>
                   <div className="text-left">
-                    <p className="font-bold text-sm">Обратная связь</p>
-                    <p className="text-xs text-slate-500">Написать разработчику (письмо на Gmail: ordinalyzm25@gmail.com)</p>
+                    <p className="font-bold text-sm">Обратная связь в Ордине</p>
+                    <p className="text-xs text-slate-500">Служба поддержки и рассмотрения обращений внутри приложения</p>
                   </div>
-                </a>
-
-                {(user?.email === 'ordinalyzm25@gmail.com' || profile?.displayName === 'MEGAKPYIIIuTeJIb' || profile?.username === 'MEGAKPYIIIuTeJIb' || isGlobalAdmin) && (
-                  <button 
-                    onClick={() => {
-                      const pass = prompt('Введите пароль разработчика:');
-                      if (pass === '02042026') {
-                        setShowDebug(true);
-                        setShowSettings(false);
-                      } else {
-                        addToast('Неверный пароль', 'error');
-                      }
-                    }}
-                    className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-2xl transition-all"
-                  >
-                    <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500">
-                      <Settings size={20} />
-                    </div>
-                    <div className="text-left">
-                      <p className="font-bold text-sm">Панель отладки</p>
-                      <p className="text-xs text-slate-500">Только для владельца (разработчика)</p>
-                    </div>
-                  </button>
-                )}
+                </button>
                 
                 <button 
                   onClick={handleLogout}
@@ -7244,117 +9486,425 @@ function AppContent() {
                   </button>
                 )}
               </div>
-              <div className="p-5 sm:p-6 overflow-y-auto space-y-5 flex-1 custom-scrollbar">
-                <div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{(activeChatData as Group)?.name}</h2>
-                  <p className="text-xs font-bold text-blue-600 uppercase">
-                    {(activeChatData as Group)?.type === 'group' ? 'Группа' : 'Канал'} • {(activeChatData as Group)?.members?.length || 0} участников
-                  </p>
+              <div className="p-4 sm:p-6 overflow-y-auto space-y-4 flex-1 custom-scrollbar">
+                {/* Telegram-style Channel/Group Header Info */}
+                <div className="text-center sm:text-left flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <div className="flex items-center justify-center sm:justify-start gap-1.5">
+                      <h2 className="text-xl sm:text-2xl font-bold text-slate-900">{(activeChatData as Group)?.name}</h2>
+                      {(activeChatData as Group)?.isVerified && (
+                        <span title="Верифицированный канал">
+                          <Shield size={18} className="text-blue-500 fill-blue-50 shrink-0" />
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-center sm:justify-start gap-2 mt-0.5">
+                      <p className="text-xs font-semibold text-blue-600">
+                        {(() => {
+                          const isChan = (activeChatData as Group)?.type === "channel";
+                          const cnt = (activeChatData as Group)?.members?.length || 1;
+                          const mod10 = cnt % 10;
+                          const mod100 = cnt % 100;
+                          if (isChan) {
+                            if (mod100 >= 11 && mod100 <= 19) return `${cnt} подписчиков`;
+                            if (mod10 === 1) return `${cnt} подписчик`;
+                            if (mod10 >= 2 && mod10 <= 4) return `${cnt} подписчика`;
+                            return `${cnt} подписчиков`;
+                          } else {
+                            if (mod100 >= 11 && mod100 <= 19) return `${cnt} участников`;
+                            if (mod10 === 1) return `${cnt} участник`;
+                            if (mod10 >= 2 && mod10 <= 4) return `${cnt} участника`;
+                            return `${cnt} участников`;
+                          }
+                        })()}
+                      </p>
+                      <span className="text-xs text-slate-300">•</span>
+                      <span className="text-xs font-mono text-slate-500">
+                        @{(activeChatData as Group)?.name ? (activeChatData as Group).name.toLowerCase().replace(/\s+/g, "_") : "channel"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Top-right quick actions badge */}
+                  <div className="flex items-center justify-center sm:justify-end gap-1.5">
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-bold uppercase">
+                      {(activeChatData as Group)?.type === "channel" ? "Канал" : "Группа"}
+                    </span>
+                    {(activeChatData as Group)?.isGlobal && (
+                      <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-bold uppercase border border-blue-200">
+                        Официальный
+                      </span>
+                    )}
+                  </div>
                 </div>
 
-                {/* Telegram-style Quick Action Grid */}
-                <div className="grid grid-cols-3 gap-2">
+                {/* Telegram 4-Button Action Row */}
+                <div className="grid grid-cols-4 gap-2">
+                  {/* 1. Mute / Unmute */}
+                  <button 
+                    onClick={() => {
+                      toggleMuteChat((activeChatData as Group).id);
+                      addToast(mutedChats.includes((activeChatData as Group).id) ? "Уведомления включены" : "Уведомления отключены", "info");
+                    }}
+                    className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100"
+                    title={mutedChats.includes((activeChatData as Group).id) ? "Включить звук" : "Отключить звук"}
+                  >
+                    {mutedChats.includes((activeChatData as Group).id) ? (
+                      <>
+                        <BellOff size={18} className="mb-1 text-amber-500" />
+                        <span className="text-[10px] font-bold text-amber-600">Без звука</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bell size={18} className="mb-1 text-blue-600" />
+                        <span className="text-[10px] font-bold text-slate-700">Звук</span>
+                      </>
+                    )}
+                  </button>
+
+                  {/* 2. In-channel Search */}
                   <button 
                     onClick={() => {
                       setShowGroupInfo(false);
                       setShowChatSearch(true);
                     }}
-                    className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
+                    className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100"
+                    title="Поиск сообщений в этом канале"
                   >
-                    <Search size={18} className="mb-1 text-blue-600" />
-                    <span className="text-[11px] font-bold">Поиск</span>
+                    <Search size={18} className="mb-1 text-indigo-600" />
+                    <span className="text-[10px] font-bold">Поиск</span>
                   </button>
 
+                  {/* 3. Share / QR */}
                   <button 
                     onClick={() => {
-                      toggleMuteChat((activeChatData as Group).id);
-                      addToast(mutedChats.includes((activeChatData as Group).id) ? 'Уведомления включены' : 'Уведомления отключены', 'info');
+                      setChatQrTarget(activeChatData as Group);
                     }}
-                    className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
+                    className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100"
+                    title="Поделиться каналом или показать QR-код"
                   >
-                    {mutedChats.includes((activeChatData as Group).id) ? (
-                      <>
-                        <BellOff size={18} className="mb-1 text-amber-500" />
-                        <span className="text-[11px] font-bold">Без звука</span>
-                      </>
-                    ) : (
-                      <>
-                        <Bell size={18} className="mb-1 text-emerald-600" />
-                        <span className="text-[11px] font-bold">Со звуком</span>
-                      </>
-                    )}
+                    <Share2 size={18} className="mb-1 text-emerald-600" />
+                    <span className="text-[10px] font-bold">Ссылка</span>
                   </button>
 
-                  {((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'owner' || (activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'admin') ? (
-                    <button 
-                      onClick={() => {
-                        setShowGroupInfo(false);
-                        setShowGroupSettings(true);
-                      }}
-                      className="flex flex-col items-center justify-center p-3 bg-blue-50 hover:bg-blue-100 rounded-2xl text-blue-700 transition-colors active:scale-95"
-                    >
-                      <Settings size={18} className="mb-1 text-blue-600" />
-                      <span className="text-[11px] font-bold">Настройки</span>
-                    </button>
-                  ) : (
-                    <button 
-                      onClick={() => {
-                        navigator.clipboard.writeText(window.location.origin + '?group=' + (activeChatData as Group).id);
-                        addToast('Ссылка на канал скопирована', 'success');
-                      }}
-                      className="flex flex-col items-center justify-center p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-colors active:scale-95"
-                    >
-                      <Share2 size={18} className="mb-1 text-indigo-600" />
-                      <span className="text-[11px] font-bold">Ссылка</span>
-                    </button>
-                  )}
+                  {/* 4. Discuss / Thread Comments */}
+                  <button 
+                    onClick={() => {
+                      setShowGroupInfo(false);
+                      const lastMsg = messages.slice().reverse().find(m => !m.threadId && !isMessageDeletedTombstone(m.id));
+                      if (lastMsg) {
+                        setActiveThread(lastMsg);
+                      } else {
+                        addToast("В канале пока нет записей для обсуждения", "info");
+                      }
+                    }}
+                    className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100"
+                    title="Перейти к комментариям и обсуждениям"
+                  >
+                    <MessageSquare size={18} className="mb-1 text-purple-600" />
+                    <span className="text-[10px] font-bold">Обсудить</span>
+                  </button>
                 </div>
-                
-                <div className="space-y-4">
-                  {(activeChatData as Group)?.description && (
-                    <div className="p-4 bg-slate-50 rounded-2xl">
-                      <p className="text-xs font-bold text-slate-400 uppercase mb-1">Описание</p>
-                      <p className="text-sm text-slate-700 leading-relaxed">{(activeChatData as Group).description}</p>
-                    </div>
-                  )}
-                  {(activeChatData as Group)?.id === 'global_channel' && (activeChatData as Group)?.ownerId === 'system' && (
+
+                {/* Telegram Navigation Tabs: Инфо | Медиа | Файлы | Голосовые | Ссылки | Подписчики */}
+                <div className="flex items-center gap-1 overflow-x-auto custom-scrollbar border-b border-slate-100 pb-1 pt-1">
+                  {[
+                    { id: "info", label: "Инфо" },
+                    { id: "media", label: "Медиа" },
+                    { id: "files", label: "Файлы" },
+                    { id: "voice", label: "Голосовые" },
+                    { id: "links", label: "Ссылки" },
+                    { id: "members", label: (activeChatData as Group)?.type === "channel" ? "Подписчики" : "Участники" }
+                  ].map(tab => (
                     <button
-                      onClick={async () => {
-                        try {
-                          const newRoles = { ...((activeChatData as Group).memberRoles || {}), [user?.uid || '']: 'owner' };
-                          socket?.emit('group:update', {
-                            id: 'global_channel',
-                            update: { ownerId: user?.uid, memberRoles: newRoles }
-                          });
-                          addToast('Вы стали владельцем глобального канала', 'success');
-                        } catch (error) {
-                          addToast('Ошибка', 'error');
-                        }
-                      }}
-                      className="w-full p-3 bg-indigo-100 text-indigo-700 rounded-xl font-bold text-sm hover:bg-indigo-200 transition-colors"
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setGroupProfileTab(tab.id as any)}
+                      className={cn(
+                        "px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all",
+                        groupProfileTab === tab.id
+                          ? "bg-blue-600 text-white shadow-xs"
+                          : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+                      )}
                     >
-                      Стать владельцем канала
+                      {tab.label}
                     </button>
-                  )}
-                  <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
-                    <QRCodeSVG value={(activeChatData as Group)?.id || ''} size={70} />
-                    <div>
-                      <p className="text-xs font-bold text-slate-400 uppercase">QR-код группы</p>
-                      <p className="text-xs text-slate-500">Для приглашения участников</p>
+                  ))}
+                </div>
+
+                {/* TAB 1: ИНФО (Информация, описание, ссылки) */}
+                {groupProfileTab === "info" && (
+                  <div className="space-y-3 animate-fade-in">
+                    {(activeChatData as Group)?.description && (
+                      <div className="p-4 bg-slate-50 rounded-2xl space-y-1 border border-slate-100">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Описание</p>
+                        <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-wrap">{(activeChatData as Group).description}</p>
+                      </div>
+                    )}
+
+                    <div className="p-4 bg-slate-50 rounded-2xl flex items-center justify-between border border-slate-100">
+                      <div className="space-y-0.5 min-w-0 pr-2">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Ссылка-приглашение</p>
+                        <p className="text-xs font-mono text-indigo-600 truncate">{getSovereignChannelLink((activeChatData as Group).id)}</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button 
+                          onClick={() => setChatQrTarget(activeChatData as Group)}
+                          className="p-2.5 rounded-xl bg-white shadow-xs border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors active:scale-95"
+                          title="Показать фирменный QR-код Ордины"
+                        >
+                          <QrCode size={16} className="text-amber-600" />
+                        </button>
+                        <button 
+                          onClick={() => {
+                            navigator.clipboard.writeText(getSovereignChannelLink((activeChatData as Group).id));
+                            addToast("Ссылка на канал скопирована", "success");
+                          }}
+                          className="p-2.5 rounded-xl bg-white shadow-xs border border-slate-200 text-slate-700 hover:bg-slate-100 flex items-center justify-center transition-colors active:scale-95"
+                          title="Копировать ссылку"
+                        >
+                          <Share2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 bg-slate-50 rounded-2xl flex items-center justify-between border border-slate-100">
+                      <div className="flex items-center gap-3">
+                        <Bell size={18} className="text-slate-500" />
+                        <div>
+                          <p className="text-xs font-bold text-slate-800">Уведомления</p>
+                          <p className="text-[10px] text-slate-400">
+                            {mutedChats.includes((activeChatData as Group).id) ? "Без звука" : "Включены со звуком"}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => toggleMuteChat((activeChatData as Group).id)}
+                        className={cn(
+                          "w-11 h-6 rounded-full transition-colors relative p-0.5 cursor-pointer",
+                          !mutedChats.includes((activeChatData as Group).id) ? "bg-blue-600" : "bg-slate-300"
+                        )}
+                      >
+                        <div className={cn(
+                          "w-5 h-5 rounded-full bg-white shadow-xs transition-transform",
+                          !mutedChats.includes((activeChatData as Group).id) ? "translate-x-5" : "translate-x-0"
+                        )} />
+                      </button>
+                    </div>
+
+                    {((activeChatData as Group)?.memberRoles?.[user?.uid || ""] === "owner" || (activeChatData as Group)?.memberRoles?.[user?.uid || ""] === "admin") && (
+                      <div 
+                        onClick={() => {
+                          setShowGroupInfo(false);
+                          setShowGroupSettings(true);
+                        }}
+                        className="p-3.5 bg-slate-50 hover:bg-slate-100 rounded-2xl flex items-center justify-between cursor-pointer transition-colors border border-slate-100"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Settings size={18} className="text-slate-500" />
+                          <span className="text-xs font-bold text-slate-800">Настройки канала</span>
+                        </div>
+                        <ChevronRight size={16} className="text-slate-400" />
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-3 p-3.5 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
+                      <Users className="text-emerald-500 shrink-0" size={24} />
+                      <div>
+                        <p className="text-xs font-bold text-emerald-800 uppercase">Mesh-рассылка Ордины</p>
+                        <p className="text-[10px] text-emerald-600">Защищенное P2P распространение публикаций</p>
+                      </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4 p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
-                    <Users className="text-emerald-500" size={32} />
-                    <div>
-                      <p className="text-xs font-bold text-emerald-700 uppercase">Точка доступа группы</p>
-                      <p className="text-[10px] text-emerald-600">Mesh-рассылка включена для этого канала</p>
-                    </div>
+                )}
+
+                {/* TAB 2: МЕДИА (Фото и видео) */}
+                {groupProfileTab === "media" && (
+                  <div className="space-y-3 animate-fade-in">
+                    {(() => {
+                      const mediaList = messages.filter(m => (m.type === "image" || m.type === "video") && m.fileUrl && m.fileName !== "sticker.jpg");
+                      if (mediaList.length === 0) {
+                        return (
+                          <div className="py-12 text-center text-slate-400 text-xs">
+                            <ImageIcon size={32} className="mx-auto mb-2 text-slate-300" />
+                            В этом канале пока нет медиафайлов
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="grid grid-cols-3 gap-2">
+                          {mediaList.map((m, idx) => (
+                            <div 
+                              key={m.id || idx}
+                              className="aspect-square bg-slate-100 rounded-xl overflow-hidden cursor-pointer hover:opacity-90 transition-opacity relative group"
+                              onClick={() => {
+                                const index = mediaList.findIndex(item => item.id === m.id);
+                                if (index !== -1) setSelectedMediaIndex(index);
+                                setShowChatMediaModal(true);
+                              }}
+                            >
+                              <FirestoreMedia 
+                                url={m.fileUrl || ""} 
+                                type={m.type as any} 
+                                className="w-full h-full object-cover" 
+                              />
+                              {m.type === "video" && (
+                                <div className="absolute inset-0 bg-black/25 flex items-center justify-center">
+                                  <Play size={16} className="text-white fill-white" />
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  
-                  <div className="space-y-4">
+                )}
+
+                {/* TAB 3: ФАЙЛЫ (Документы) */}
+                {groupProfileTab === "files" && (
+                  <div className="space-y-2 animate-fade-in">
+                    {(() => {
+                      const filesList = messages.filter(m => m.type === "file" || (m.fileName && m.fileName !== "sticker.jpg" && m.type !== "image" && m.type !== "video"));
+                      if (filesList.length === 0) {
+                        return (
+                          <div className="py-12 text-center text-slate-400 text-xs">
+                            <FileText size={32} className="mx-auto mb-2 text-slate-300" />
+                            В этом канале пока нет документов
+                          </div>
+                        );
+                      }
+                      return filesList.map((m, idx) => (
+                        <div 
+                          key={m.id || idx}
+                          className="flex items-center justify-between p-3 bg-slate-50 hover:bg-slate-100 rounded-xl transition-colors border border-slate-100"
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className="p-2 bg-blue-100 text-blue-600 rounded-lg shrink-0">
+                              <FileText size={16} />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-bold text-slate-800 truncate">{m.fileName || "Файл"}</p>
+                              <p className="text-[10px] text-slate-400">
+                                {m.fileSize ? `${Math.round(m.fileSize / 1024)} КБ` : "Документ"} • {new Date(m.createdAt).toLocaleDateString()}
+                              </p>
+                            </div>
+                          </div>
+                          {m.fileUrl && (
+                            <a 
+                              href={m.fileUrl} 
+                              download={m.fileName || "file"}
+                              className="p-2 hover:bg-slate-200 text-slate-600 rounded-lg transition-colors shrink-0"
+                              title="Скачать файл"
+                            >
+                              <Download size={16} />
+                            </a>
+                          )}
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                )}
+
+                {/* TAB 4: ГОЛОСОВЫЕ (Аудио) */}
+                {groupProfileTab === "voice" && (
+                  <div className="space-y-2 animate-fade-in">
+                    {(() => {
+                      const voiceList = messages.filter(m => m.type === "audio" || (m.fileUrl && m.fileUrl.startsWith("data:audio")) || m.duration);
+                      if (voiceList.length === 0) {
+                        return (
+                          <div className="py-12 text-center text-slate-400 text-xs">
+                            <Mic size={32} className="mx-auto mb-2 text-slate-300" />
+                            В этом канале пока нет аудиозаписей
+                          </div>
+                        );
+                      }
+                      return voiceList.map((m, idx) => (
+                        <div 
+                          key={m.id || idx}
+                          className="p-3 bg-slate-50 rounded-xl flex items-center justify-between border border-slate-100"
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className="p-2 bg-amber-100 text-amber-600 rounded-lg shrink-0">
+                              <Mic size={16} />
+                            </div>
+                            <div>
+                              <p className="text-xs font-bold text-slate-800">
+                                Голосовое сообщение {m.duration ? `(${m.duration} сек)` : ""}
+                              </p>
+                              <p className="text-[10px] text-slate-400">{new Date(m.createdAt).toLocaleDateString()}</p>
+                            </div>
+                          </div>
+                          {m.fileUrl && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                voicePlayer.playVoice({
+                                  id: m.id,
+                                  fileUrl: m.fileUrl || "",
+                                  senderName: (activeChatData as Group)?.name || "Канал",
+                                  createdAt: m.createdAt,
+                                });
+                              }}
+                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors"
+                            >
+                              Слушать
+                            </button>
+                          )}
+                        </div>
+                      ));
+                    })()}
+                  </div>
+                )}
+
+                {/* TAB 5: ССЫЛКИ */}
+                {groupProfileTab === "links" && (
+                  <div className="space-y-2 animate-fade-in">
+                    {(() => {
+                      const linkRegex = /(https?:\/\/[^\s]+)/g;
+                      const linkMsgs = messages.filter(m => m.text && linkRegex.test(m.text));
+                      if (linkMsgs.length === 0) {
+                        return (
+                          <div className="py-12 text-center text-slate-400 text-xs">
+                            <Share2 size={32} className="mx-auto mb-2 text-slate-300" />
+                            В этом канале пока нет внешних ссылок
+                          </div>
+                        );
+                      }
+                      return linkMsgs.map((m, idx) => {
+                        const matches = m.text.match(linkRegex) || [];
+                        return matches.map((url, uIdx) => (
+                          <div 
+                            key={`${m.id}-${uIdx}`}
+                            className="p-3 bg-slate-50 rounded-xl flex items-center justify-between border border-slate-100 hover:bg-slate-100 transition-colors"
+                          >
+                            <div className="min-w-0 flex-1 pr-2">
+                              <p className="text-xs font-bold text-blue-600 truncate">{url}</p>
+                              <p className="text-[10px] text-slate-400 truncate">{m.text}</p>
+                            </div>
+                            <a 
+                              href={url} 
+                              target="_blank" 
+                              rel="noopener noreferrer"
+                              className="p-2 text-slate-500 hover:text-blue-600 rounded-lg shrink-0"
+                            >
+                              <ChevronRight size={16} />
+                            </a>
+                          </div>
+                        ));
+                      });
+                    })()}
+                  </div>
+                )}
+
+                {/* TAB 6: УЧАСТНИКИ / ПОДПИСЧИКИ */}
+                {groupProfileTab === "members" && (
+                  <div className="space-y-3 animate-fade-in">
                     <div className="flex items-center justify-between">
-                      <p className="text-xs font-bold text-slate-400 uppercase">Участники ({(activeChatData as Group)?.members?.length})</p>
-                      {((activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'owner' || (activeChatData as Group)?.memberRoles?.[user?.uid || ''] === 'admin') && (
+                      <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                        {(activeChatData as Group)?.type === "channel" ? "Подписчики" : "Участники"} ({(activeChatData as Group)?.members?.length || 1})
+                      </p>
+                      {((activeChatData as Group)?.memberRoles?.[user?.uid || ""] === "owner" || (activeChatData as Group)?.memberRoles?.[user?.uid || ""] === "admin") && (
                         <button 
                           onClick={() => setShowInviteModal(true)}
                           className="text-xs font-bold text-blue-600 hover:text-blue-700"
@@ -7363,15 +9913,15 @@ function AppContent() {
                         </button>
                       )}
                     </div>
-                    <div className="max-h-40 overflow-y-auto space-y-2">
+                    <div className="max-h-60 overflow-y-auto space-y-2 custom-scrollbar">
                       {(activeChatData as Group)?.members?.map(uid => {
                         const m = users.find(u => u.uid === uid);
-                        const role = (activeChatData as Group)?.memberRoles?.[uid] || 'member';
-                        const myRole = (activeChatData as Group)?.memberRoles?.[user?.uid || ''] || 'member';
-                        const canEditRole = (myRole === 'owner' && uid !== user?.uid) || (myRole === 'admin' && role === 'member');
+                        const role = (activeChatData as Group)?.memberRoles?.[uid] || "member";
+                        const myRole = (activeChatData as Group)?.memberRoles?.[user?.uid || ""] || "member";
+                        const canEditRole = (myRole === "owner" && uid !== user?.uid) || (myRole === "admin" && role === "member");
                         
                         return (
-                          <div key={uid} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded-xl transition-colors group">
+                          <div key={uid} className="flex items-center justify-between p-2.5 hover:bg-slate-50 rounded-xl transition-colors border border-slate-100">
                             <button 
                               onClick={() => {
                                 if (m) {
@@ -7379,73 +9929,74 @@ function AppContent() {
                                   setShowProfile(true);
                                 }
                               }}
-                              className="flex items-center gap-3 flex-1 text-left active:scale-[0.98] transition-transform"
+                              className="flex items-center gap-3 flex-1 text-left active:scale-[0.98] transition-transform min-w-0 pr-2"
                             >
-                              <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-xs font-bold overflow-hidden">
-                                {m?.photoURL ? <img src={m.photoURL} alt="" /> : (m?.displayName?.[0] || '?')}
+                              <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-xs font-bold overflow-hidden shrink-0">
+                                {m?.photoURL ? <img src={m.photoURL} alt="" className="w-full h-full object-cover" /> : (m?.displayName?.[0] || "?")}
                               </div>
-                              <div className="flex flex-col">
-                                <span className={cn("text-sm font-medium", m?.uid === user?.uid && "text-blue-600")}>
-                                  {m?.displayName || 'Загрузка...'} {m?.uid === user?.uid && '(Вы)'}
+                              <div className="flex flex-col min-w-0">
+                                <span className={cn("text-xs font-bold truncate", m?.uid === user?.uid && "text-blue-600")}>
+                                  {m?.displayName || "Участник"} {m?.uid === user?.uid && "(Вы)"}
                                 </span>
-                                {m?.username && <span className="text-[10px] text-slate-400 italic">@{m.username}</span>}
+                                {m?.username && <span className="text-[10px] text-slate-400 italic truncate">@{m.username}</span>}
                               </div>
                             </button>
-                            <div className="flex items-center gap-2">
-                              {myRole !== 'member' && role !== 'owner' && uid !== user?.uid && (
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {myRole !== "member" && role !== "owner" && uid !== user?.uid && (
                                 <>
                                   <button 
                                     onClick={() => handleBanUserFromComments((activeChatData as Group).id, uid)}
-                                    className="p-1.5 hover:bg-orange-50 text-orange-500 rounded-lg transition-colors"
+                                    className="p-1 hover:bg-orange-50 text-orange-500 rounded-lg transition-colors"
                                     title="Запретить комментировать"
                                   >
                                     <MessageSquareOff size={14} />
                                   </button>
                                   <button 
                                     onClick={() => handleBanUser((activeChatData as Group).id, uid)}
-                                    className="p-1.5 hover:bg-red-50 text-red-500 rounded-lg transition-colors"
-                                    title="Заблокировать"
+                                    className="p-1 hover:bg-red-50 text-red-500 rounded-lg transition-colors"
+                                    title="Исключить"
                                   >
                                     <UserMinus size={14} />
                                   </button>
                                 </>
                               )}
                               {canEditRole ? (
-                              <select 
-                                value={role}
-                                onChange={async (e) => {
-                                  const newRole = e.target.value;
-                                  const newRoles = { ...(activeChatData as Group).memberRoles, [uid]: newRole };
-                                  socket?.emit('group:update', { id: (activeChatData as Group).id, update: { memberRoles: newRoles } });
-                                  addToast('Роль обновлена', 'success');
-                                }}
-                                className={cn(
-                                  "text-[10px] font-bold px-2 py-1 rounded-full border-none cursor-pointer outline-none",
-                                  role === 'owner' ? "bg-amber-100 text-amber-600" : 
-                                  role === 'admin' ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-500"
-                                )}
-                              >
-                                {myRole === 'owner' && <option value="owner">Владелец</option>}
-                                <option value="admin">Админ</option>
-                                <option value="member">Участник</option>
-                              </select>
-                            ) : (
-                              <span className={cn(
-                                "text-[10px] font-bold px-2 py-1 rounded-full",
-                                role === 'owner' ? "bg-amber-100 text-amber-600" : 
-                                role === 'admin' ? "bg-blue-100 text-blue-600" : "bg-slate-100 text-slate-500"
-                              )}>
-                                {role === 'owner' ? 'Владелец' : role === 'admin' ? 'Админ' : 'Участник'}
-                              </span>
-                            )}
+                                <select 
+                                  value={role}
+                                  onChange={async (e) => {
+                                    const newRole = e.target.value;
+                                    const newRoles = { ...(activeChatData as Group).memberRoles, [uid]: newRole };
+                                    socket?.emit("group:update", { id: (activeChatData as Group).id, update: { memberRoles: newRoles } });
+                                    addToast("Роль обновлена", "success");
+                                  }}
+                                  className={cn(
+                                    "text-[10px] font-bold px-2 py-0.5 rounded-full border-none cursor-pointer outline-none",
+                                    role === "owner" ? "bg-amber-100 text-amber-700" : 
+                                    role === "admin" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"
+                                  )}
+                                >
+                                  {myRole === "owner" && <option value="owner">Владелец</option>}
+                                  <option value="admin">Админ</option>
+                                  <option value="member">Участник</option>
+                                </select>
+                              ) : (
+                                <span className={cn(
+                                  "text-[10px] font-bold px-2 py-0.5 rounded-full",
+                                  role === "owner" ? "bg-amber-100 text-amber-700" : 
+                                  role === "admin" ? "bg-blue-100 text-blue-700" : "bg-slate-100 text-slate-600"
+                                )}>
+                                  {role === "owner" ? "Владелец" : role === "admin" ? "Админ" : "Участник"}
+                                </span>
+                              )}
                             </div>
                           </div>
                         );
                       })}
                     </div>
                   </div>
+                )}
 
-                  <div className="pt-2">
+                <div className="pt-2">
                     <button
                       onClick={() => {
                         handleOpenReport(
@@ -7462,7 +10013,6 @@ function AppContent() {
                     </button>
                   </div>
                 </div>
-              </div>
             </motion.div>
           </motion.div>
         )}
@@ -8058,10 +10608,12 @@ function AppContent() {
                 </button>
                 <div className="flex items-center gap-3 cursor-pointer" onClick={() => {
                   if (activeThread) return;
-                  if (selectedChat.id === user?.uid) {
-                    setShowSavedNotebookModal(true);
-                  } else if (selectedChat.type !== 'user') {
+                  if (selectedChat.type === 'channel' || selectedChat.type === 'group') {
+                    setGroupProfileTab('info');
                     setShowGroupInfo(true);
+                  } else if (selectedChat.id === user?.uid) {
+                    setViewedProfile(profile);
+                    setShowProfile(true);
                   } else {
                     setViewedProfile(activeChatData as UserProfile);
                     setShowProfile(true);
@@ -8355,10 +10907,10 @@ function AppContent() {
               onPointerMove={handleContainerPointerMove}
               onPointerUp={handleContainerPointerUp}
               onPointerCancel={handleContainerPointerUp}
-              className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full select-none"
-              style={{ touchAction: isSelectionMode ? 'none' : 'pan-y' }}
+              className="flex-1 min-h-0 overflow-y-scroll overflow-x-hidden p-4 sm:p-6 space-y-4 bg-slate-50/50 relative custom-scrollbar w-full select-none touch-pan-y"
+              style={{ touchAction: 'pan-y', WebkitOverflowScrolling: 'touch' }}
             >
-              {isLoadingMessages ? (
+              {isLoadingMessages && messages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full gap-4">
                   <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin" />
                   <motion.div
@@ -8503,11 +11055,7 @@ function AppContent() {
                               onLongPressSelect={(id, startY) => handleLongPressSelection(id, startY)}
                               onSingleTap={(e, m) => {
                                 const target = e?.target as HTMLElement;
-                                const isInteractiveControl = 
-                                  target?.closest('button') ||
-                                  target?.closest('input[type="range"]') ||
-                                  target?.closest('a') ||
-                                  target?.closest('[data-subtitle-btn="true"]');
+                                const isInteractiveControl = isInteractiveMessageElement(target);
 
                                 if (isInteractiveControl) {
                                   if (contextMenu) setContextMenu(null);
@@ -8616,14 +11164,25 @@ function AppContent() {
                           const repliedMsg = messages.find(m => m.id === msg.replyToId);
                           return (
                             <div 
-                              onClick={(e) => { e.stopPropagation(); repliedMsg && scrollToMessage(msg.replyToId!); }}
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                scrollToMessage(msg.replyToId!); 
+                              }}
                               className={cn(
-                                "mb-2 p-2 rounded-lg text-[10px] border-l-4 transition-opacity",
-                                repliedMsg ? "cursor-pointer hover:opacity-80" : "opacity-60 italic",
-                                isMe ? "bg-blue-700/50 border-blue-300" : "bg-slate-100 border-slate-300"
+                                "mb-2 p-2.5 rounded-xl text-[11px] border-l-4 transition-all flex items-center justify-between gap-2 shadow-2xs select-none active:scale-[0.98] cursor-pointer",
+                                isMe 
+                                  ? "bg-blue-700/60 border-blue-200 text-white hover:bg-blue-700/80" 
+                                  : "bg-slate-100 dark:bg-slate-800 border-blue-500 text-slate-800 dark:text-slate-100 hover:bg-slate-200/80 dark:hover:bg-slate-700/80"
                               )}
+                              title="Нажмите, чтобы плавно перейти к исходному сообщению"
                             >
-                              {repliedMsg ? (repliedMsg.text || (repliedMsg.type === 'image' ? 'Фотография' : repliedMsg.type === 'video' ? 'Видео' : repliedMsg.type === 'game' ? 'Игра' : 'Файл')) : 'Удаленное сообщение'}
+                              <div className="min-w-0 flex-1 truncate">
+                                <span className="font-bold block text-[9px] uppercase tracking-wider opacity-75">В ответ на:</span>
+                                <span className="font-medium truncate block">
+                                  {repliedMsg ? (repliedMsg.text || (repliedMsg.type === 'image' ? '📷 Фотография' : repliedMsg.type === 'video' ? '🎬 Видео' : repliedMsg.type === 'audio' ? '🎵 Голосовое/Аудио' : repliedMsg.type === 'game' ? '🎮 Игра' : '📁 Файл')) : 'Исходное сообщение в истории'}
+                                </span>
+                              </div>
+                              <Reply size={14} className="shrink-0 opacity-80 rotate-180" />
                             </div>
                           );
                         })()}
@@ -8666,6 +11225,8 @@ function AppContent() {
                               });
                             }}
                             onSeek={(time) => voicePlayer.seekVoice(time)}
+                            onPinToProfile={handlePinTrackToProfile}
+                            isPinned={profile?.pinnedTrack?.id === msg.id || profile?.pinnedTrack?.url === msg.fileUrl}
                           />
                         )}
 
@@ -8874,7 +11435,12 @@ function AppContent() {
                                 return (
                                   <div 
                                     key={option.id}
-                                    onClick={async () => {
+                                    data-poll-option="true"
+                                    data-no-menu="true"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onPointerUp={(e) => e.stopPropagation()}
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
                                       if (!user || msg.poll?.closed) return;
                                       if (!msg.poll!.isMultipleChoice && hasVoted && !hasVotedForThis) return;
                                       
@@ -8945,6 +11511,10 @@ function AppContent() {
                               return (
                                 <button
                                   key={emoji}
+                                  data-reaction={emoji}
+                                  data-no-menu="true"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onPointerUp={(e) => e.stopPropagation()}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     toggleReaction(msg.id, emoji);
@@ -8971,6 +11541,10 @@ function AppContent() {
                                 {row.map((btn, btnIdx) => (
                                   <button
                                     key={btnIdx}
+                                    data-interactive="true"
+                                    data-no-menu="true"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onPointerUp={(e) => e.stopPropagation()}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (btn.url) {
@@ -9070,11 +11644,23 @@ function AppContent() {
                           "absolute top-0 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1",
                           isMe ? "right-full mr-2" : "left-full ml-2"
                         )}>
-                          <button onClick={() => setReplyTo(msg)} className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600">
+                          <button 
+                            data-interactive="true"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); setReplyTo(msg); }} 
+                            className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600"
+                            title="Ответить"
+                          >
                             <Reply size={14} />
                           </button>
                           {isMe && (
-                            <button onClick={() => { setEditingMessage(msg); setInputText(msg.text); }} className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600">
+                            <button 
+                              data-interactive="true"
+                              onPointerDown={(e) => e.stopPropagation()}
+                              onClick={(e) => { e.stopPropagation(); setEditingMessage(msg); setInputText(msg.text); }} 
+                              className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600"
+                              title="Редактировать"
+                            >
                               <Edit2 size={14} />
                             </button>
                           )}
@@ -9082,29 +11668,44 @@ function AppContent() {
                           {(isMe || (selectedChat.type !== 'user' && (groups.find(g => g.id === selectedChat.id)?.memberRoles?.[user?.uid || ''] !== 'member' || isGlobalAdmin))) && (
                             <div className="relative">
                               <button 
-                                onClick={() => setDeleteMenuMsgId(deleteMenuMsgId === msg.id ? null : msg.id)} 
+                                data-interactive="true"
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => { e.stopPropagation(); setDeleteMenuMsgId(deleteMenuMsgId === msg.id ? null : msg.id); }} 
                                 className="p-1.5 bg-white shadow-md rounded-lg hover:bg-red-50 text-red-500"
+                                title="Удалить"
                               >
                                 <Trash2 size={14} />
                               </button>
                               
                               {deleteMenuMsgId === msg.id && (
-                                <div className="absolute bottom-full right-0 mb-2 bg-white shadow-xl rounded-xl border border-slate-100 p-2 z-50 min-w-[180px]">
+                                <div 
+                                  data-interactive="true"
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="absolute bottom-full right-0 mb-2 bg-white shadow-xl rounded-xl border border-slate-100 p-2 z-50 min-w-[180px]"
+                                >
                                   <button 
-                                    onClick={() => { deleteMessage(msg.id, false); setDeleteMenuMsgId(null); }}
+                                    data-interactive="true"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); deleteMessage(msg.id, false); setDeleteMenuMsgId(null); }}
                                     className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 rounded-lg flex items-center gap-2"
                                   >
                                     Удалить
                                   </button>
                                   <button 
-                                    onClick={() => { deleteMessage(msg.id, false, 5000); setDeleteMenuMsgId(null); }}
+                                    data-interactive="true"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => { e.stopPropagation(); deleteMessage(msg.id, false, 5000); setDeleteMenuMsgId(null); }}
                                     className="w-full text-left px-3 py-2 text-xs hover:bg-slate-50 rounded-lg flex items-center gap-2"
                                   >
                                     Удалить (5 сек)
                                   </button>
                                   {canDeleteForEveryoneState(msg) && (
                                     <button 
-                                      onClick={() => {
+                                      data-interactive="true"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
                                         setDeleteMenuMsgId(null);
                                         setConfirmDeleteModal({
                                           isOpen: true,
@@ -9123,7 +11724,13 @@ function AppContent() {
                               )}
                             </div>
                           )}
-                          <button onClick={() => copyToClipboard(msg.text)} className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600">
+                          <button 
+                            data-interactive="true"
+                            onPointerDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); copyToClipboard(msg.text); }} 
+                            className="p-1.5 bg-white shadow-md rounded-lg hover:bg-slate-50 text-slate-600"
+                            title="Скопировать"
+                          >
                             <Copy size={14} />
                           </button>
                         </div>
@@ -9254,7 +11861,7 @@ function AppContent() {
                 </button>
                 
                 {/* Copy text - strictly disallowed for voice, stickers, images, and files */}
-                {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
+                {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '������ Голосовое сообщение' && (
                   <button 
                     onClick={() => { copyToClipboard(contextMenu.msg.text); setContextMenu(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
@@ -9560,9 +12167,57 @@ function AppContent() {
 
                 if (!canSendMessages && !canSendMedia) {
                   return (
-                    <div className="p-3 bg-slate-50 rounded-xl text-center text-xs text-slate-500 font-medium">
-                      {isChannel && !activeThread ? 'Только администраторы могут публиковать записи' : 
-                       isBannedFromComments && activeThread ? 'Вам запрещено комментировать' : 'Отправка сообщений ограничена'}
+                    <div className="p-2 sm:p-2.5 bg-white dark:bg-slate-850 border border-slate-200/90 dark:border-slate-700/80 shadow-md rounded-2xl mx-2 mb-2 flex items-center justify-between gap-2 ring-1 ring-slate-900/5">
+                      {/* Left: Notification Toggle (Mute / Unmute channel) */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          toggleMuteChat(selectedChat.id);
+                          addToast(mutedChats.includes(selectedChat.id) ? 'Уведомления включены' : 'Звук отключен для канала', 'info');
+                        }}
+                        className="flex-1 py-2.5 px-4 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 active:scale-95 border border-slate-200/70 dark:border-slate-700/70"
+                        title={mutedChats.includes(selectedChat.id) ? 'Включить уведомления' : 'Отключить звук'}
+                      >
+                        {mutedChats.includes(selectedChat.id) ? (
+                          <>
+                            <BellOff size={16} className="text-amber-500 shrink-0" />
+                            <span className="truncate">ВКЛЮЧИТЬ ЗВУК</span>
+                          </>
+                        ) : (
+                          <>
+                            <Bell size={16} className="text-blue-600 shrink-0" />
+                            <span className="truncate">ОТКЛЮЧИТЬ ЗВУК</span>
+                          </>
+                        )}
+                      </button>
+
+                      {/* Right: Comments / Discuss button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const lastMsg = messages.slice().reverse().find(m => !m.threadId && !isMessageDeletedTombstone(m.id));
+                          if (lastMsg) {
+                            setActiveThread(lastMsg);
+                          } else {
+                            setShowGroupInfo(true);
+                          }
+                        }}
+                        className="py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 active:scale-95 shadow-xs shrink-0"
+                        title="Открыть комментарии и обсуждения"
+                      >
+                        <MessageSquare size={16} />
+                        <span className="hidden sm:inline">Обсудить</span>
+                      </button>
+
+                      {/* Channel profile & share */}
+                      <button
+                        type="button"
+                        onClick={() => setShowGroupInfo(true)}
+                        className="p-2.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl transition-all border border-slate-200/70 dark:border-slate-700/70 shrink-0"
+                        title="Профиль и информация о канале"
+                      >
+                        <Info size={16} />
+                      </button>
                     </div>
                   );
                 }
@@ -9646,51 +12301,41 @@ function AppContent() {
 
                     <form onSubmit={handleSendMessage} className="flex items-end gap-2 min-w-0 px-2 pb-2">
                       <div 
-                        className="flex-1 min-w-0 bg-slate-100 rounded-2xl flex items-end p-3 transition-all focus-within:ring-2 focus-within:ring-blue-500/20 cursor-text min-h-[64px]"
+                        className="flex-1 min-w-0 rounded-2xl flex items-end p-2.5 transition-all cursor-text min-h-[56px] bg-white dark:bg-slate-850 focus-within:ring-2 focus-within:ring-blue-500/40 border border-slate-200/90 dark:border-slate-700/80 shadow-md ring-1 ring-slate-900/5 dark:ring-white/5"
                         onClick={() => messageInputRef.current?.focus()}
                       >
-                        <div className="flex flex-col gap-1 items-center shrink-0 mr-1 py-1">
-                          <button 
-                            type="button"
-                            onClick={() => setIsEncryptionEnabled(!isEncryptionEnabled)}
-                            className={cn(
-                              "p-2 rounded-xl transition-colors",
-                              isEncryptionEnabled ? "bg-blue-500 text-white" : "hover:bg-slate-200 text-slate-500"
-                            )}
-                            title="Шифрование (Cipher)"
-                          >
-                            <Shield size={20} />
-                          </button>
-                          
-                          {selectedChat.type === 'channel' && ['owner', 'admin'].includes((activeChatData as Group)?.memberRoles?.[user?.uid || ''] || '') && !activeThread && (
-                            <button
-                              type="button"
-                              onClick={() => setPostAsMe(!postAsMe)}
-                              className={cn(
-                                "p-2 rounded-xl transition-colors",
-                                postAsMe ? "bg-indigo-500 text-white" : "hover:bg-slate-200 text-slate-500"
-                              )}
-                              title={postAsMe ? "Публикация: От моего лица" : "Публикация: От лица канала"}
-                            >
-                              <UserIcon size={20} />
-                            </button>
-                          )}
-
-                          {(selectedChat.type === 'channel' || (activeChatData as Group)?.type === 'channel' || selectedChat.id === 'global_channel') && (
+                        {/* Compact left side: Post as Channel toggle, Attachment & quick toggles */}
+                        <div className="flex items-center gap-1.5 shrink-0 mr-1.5 py-1">
+                          {/* Post As Channel vs Post As Yourself Toggle for channels */}
+                          {(selectedChat.type === 'channel' || (activeChatData as Group)?.type === 'channel') && (
                             <button
                               type="button"
                               onClick={() => {
-                                setIsSilentSend(!isSilentSend);
-                                triggerHapticFeedback();
-                                addToast(!isSilentSend ? 'Тихое сообщение: участники получат публикацию без звука' : 'Обычное сообщение: со звуком', 'info');
+                                const next = !postAsMe;
+                                setPostAsMe(next);
+                                addToast(next ? 'Публикация от своего имени' : 'Публикация от имени канала', 'info');
                               }}
                               className={cn(
-                                "p-2 rounded-xl transition-all",
-                                isSilentSend ? "bg-amber-500 text-white shadow-sm" : "hover:bg-slate-200 text-slate-500"
+                                "w-8 h-8 rounded-xl flex items-center justify-center transition-all p-0.5 border shadow-2xs shrink-0 active:scale-95",
+                                !postAsMe 
+                                  ? "border-blue-500 bg-blue-50 text-blue-700 ring-1 ring-blue-500/30" 
+                                  : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                               )}
-                              title={isSilentSend ? "Тихое сообщение (без звука) активно" : "Отправка со звуком (нажмите для тихого сообщения)"}
+                              title={!postAsMe ? "Публикация от имени канала (нажмите для смены на личный)" : "Публикация от своего имени (нажмите для смены на канал)"}
                             >
-                              {isSilentSend ? <BellOff size={20} /> : <Bell size={20} />}
+                              {!postAsMe ? (
+                                (activeChatData as Group)?.photoURL ? (
+                                  <img src={(activeChatData as Group).photoURL} alt="" className="w-full h-full object-cover rounded-lg" />
+                                ) : (
+                                  <span className="text-[10px] font-black uppercase text-blue-600">{(activeChatData as Group)?.name?.[0] || 'К'}</span>
+                                )
+                              ) : (
+                                profile?.photoURL || user?.photoURL ? (
+                                  <img src={profile?.photoURL || user?.photoURL || ''} alt="" className="w-full h-full object-cover rounded-lg" />
+                                ) : (
+                                  <span className="text-[10px] font-black uppercase text-slate-700">{(profile?.displayName || 'Я')[0]}</span>
+                                )
+                              )}
                             </button>
                           )}
 
@@ -9698,11 +12343,14 @@ function AppContent() {
                             <div className="relative">
                               <button 
                                 ref={attachmentMenuButtonRef}
-                                onClick={() => setShowAttachmentMenu(!showAttachmentMenu)}
-                                className="p-2 hover:bg-slate-200 rounded-xl cursor-pointer transition-colors text-slate-500"
-                                title="Прикрепить"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowAttachmentMenu(!showAttachmentMenu);
+                                }}
+                                className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl cursor-pointer transition-colors text-slate-500 hover:text-blue-600 active:scale-95"
+                                title="Прикрепить файл, фото или опрос"
                               >
-                                <Paperclip size={20} />
+                                <Paperclip size={22} />
                               </button>
                               
                               <AnimatePresence>
@@ -9712,62 +12360,120 @@ function AppContent() {
                                     initial={{ opacity: 0, y: 10, scale: 0.95 }}
                                     animate={{ opacity: 1, y: 0, scale: 1 }}
                                     exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                    className="absolute bottom-full left-0 mb-2 w-48 bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden z-50"
+                                    className="absolute bottom-full left-0 mb-2 w-56 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-100 dark:border-slate-800 overflow-hidden z-50 divide-y divide-slate-100 dark:divide-slate-800"
                                   >
-                                    <label className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors text-sm text-slate-700">
-                                      <ImageIcon size={18} className="text-blue-500" />
-                                      <span>Медиа / Файл</span>
-                                      <input type="file" className="hidden" onChange={handleFileUpload} />
-                                    </label>
-                                    <button 
-                                      onClick={() => {
-                                        setShowAttachmentMenu(false);
-                                        setShowPollModal(true);
-                                      }}
-                                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors text-sm text-slate-700 text-left"
-                                    >
-                                      <div className="w-[18px] h-[18px] flex items-center justify-center text-blue-500">📊</div>
-                                      <span>Опрос</span>
-                                    </button>
-                                    <button 
-                                      onClick={() => {
-                                        setShowAttachmentMenu(false);
-                                        handleSendGame('tictactoe');
-                                      }}
-                                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors text-sm text-slate-700 text-left"
-                                    >
-                                      <Gamepad2 size={18} className="text-purple-500" />
-                                      <span>Крестики-нолики</span>
-                                    </button>
-                                    <button 
-                                      onClick={() => {
-                                        setShowAttachmentMenu(false);
-                                        handleSendGame('words');
-                                      }}
-                                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 cursor-pointer transition-colors text-sm text-slate-700 text-left border-t border-slate-50"
-                                    >
-                                      <FileText size={18} className="text-orange-500" />
-                                      <span>Игра в слова</span>
-                                    </button>
+                                    <div className="p-1">
+                                      <label className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200">
+                                        <ImageIcon size={18} className="text-blue-500" />
+                                        <span>Медиа / Файл</span>
+                                        <input type="file" className="hidden" onChange={handleFileUpload} />
+                                      </label>
+                                      <button 
+                                        type="button"
+                                        onClick={() => {
+                                          setShowAttachmentMenu(false);
+                                          setShowPollModal(true);
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200 text-left"
+                                      >
+                                        <div className="w-[18px] h-[18px] flex items-center justify-center text-blue-500 font-bold">📊</div>
+                                        <span>Создать опрос</span>
+                                      </button>
+                                      <button 
+                                        type="button"
+                                        onClick={() => {
+                                          setShowAttachmentMenu(false);
+                                          handleSendGame('tictactoe');
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200 text-left"
+                                      >
+                                        <Gamepad2 size={18} className="text-purple-500" />
+                                        <span>Крестики-нолики</span>
+                                      </button>
+                                      <button 
+                                        type="button"
+                                        onClick={() => {
+                                          setShowAttachmentMenu(false);
+                                          handleSendGame('words');
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200 text-left"
+                                      >
+                                        <FileText size={18} className="text-orange-500" />
+                                        <span>Игра в слова</span>
+                                      </button>
+                                    </div>
+                                    <div className="p-1">
+                                      <button 
+                                        type="button"
+                                        onClick={() => {
+                                          setIsEncryptionEnabled(!isEncryptionEnabled);
+                                          setShowAttachmentMenu(false);
+                                          if (!isEncryptionEnabled) {
+                                            addToast('Включена защита от случайной отправки. Нажмите снова на щит для разблокировки', 'info');
+                                          } else {
+                                            addToast('Защита от случайной отправки отключена', 'info');
+                                          }
+                                        }}
+                                        className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200 text-left"
+                                      >
+                                        <Shield size={18} className={isEncryptionEnabled ? "text-blue-600" : "text-slate-400"} />
+                                        <span>Защита от отправки: {isEncryptionEnabled ? 'ВКЛ' : 'ВЫКЛ'}</span>
+                                      </button>
+                                      {(selectedChat?.type === 'channel' || (activeChatData as Group)?.type === 'channel') && (
+                                        <button 
+                                          type="button"
+                                          onClick={() => {
+                                            setIsSilentSend(!isSilentSend);
+                                            setShowAttachmentMenu(false);
+                                            addToast(!isSilentSend ? 'Тихое сообщение в канале: без звука' : 'Обычное сообщение: со звуком', 'info');
+                                          }}
+                                          className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl cursor-pointer transition-colors text-xs font-semibold text-slate-700 dark:text-slate-200 text-left"
+                                        >
+                                          <BellOff size={18} className={isSilentSend ? "text-amber-600" : "text-slate-400"} />
+                                          <span>Без звука в канале: {isSilentSend ? 'ВКЛ' : 'ВЫКЛ'}</span>
+                                        </button>
+                                      )}
+                                    </div>
                                   </motion.div>
                                 )}
                               </AnimatePresence>
                             </div>
                           )}
+
+                          {isEncryptionEnabled && (
+                            <span 
+                              onClick={() => {
+                                setIsEncryptionEnabled(false);
+                                addToast('Защита от случайной отправки отключена', 'info');
+                              }}
+                              className="px-2 py-0.5 rounded-md bg-blue-100 hover:bg-blue-200 text-blue-700 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors" 
+                              title="Защита от случайной отправки включена. Нажмите, чтобы снять защиту"
+                            >
+                              <Shield size={12} className="fill-blue-500/20" />
+                              <span className="hidden sm:inline">Защита ВКЛ</span>
+                            </span>
+                          )}
+                          {isSilentSend && (selectedChat?.type === 'channel' || (activeChatData as Group)?.type === 'channel') && (
+                            <span className="p-1 rounded-md bg-amber-100 text-amber-700 text-[10px]" title="Тихое сообщение в канале">
+                              <BellOff size={13} />
+                            </span>
+                          )}
                         </div>
+
+                        {/* Center: Wide spacious textarea */}
                         <textarea 
                           ref={messageInputRef}
                           rows={1}
                           disabled={!canSendMessages}
                           onPaste={handlePaste}
-                          placeholder={canSendMessages ? "Напишите сообщение..." : (((activeChatData as any)?.mutedMembers?.[user?.uid || ''] && Date.now() < (activeChatData as any).mutedMembers[user?.uid || '']) ? "Вы замучены ботом/админом" : "Отправка текста ограничена")} 
-                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm py-3 px-2 resize-none max-h-32 overflow-y-auto"
+                          placeholder={canSendMessages ? "Напишите сообщение..." : "Отправка текста ограничена"} 
+                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-white placeholder:text-slate-400"
                           value={inputText}
                           onChange={(e) => {
                             setInputText(e.target.value);
                             handleTyping();
                             e.target.style.height = 'auto';
-                            e.target.style.height = Math.min(e.target.scrollHeight, 128) + 'px';
+                            e.target.style.height = Math.min(e.target.scrollHeight, 144) + 'px';
                           }}
                           onKeyDown={(e) => {
                             const isMobile = window.innerWidth < 768 || navigator.maxTouchPoints > 0;
@@ -9777,67 +12483,71 @@ function AppContent() {
                             }
                           }}
                         />
-                        <div className="flex items-center shrink-0 relative">
+
+                        {/* Square Action Cluster (2x2): Compact square layout gives maximum width to textarea */}
+                        <div className="grid grid-cols-2 gap-1 shrink-0 p-1 bg-slate-200/60 dark:bg-slate-700/60 rounded-xl self-center mr-0.5 shadow-xs">
                           <button 
                             type="button" 
                             onClick={() => setShowStickersModal(true)}
-                            className="p-2 hover:bg-slate-200 rounded-xl transition-colors text-slate-500"
-                            title="Стикеры"
+                            className="w-7 h-7 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors text-slate-600 dark:text-slate-300 active:scale-95 shadow-2xs"
+                            title="Стикеры и смайлы"
                           >
-                            <Smile size={20} />
+                            <Smile size={16} />
+                          </button>
+                          <button 
+                            type="button" 
+                            onClick={() => setShowTextSafetyModal(true)}
+                            className="w-7 h-7 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors text-slate-600 hover:text-indigo-600 active:scale-95 shadow-2xs"
+                            title="Правовой щит (Кодексы РФ, рекомендации)"
+                          >
+                            <Scale size={16} />
+                          </button>
+                          {/* Slot 3: Shield Protection from Accidental Sending */}
+                          <button 
+                            type="button" 
+                            onClick={() => {
+                              setIsEncryptionEnabled(!isEncryptionEnabled);
+                              if (!isEncryptionEnabled) {
+                                addToast('Включена защита от случайной отправки. Нажмите снова на щит для разблокировки', 'info');
+                              } else {
+                                addToast('Защита от случайной отправки отключена', 'info');
+                              }
+                            }}
+                            className={cn(
+                              "w-7 h-7 flex items-center justify-center rounded-lg transition-colors active:scale-95 shadow-2xs",
+                              isEncryptionEnabled 
+                                ? "bg-blue-600 text-white shadow-sm ring-1 ring-blue-400" 
+                                : "bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300"
+                            )}
+                            title={isEncryptionEnabled ? "Защита от случайной отправки: ВКЛ (Нажмите для снятия)" : "Защита от случайной отправки: ВЫКЛ"}
+                          >
+                            <Shield size={15} className={isEncryptionEnabled ? "fill-white/20" : ""} />
                           </button>
                           <button 
                             type="button" 
                             onClick={() => addToast('Форматирование: **жирный**, *курсив*, ~~зачеркнутый~~, __подчеркнутый__', 'info')}
-                            className="p-2 hover:bg-slate-200 rounded-xl transition-colors text-slate-500"
-                            title="Подсказка по форматированию"
+                            className="w-7 h-7 flex items-center justify-center bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg transition-colors text-slate-600 dark:text-slate-300 active:scale-95 shadow-2xs"
+                            title="Подсказка по форматированию текста"
                           >
-                            <Info size={20} />
+                            <Info size={15} />
                           </button>
                         </div>
                       </div>
+
+                      {/* Right outside: Big circular Voice/Send button as drawn in screenshot */}
                       {inputText.trim() || editingMessage ? (
-                        <div className="flex flex-col gap-1 relative">
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setIsSilentSend(!isSilentSend);
-                              triggerHapticFeedback();
-                              addToast(!isSilentSend ? 'Тихое сообщение: получатели увидят без звука' : 'Обычное сообщение: со звуком', 'info');
-                            }}
-                            className={cn(
-                              "p-2.5 rounded-2xl transition-all flex items-center justify-center",
-                              isSilentSend 
-                                ? "bg-amber-500 text-white shadow-md shadow-amber-200" 
-                                : "bg-slate-100 hover:bg-slate-200 text-slate-500"
-                            )}
-                            title={isSilentSend ? "Тихое сообщение (без звука) включено" : "Отправить без звука (как в Telegram)"}
-                          >
-                            {isSilentSend ? <BellOff size={18} /> : <Bell size={18} />}
-                          </button>
-                          <button 
-                            type="button"
-                            onClick={() => {
-                              setScheduleDate('');
-                              setShowScheduleModal(true);
-                            }}
-                            className="p-2.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-2xl transition-all flex items-center justify-center"
-                            title="Отложенная отправка"
-                          >
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-                          </button>
-                          <button 
-                            type="submit"
-                            disabled={isSending || !canSendMessages}
-                            className={cn(
-                              "p-3 text-white rounded-2xl transition-all shadow-lg flex items-center justify-center min-h-[44px]",
-                              isSending ? "bg-slate-400 animate-pulse" : (isSilentSend ? "bg-amber-600 hover:bg-amber-700 shadow-amber-100" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100")
-                            )}
-                            title={isSilentSend ? "Отправить без звука" : "Отправить"}
-                          >
-                            {isSending ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Send size={20} />}
-                          </button>
-                        </div>
+                        <button 
+                          type="submit"
+                          disabled={isSending || !canSendMessages}
+                          className="w-12 h-12 rounded-full bg-blue-600 hover:bg-blue-500 text-white shadow-lg flex items-center justify-center shrink-0 active:scale-95 transition-all cursor-pointer"
+                          title="Отправить сообщение"
+                        >
+                          {isSending ? (
+                            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          ) : (
+                            <Send size={20} className="translate-x-0.5" />
+                          )}
+                        </button>
                       ) : (
                         <button 
                           type="button"
@@ -9849,12 +12559,16 @@ function AppContent() {
                           onPointerCancel={(e) => { e.preventDefault(); cancelRecording(); }}
                           disabled={isSending || !canSendMessages}
                           className={cn(
-                            "p-4 text-white rounded-2xl transition-all shadow-lg select-none touch-none",
-                            isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse scale-110" : "bg-blue-600 hover:bg-blue-700 shadow-blue-100"
+                            "w-12 h-12 rounded-full text-white shadow-lg flex items-center justify-center shrink-0 select-none touch-none active:scale-95 transition-all cursor-pointer",
+                            isRecording ? "bg-red-500 hover:bg-red-600 animate-pulse scale-110 shadow-red-500/30" : "bg-blue-600 hover:bg-blue-500 shadow-blue-500/20"
                           )}
-                          title="Удерживайте для записи. Свайп влево для отмены."
+                          title="Удерживайте для записи голосового сообщения"
                         >
-                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+                          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+                            <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                            <line x1="12" x2="12" y1="19" y2="22"/>
+                          </svg>
                         </button>
                       )}
                     </form>
@@ -10136,105 +12850,16 @@ function AppContent() {
         )}
       </AnimatePresence>
 
-      {/* Media Viewer Modal */}
-      <AnimatePresence>
-        {selectedMediaIndex !== null && mediaMessages[selectedMediaIndex] && (
-          <div className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/95 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="relative w-full h-full flex flex-col items-center justify-center p-4 sm:p-8"
-              onClick={() => setSelectedMediaIndex(null)}
-            >
-              <div className="absolute top-4 right-4 flex items-center gap-4 z-10">
-                <button 
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const url = mediaMessages[selectedMediaIndex].fileUrl;
-                    if (!url) return;
-                    
-                    if (url.startsWith('firestore://')) {
-                      const { getFileFromFirestore } = await import('./lib/fileStorage');
-                      const fileId = url.replace('firestore://', '');
-                      const fileData = await getFileFromFirestore(fileId);
-                      if (fileData) {
-                        const a = document.createElement('a');
-                        a.href = fileData.url;
-                        a.download = mediaMessages[selectedMediaIndex].fileName || 'media';
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                      }
-                    } else {
-                      const a = document.createElement('a');
-                      a.href = url;
-                      a.download = mediaMessages[selectedMediaIndex].fileName || 'media';
-                      document.body.appendChild(a);
-                      a.click();
-                      document.body.removeChild(a);
-                    }
-                  }}
-                  className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors backdrop-blur-md"
-                >
-                  <Download size={24} />
-                </button>
-                <button 
-                  onClick={() => setSelectedMediaIndex(null)}
-                  className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors backdrop-blur-md"
-                >
-                  <X size={24} />
-                </button>
-              </div>
-
-              {selectedMediaIndex > 0 && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedMediaIndex(Math.max(0, selectedMediaIndex - 1));
-                  }}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors backdrop-blur-md z-10"
-                >
-                  <ChevronLeft size={32} />
-                </button>
-              )}
-
-              {selectedMediaIndex < mediaMessages.length - 1 && (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedMediaIndex(Math.min(mediaMessages.length - 1, selectedMediaIndex + 1));
-                  }}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors backdrop-blur-md z-10"
-                >
-                  <ChevronRight size={32} />
-                </button>
-              )}
-              
-              <div 
-                className="relative max-w-full max-h-full flex items-center justify-center cursor-default"
-                onClick={(e) => e.stopPropagation()}
-                onWheel={(e) => {
-                   if (e.deltaX > 0 && selectedMediaIndex < mediaMessages.length - 1) {
-                      setSelectedMediaIndex(selectedMediaIndex + 1);
-                   } else if (e.deltaX < 0 && selectedMediaIndex > 0) {
-                      setSelectedMediaIndex(selectedMediaIndex - 1);
-                   }
-                }}
-              >
-                <FirestoreMedia 
-                  url={mediaMessages[selectedMediaIndex].fileUrl!} 
-                  type={mediaMessages[selectedMediaIndex].type as 'image' | 'video'}
-                  fileName={mediaMessages[selectedMediaIndex].fileName}
-                  className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl"
-                  controls={true}
-                  autoPlay={true}
-                />
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+      {/* Media Lightbox Viewer Modal with Zoom, Pan, Download */}
+      {selectedMediaIndex !== null && mediaMessages[selectedMediaIndex] && (
+        <MediaLightboxModal
+          isOpen={selectedMediaIndex !== null}
+          onClose={() => setSelectedMediaIndex(null)}
+          mediaList={mediaMessages}
+          currentIndex={selectedMediaIndex}
+          onIndexChange={(newIdx) => setSelectedMediaIndex(newIdx)}
+        />
+      )}
 
       <GlobalVoiceBanner
         activeVoice={voicePlayer.activeVoice}
@@ -10513,6 +13138,50 @@ function AppContent() {
         }}
       />
 
+      {/* Universal Chat Media Modal for all chats, groups, channels */}
+      {selectedChat && (
+        <ChatMediaModal
+          isOpen={showChatMediaModal}
+          onClose={() => setShowChatMediaModal(false)}
+          title={
+            selectedChat.type === 'user'
+              ? (selectedChat.id === user?.uid ? 'Мой блокнот' : (activeChatData as UserProfile)?.displayName || 'Пользователь')
+              : (activeChatData as Group)?.name || (selectedChat.id === 'global_channel' ? 'Ордина Глобал 🌐' : 'Группа')
+          }
+          subtitle={
+            selectedChat.type === 'user'
+              ? (selectedChat.id === user?.uid ? 'Личные заметки и файлы' : `@${(activeChatData as UserProfile)?.username || ''} • ${getUserStatusText(activeChatData as UserProfile)}`)
+              : (selectedChat.id === 'global_channel' ? 'Глобальный канал Ордины' : `${(activeChatData as Group)?.members?.length || 0} участников`)
+          }
+          photoURL={
+            selectedChat.type === 'user'
+              ? (selectedChat.id === user?.uid ? undefined : (activeChatData as UserProfile)?.photoURL)
+              : (activeChatData as Group)?.photoURL
+          }
+          isVerified={
+            selectedChat.type === 'user'
+              ? (activeChatData as UserProfile)?.isVerified
+              : (activeChatData as Group)?.isVerified
+          }
+          isGroup={selectedChat.type !== 'user'}
+          messages={messages}
+          onSelectMessage={(msgId) => {
+            setShowChatMediaModal(false);
+            scrollToMessage(msgId);
+          }}
+          onDeleteMessage={(msgId) => {
+            deleteMessage(msgId, false);
+          }}
+          onOpenEditProfile={
+            selectedChat.type === 'user' && selectedChat.id === user?.uid
+              ? () => { setShowProfile(true); setViewedProfile(profile); }
+              : selectedChat.type !== 'user' && isGroupAdmin
+                ? () => setShowGroupSettings(true)
+                : undefined
+          }
+        />
+      )}
+
       {/* Confirm Delete for Everyone Modal */}
       {confirmDeleteModal && (
         <ConfirmDeleteModal
@@ -10553,7 +13222,7 @@ function AppContent() {
       <ModerationModal
         isOpen={showModerationModal}
         onClose={() => setShowModerationModal(false)}
-        currentUser={profile || ({ uid: user?.uid || '', displayName: 'Администратор', status: 'online', lastSeen: new Date().toISOString() } as UserProfile)}
+        currentUser={profile || ({ uid: user?.uid || '', displayName: profile?.displayName || user?.displayName || 'Пользователь', status: 'online', lastSeen: new Date().toISOString() } as UserProfile)}
         isSuperAdmin={isGlobalAdmin}
         reports={reports}
         moderators={moderatorsList}
@@ -10564,12 +13233,43 @@ function AppContent() {
         onRefreshReports={() => socket?.emit('reports:get', { userId: user?.uid })}
       />
 
-      {/* Bug & Suggestion Direct Admin Contact Modal */}
+      {/* Bug & Suggestion Direct Admin Contact Modal (Moderation Dashboard Style) */}
       <BugReportModal
         isOpen={showBugReportModal}
         onClose={() => setShowBugReportModal(false)}
-        currentUser={user ? { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Пользователь', email: user.email || '' } : null}
+        currentUser={profile || (user ? { uid: user.uid, displayName: user.displayName || 'Пользователь', email: user.email || '' } as any : null)}
+        reports={reports.map(r => ({
+          id: r.id,
+          type: ((r.targetType as string) === 'feature_suggestion' || (r as any).type === 'suggestion' || (r.reasonCategory as string) === 'suggestion' || (r.reasonCategory as string) === 'feature_suggestion' ? 'suggestion' : 'bug') as any,
+          title: r.targetName || (r as any).title || r.reasonCategoryTitle || r.reason || 'Обращение',
+          description: r.description || r.warningText || r.reason || '',
+          contact: r.targetEmail || r.senderEmail || (r as any).contact || '',
+          systemInfo: (r as any).systemInfo || '',
+          status: (r.status || 'pending') as any,
+          senderId: r.senderId || r.reporterId,
+          senderName: r.senderName || r.reporterName,
+          senderEmail: r.senderEmail,
+          createdAt: r.createdAt || new Date().toISOString(),
+          resolvedAt: r.resolvedAt,
+          resolvedBy: r.resolvedBy,
+          resolvedByName: r.resolvedByName,
+          resolutionNote: r.resolutionAction || r.warningText || (r as any).resolutionNote
+        }))}
+        isSuperAdmin={isGlobalAdmin || isUserModerator}
         onSubmit={handleBugReportSubmit}
+        onUpdateStatus={async (reportId, status, note) => {
+          if (socket && socket.connected) {
+            socket.emit('moderation:action', {
+              action: 'dismiss',
+              reportId,
+              reason: note || status,
+              warningText: note
+            });
+          }
+          setReports(prev => prev.map(r => r.id === reportId ? { ...r, status: status as any, resolutionAction: note } : r));
+          addToast('Статус обращения обновлен', 'success');
+        }}
+        onRefresh={() => socket?.emit('reports:get', { userId: user?.uid })}
       />
 
       {/* Share App QR & Live Install Modal */}
@@ -10577,6 +13277,191 @@ function AppContent() {
         isOpen={showShareAppModal}
         onClose={() => setShowShareAppModal(false)}
       />
+
+      {/* Legal Shield Modal (Text risk checker & RF Codes handbook) */}
+      <TextSafetyCheckerModal
+        initialText={inputText}
+        isOpen={showTextSafetyModal}
+        onClose={() => setShowTextSafetyModal(false)}
+        onApplyAndInsert={(safeText) => {
+          setInputText(safeText);
+          addToast('Безопасный текст вставлен в поле ввода', 'success');
+        }}
+      />
+
+      {/* Music Player & Library Modal (YouTube & Yandex Music style) */}
+      <MusicPlayerModal
+        isOpen={showMusicModal}
+        onClose={() => setShowMusicModal(false)}
+        currentUser={user ? { uid: user.uid, displayName: profile?.displayName || user.displayName || 'Пользователь', photoURL: profile?.photoURL || user.photoURL || undefined } : null}
+        currentTrack={musicPlayer.currentTrack}
+        isPlaying={musicPlayer.isPlaying}
+        playbackMode={musicPlayer.playbackMode}
+        repeatMode={musicPlayer.repeatMode}
+        volume={musicPlayer.volume}
+        currentTime={musicPlayer.currentTime}
+        duration={musicPlayer.duration}
+        playbackSpeed={musicPlayer.playbackSpeed}
+        sleepTimerRemaining={musicPlayer.sleepTimerRemaining}
+        playlist={musicPlayer.playlist}
+        isWaveMode={musicPlayer.isWaveMode}
+        waveMood={musicPlayer.waveMood}
+        onPlayTrack={musicPlayer.playTrack}
+        onTogglePlay={musicPlayer.togglePlay}
+        onNextTrack={musicPlayer.nextTrack}
+        onPrevTrack={musicPlayer.prevTrack}
+        onSeek={musicPlayer.seek}
+        onSetVolume={musicPlayer.setVolume}
+        onSetPlaybackMode={musicPlayer.setPlaybackMode}
+        onSetRepeatMode={musicPlayer.setRepeatMode}
+        onSetPlaybackSpeed={musicPlayer.setPlaybackSpeed}
+        onSetSleepTimer={musicPlayer.setSleepTimer}
+        onAddToQueue={musicPlayer.addToQueue}
+        onRemoveFromQueue={musicPlayer.removeFromQueue}
+        onReorderQueue={musicPlayer.reorderQueue}
+        onStartMyWave={musicPlayer.startMyWave}
+        onStopMyWave={musicPlayer.stopMyWave}
+        tracks={musicTracks}
+        playlists={musicPlaylists}
+        onSaveTrack={handleSaveMusicTrack}
+        onDeleteTrack={handleDeleteMusicTrack}
+        onSavePlaylist={handleSaveMusicPlaylist}
+        onToggleLikeTrack={handleToggleLikeMusicTrack}
+        onShareTrackToChat={handleShareMusicTrackToChat}
+        subscriptions={subscriptions}
+        onToggleSubscribe={handleToggleSubscribe}
+        onPinTrackToProfile={handlePinTrackToProfile}
+        pinnedTrackId={profile?.pinnedTrack?.id}
+        initialSearch={musicInitialSearch}
+        onOpenUserProfile={handleOpenUserProfileFromMusic}
+        addToast={addToast}
+      />
+
+      {/* Profile Header Banner Cropper Modal with avatar cutout */}
+      {cropBannerSrc && (
+        <BannerCropperModal
+          isOpen={!!cropBannerSrc}
+          imageSrc={cropBannerSrc}
+          avatarSrc={editAvatar || profile?.photoURL || user?.photoURL || undefined}
+          avatarInitial={(editName || profile?.displayName || user?.displayName || 'U')[0]}
+          onClose={() => setCropBannerSrc(null)}
+          onCropComplete={(croppedBase64) => {
+            setEditBackgroundURL(croppedBase64);
+            setCropBannerSrc(null);
+            addToast('Фон профиля успешно кадрирован с вырезом под аватарку', 'success');
+          }}
+        />
+      )}
+
+      {/* Floating Mini Music Player (plays music in background while chatting!) */}
+      {!showMusicModal && musicPlayer.currentTrack && (
+        <MiniMusicPlayer
+          currentTrack={musicPlayer.currentTrack}
+          isPlaying={musicPlayer.isPlaying}
+          currentTime={musicPlayer.currentTime}
+          duration={musicPlayer.duration}
+          onTogglePlay={musicPlayer.togglePlay}
+          onPrevTrack={musicPlayer.prevTrack}
+          onNextTrack={musicPlayer.nextTrack}
+          onOpenFullPlayer={() => setShowMusicModal(true)}
+          onStop={musicPlayer.stop}
+        />
+      )}
+
+      {/* Ordina Branded Group / Channel QR Code Modal */}
+      <AnimatePresence>
+        {chatQrTarget && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[600] bg-black/70 backdrop-blur-md flex items-center justify-center p-4"
+            onClick={() => setChatQrTarget(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-slate-900 border border-amber-500/30 text-white rounded-3xl p-6 max-w-sm w-full shadow-2xl flex flex-col items-center text-center space-y-4"
+            >
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center overflow-hidden">
+                    <img src="/icon.png" alt="Ордина" className="w-full h-full object-cover" />
+                  </div>
+                  <span className="font-extrabold text-sm tracking-wide text-amber-400">Ордина QR</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setChatQrTarget(null)}
+                  className="p-1.5 hover:bg-white/10 rounded-full text-slate-400 hover:text-white transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-4 bg-white rounded-2xl shadow-inner flex items-center justify-center">
+                <QRCodeSVG
+                  value={getSovereignChannelLink(chatQrTarget.id)}
+                  size={200}
+                  level="H"
+                  includeMargin={true}
+                  imageSettings={{
+                    src: "/icon.png",
+                    x: undefined,
+                    y: undefined,
+                    height: 40,
+                    width: 40,
+                    excavate: true,
+                  }}
+                />
+              </div>
+
+              <div className="space-y-1">
+                <h3 className="font-black text-lg text-white">{chatQrTarget.name}</h3>
+                <p className="text-xs text-amber-400 font-mono truncate max-w-full px-2">{getSovereignChannelLink(chatQrTarget.id)}</p>
+                <p className="text-[11px] text-slate-400">
+                  {chatQrTarget.type === 'channel' ? 'Канал' : 'Группа'} в суверенном мессенджере Ордина
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 w-full pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(getSovereignChannelLink(chatQrTarget.id));
+                    addToast('Ссылка скопирована', 'success');
+                  }}
+                  className="py-2.5 px-3 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5"
+                >
+                  <Copy size={14} />
+                  <span>Ссылка</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.share) {
+                      navigator.share({
+                        title: chatQrTarget.name,
+                        text: `Присоединяйтесь к «${chatQrTarget.name}» в Ордине!`,
+                        url: getSovereignChannelLink(chatQrTarget.id)
+                      }).catch(() => {});
+                    } else {
+                      navigator.clipboard.writeText(getSovereignChannelLink(chatQrTarget.id));
+                      addToast('Ссылка скопирована', 'success');
+                    }
+                  }}
+                  className="py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-black transition-all flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20"
+                >
+                  <Share2 size={14} />
+                  <span>Поделиться</span>
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Highest priority Toasts container on top of all modals and overlays */}
       <ToastsContainer toasts={toasts} />

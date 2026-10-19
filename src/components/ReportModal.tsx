@@ -5,7 +5,7 @@ import { ReportCategory } from '../types';
 interface ReportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  targetType: 'message' | 'user' | 'group';
+  targetType: 'message' | 'user' | 'group' | 'song' | 'track';
   targetId: string;
   targetName?: string;
   chatId?: string;
@@ -22,7 +22,7 @@ interface ReportModalProps {
   onSubmit: (report: any) => void;
 }
 
-const CATEGORIES: { id: ReportCategory; title: string; law: string }[] = [
+const CATEGORIES: { id: ReportCategory | string; title: string; law: string }[] = [
   { id: 'extremism', title: 'Экстремизм и призывы к насилию', law: 'Ст. 280, 205.2 УК РФ' },
   { id: 'insult', title: 'Оскорбления и травля', law: 'Ст. 5.61 КоАП РФ' },
   { id: 'doxing', title: 'Публикация личных данных (Деанон)', law: 'Ст. 137 УК РФ' },
@@ -30,6 +30,9 @@ const CATEGORIES: { id: ReportCategory; title: string; law: string }[] = [
   { id: 'spam', title: 'Спам и вредоносные рассылки', law: 'Правила платформы Ордина' },
   { id: 'violence', title: 'Угроза причинения вреда', law: 'Ст. 119 УК РФ' },
   { id: 'drugs', title: 'Запрещенные вещества', law: 'Ст. 228.1 УК РФ' },
+  { id: 'song_profanity', title: 'Песня: Маты и ненормативная лексика', law: 'Правила аудио-контента Ордина' },
+  { id: 'song_obscenity', title: 'Песня: Непристойности и 18+', law: 'Возрастные ограничения' },
+  { id: 'song_inappropriate', title: 'Песня: Недопустимое содержимое / Авторские права', law: 'Защита контента' },
   { id: 'other', title: 'Иное нарушение', law: 'Правила сообщества' }
 ];
 
@@ -42,7 +45,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
   messageContext,
   onSubmit
 }) => {
-  const [selectedCat, setSelectedCat] = useState<ReportCategory>('insult');
+  const [selectedCat, setSelectedCat] = useState<string>('insult');
   const [description, setDescription] = useState('');
 
   if (!isOpen) return null;
@@ -87,7 +90,7 @@ export const ReportModal: React.FC<ReportModalProps> = ({
             <label className="block text-xs font-medium text-zinc-400 mb-1">Причина нарушения</label>
             <select
               value={selectedCat}
-              onChange={(e) => setSelectedCat(e.target.value as ReportCategory)}
+              onChange={(e) => setSelectedCat(e.target.value)}
               className="w-full px-3 py-2 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-200 focus:outline-none focus:border-red-500"
             >
               {CATEGORIES.map(c => (
