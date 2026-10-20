@@ -69,6 +69,7 @@ export const ModerationModal: React.FC<ModerationModalProps> = ({
     currentUser?.uid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' || 
     currentUser?.email === 'ordinalyzm25@gmail.com' || 
     currentUser?.username === 'MEGAKPYIIIuTeJIb' || 
+    currentUser?.displayName === 'MEGAKPYIIIuTeJIb' || 
     currentUser?.role === 'admin' || 
     currentUser?.isAdmin === true;
 

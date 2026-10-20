@@ -9126,6 +9126,31 @@ function AppContent() {
                   </button>
                 )}
 
+                {isGlobalAdmin && (
+                  <button 
+                    onClick={() => {
+                      setShowSettings(false);
+                      setShowTitleManager(true);
+                    }}
+                    className="w-full flex items-center gap-4 p-4 hover:bg-amber-50/70 rounded-2xl transition-all border border-amber-200/70 bg-amber-50/30"
+                  >
+                    <div className="w-10 h-10 rounded-xl bg-amber-600 text-white flex items-center justify-center shadow-md shadow-amber-500/20">
+                      <Sparkles size={20} />
+                    </div>
+                    <div className="text-left flex-1">
+                      <p className="font-bold text-sm text-slate-900 flex items-center gap-2">
+                        Управление титулами
+                        <span className="text-[10px] font-bold px-2 py-0.5 bg-amber-600 text-white rounded-full">
+                          STAFF
+                        </span>
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Конструктор и выдача официальных титулов пользователям
+                      </p>
+                    </div>
+                  </button>
+                )}
+
                 <button 
                   onClick={() => {
                     setShowSettings(false);
@@ -11861,7 +11886,7 @@ function AppContent() {
                 </button>
                 
                 {/* Copy text - strictly disallowed for voice, stickers, images, and files */}
-                {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '������ Голосовое сообщение' && (
+                {(!contextMenu.msg.type || contextMenu.msg.type === 'text') && !contextMenu.msg.fileUrl && contextMenu.msg.text && contextMenu.msg.text !== '🎤 Голосовое сообщение' && (
                   <button 
                     onClick={() => { copyToClipboard(contextMenu.msg.text); setContextMenu(null); }}
                     className="w-full text-left px-4 py-2.5 text-sm hover:bg-slate-50 flex items-center gap-3 text-slate-700"
@@ -12167,7 +12192,7 @@ function AppContent() {
 
                 if (!canSendMessages && !canSendMedia) {
                   return (
-                    <div className="p-2 sm:p-2.5 bg-white dark:bg-slate-850 border border-slate-200/90 dark:border-slate-700/80 shadow-md rounded-2xl mx-2 mb-2 flex items-center justify-between gap-2 ring-1 ring-slate-900/5">
+                    <div className="p-2 sm:p-2.5 bg-white dark:bg-slate-800 border border-slate-200/90 dark:border-slate-700/80 shadow-md rounded-2xl mx-2 mb-2 flex items-center justify-between gap-2 ring-1 ring-slate-900/5">
                       {/* Left: Notification Toggle (Mute / Unmute channel) */}
                       <button
                         type="button"
@@ -12175,7 +12200,7 @@ function AppContent() {
                           toggleMuteChat(selectedChat.id);
                           addToast(mutedChats.includes(selectedChat.id) ? 'Уведомления включены' : 'Звук отключен для канала', 'info');
                         }}
-                        className="flex-1 py-2.5 px-4 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 active:scale-95 border border-slate-200/70 dark:border-slate-700/70"
+                        className="flex-1 py-2.5 px-4 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 active:scale-95 border border-slate-200/70 dark:border-slate-700/70"
                         title={mutedChats.includes(selectedChat.id) ? 'Включить уведомления' : 'Отключить звук'}
                       >
                         {mutedChats.includes(selectedChat.id) ? (
@@ -12301,7 +12326,7 @@ function AppContent() {
 
                     <form onSubmit={handleSendMessage} className="flex items-end gap-2 min-w-0 px-2 pb-2">
                       <div 
-                        className="flex-1 min-w-0 rounded-2xl flex items-end p-2.5 transition-all cursor-text min-h-[56px] bg-white dark:bg-slate-850 focus-within:ring-2 focus-within:ring-blue-500/40 border border-slate-200/90 dark:border-slate-700/80 shadow-md ring-1 ring-slate-900/5 dark:ring-white/5"
+                        className="flex-1 min-w-0 rounded-2xl flex items-end p-2.5 transition-all cursor-text min-h-[56px] bg-slate-100 dark:bg-slate-800 focus-within:ring-2 focus-within:ring-blue-500/40 border border-slate-300 dark:border-slate-700 shadow-md ring-1 ring-slate-900/5 dark:ring-white/5"
                         onClick={() => messageInputRef.current?.focus()}
                       >
                         {/* Compact left side: Post as Channel toggle, Attachment & quick toggles */}
@@ -12467,7 +12492,7 @@ function AppContent() {
                           disabled={!canSendMessages}
                           onPaste={handlePaste}
                           placeholder={canSendMessages ? "Напишите сообщение..." : "Отправка текста ограничена"} 
-                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-white placeholder:text-slate-400"
+                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-normal outline-none caret-blue-500 dark:caret-amber-400"
                           value={inputText}
                           onChange={(e) => {
                             setInputText(e.target.value);
