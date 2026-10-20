@@ -47,12 +47,24 @@ jobs:
             npx cap add android --no-sync || true
           fi
           npx cap sync android
+          # Ensure Gradle JVM has sufficient memory (default 512M causes GC thrashing)
+          if [ -f "android/gradle.properties" ]; then
+            if ! grep -q "org.gradle.jvmargs" android/gradle.properties; then
+              echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m" >> android/gradle.properties
+            else
+              sed -i 's/org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m/g' android/gradle.properties
+            fi
+          else
+            echo "org.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m" > android/gradle.properties
+          fi
 
       - name: Build Android APK
         working-directory: ./android
+        env:
+          GRADLE_OPTS: "-Xmx3072m -XX:MaxMetaspaceSize=768m"
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleDebug --no-daemon -Dorg.gradle.jvmargs="-Xmx3072m -XX:MaxMetaspaceSize=768m"
 
       - name: Prepare APK Files
         run: |
