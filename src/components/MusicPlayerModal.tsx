@@ -14,6 +14,7 @@ import {
 import { MusicTrack, MusicPlaylist } from '../types';
 import { checkTextProfanity } from '../utils/profanityFilter';
 import { uploadFileToFirestore } from '../lib/fileStorage';
+import { scanDeviceAudio, readDeviceAudioData, isMusicLibraryAvailable } from '../lib/musicLibrary';
 import { DEFAULT_PUBLIC_TRACKS } from '../utils/defaultMusic';
 import { safeLocalStorageSet } from '../utils/safeStorage';
 
@@ -59,6 +60,7 @@ export interface MusicPlayerModalProps {
   onShareTrackToChat?: (track: MusicTrack) => void;
   subscriptions?: string[];
   onToggleSubscribe?: (uploaderId: string) => void;
+  subscriberCounts?: Record<string, number>;
   onReportSong?: (track: MusicTrack) => void;
   onPinTrackToProfile?: (track: any) => void;
   pinnedTrackId?: string;
@@ -318,6 +320,7 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
   onShareTrackToChat,
   subscriptions = [],
   onToggleSubscribe,
+  subscriberCounts = {},
   onReportSong,
   onPinTrackToProfile,
   pinnedTrackId,
@@ -400,34 +403,74 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
   // AI Music Scanner state
   const [showAiScannerModal, setShowAiScannerModal] = useState(false);
   const [isScanningPhoneMusic, setIsScanningPhoneMusic] = useState(false);
+  const [isImportingScanned, setIsImportingScanned] = useState(false);
   const [scannedPhoneTracks, setScannedPhoneTracks] = useState<MusicTrack[]>([]);
   const [selectedScanIds, setSelectedScanIds] = useState<string[]>([]);
 
   const handleRunAiMusicScan = async () => {
-    setIsScanningPhoneMusic(true);
     setShowAiScannerModal(true);
+    setIsScanningPhoneMusic(true);
+    setScannedPhoneTracks([]);
+    setSelectedScanIds([]);
     try {
-      const phoneDeviceFiles = [
-        { title: 'Ночная трасса (Дрифт)', artist: 'Phonk Master', fileUrl: '/music/vivaldi_summer.ogg' },
-        { title: 'Весенний вальс у окна', artist: 'Classic Piano', fileUrl: '/music/vivaldi_spring.ogg' },
-        { title: 'Кибернетический закат', artist: 'SynthWave 2026', fileUrl: '/music/beethoven_moonlight.ogg' },
-        { title: 'Космический эмбиент', artist: 'Stellar Sound', fileUrl: '/music/tchaikovsky_sugarplum.ogg' }
-      ];
-
-      const res = await fetch('/api/music/ai-scan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tracks: phoneDeviceFiles })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.scannedTracks) {
-          setScannedPhoneTracks(data.scannedTracks);
-          setSelectedScanIds(data.scannedTracks.map((t: any) => t.id));
-        }
+      if (!isMusicLibraryAvailable()) {
+        addToast('Сканирование фонотеки доступно только в приложении на телефоне', 'info');
+        return;
       }
-    } catch (e) {
-      addToast('Не удалось завершить ИИ-сканирование музыки', 'error');
+
+      // 1. Читаем реальную аудиотеку устройства (треки длиннее 25 секунд)
+      const deviceTracks = (await scanDeviceAudio(25000)).filter(t => !t.tooLarge);
+      if (deviceTracks.length === 0) {
+        addToast('Не найдено аудио длиннее 25 секунд на устройстве', 'info');
+        return;
+      }
+
+      // 2. Определяем жанр и вайб через ИИ (по названию и автору)
+      let analyzed: any[] = [];
+      try {
+        const res = await fetch('/api/music/ai-scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tracks: deviceTracks.map(t => ({ title: t.title, artist: t.artist }))
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          analyzed = data.scannedTracks || [];
+        }
+      } catch {}
+
+      // 3. Собираем предпросмотр: реальные данные телефона + жанр от ИИ
+      const preview: MusicTrack[] = deviceTracks.map((t, idx) => {
+        const ai = analyzed[idx] || {};
+        return {
+          id: `device_${t.id}`,
+          title: t.title,
+          artist: t.artist,
+          genre: ai.genre || 'Не определён',
+          fileUrl: '',
+          duration: Math.round(t.durationMs / 1000),
+          fileSize: t.size,
+          coverUrl: ai.coverUrl,
+          uploaderId: currentUser?.uid || 'user_guest',
+          uploaderName: currentUser?.displayName || 'Мой канал',
+          isPublic: false,
+          createdAt: new Date().toISOString(),
+          likes: 0,
+          likedBy: [],
+          deviceId: t.id,
+          mimeType: t.mimeType,
+          aiMood: ai.aiMood,
+          aiBpm: ai.aiBpm,
+          aiDescription: ai.aiDescription
+        } as MusicTrack;
+      });
+
+      setScannedPhoneTracks(preview);
+      setSelectedScanIds(preview.map(t => t.id));
+    } catch (e: any) {
+      addToast(e?.message || 'Не удалось просканировать музыку с телефона', 'error');
     } finally {
       setIsScanningPhoneMusic(false);
     }
@@ -435,13 +478,42 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
 
   const handleImportScannedTracks = async () => {
     const toImport = scannedPhoneTracks.filter(t => selectedScanIds.includes(t.id));
+    if (toImport.length === 0) return;
+
+    setIsImportingScanned(true);
+    let imported = 0;
+    let failed = 0;
+
     for (const t of toImport) {
-      t.uploaderId = currentUser?.uid || 'user_guest';
-      t.uploaderName = currentUser?.displayName || 'Мой канал';
-      await onSaveTrack(t);
+      try {
+        const fileData = await readDeviceAudioData((t as any).deviceId, (t as any).mimeType);
+        if (!fileData) {
+          failed++;
+          continue;
+        }
+        const fileUrl = `data:${fileData.mimeType || 'audio/mpeg'};base64,${fileData.data}`;
+        const track: MusicTrack = {
+          ...t,
+          fileUrl,
+          uploaderId: currentUser?.uid || 'user_guest',
+          uploaderName: currentUser?.displayName || 'Мой канал'
+        };
+        delete (track as any).deviceId;
+        await onSaveTrack(track);
+        imported++;
+      } catch {
+        failed++;
+      }
     }
-    addToast(`Успешно импортировано треков: ${toImport.length} ✓`, 'success');
-    setShowAiScannerModal(false);
+
+    setIsImportingScanned(false);
+    addToast(
+      failed > 0
+        ? `Импортировано: ${imported}, не удалось: ${failed}`
+        : `Успешно импортировано треков: ${imported} ✓`,
+      imported > 0 ? 'success' : 'error'
+    );
+    if (imported > 0) setShowAiScannerModal(false);
   };
 
   // Seekbar scrub state
@@ -1473,7 +1545,7 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
                         </div>
                         <p className="text-xs text-slate-400">Управление треками, статистика прослушиваний и ИИ-сканер устройства</p>
                         <div className="flex flex-wrap items-center justify-center md:justify-start gap-4 pt-2 text-xs font-semibold text-slate-300">
-                          <div>👥 Подписчики: <span className="text-white font-bold">1,480</span></div>
+                          <div>👥 Подписчики: <span className="text-white font-bold">{formatSubscribersCount(subscriberCounts[currentUser?.uid || ''] || 0)}</span></div>
                           <div>🎵 Треков в студии: <span className="text-white font-bold">{myTracks.length}</span></div>
                           <div>❤️ Всего лайков: <span className="text-white font-bold">{myTracks.reduce((acc, t) => acc + (t.likes || 0), 0)}</span></div>
                         </div>
@@ -1727,13 +1799,7 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
                   <div className="flex-1 text-center md:text-left space-y-1.5">
                     <h2 className="text-xl sm:text-2xl font-black text-white">{currentUser?.displayName || 'Мой Музыкальный Канал'}</h2>
                     <p className="text-xs text-red-400 font-mono">
-                      @{currentUser?.uid ? currentUser.uid.slice(0, 10) : 'my_channel'} • {(() => {
-                        const myTracks = tracks.filter(t => t.uploaderId === currentUser?.uid);
-                        const likes = myTracks.reduce((acc, t) => acc + (t.likes || 0), 0);
-                        const isSubbed = currentUser?.uid && subscriptions?.includes(currentUser.uid) ? 1 : 0;
-                        const realSubs = isSubbed + Math.floor(likes / 2);
-                        return formatSubscribersCount(realSubs);
-                      })()}
+                      @{currentUser?.uid ? currentUser.uid.slice(0, 10) : 'my_channel'} • {formatSubscribersCount(subscriberCounts[currentUser?.uid || ''] || 0)}
                     </p>
                     <p className="text-xs text-slate-300 max-w-lg">
                       Ваш персональный музыкальный канал на платформе Ordina. Публикуйте авторские треки, управляйте библиотекой и привлекайте аудиторию.
@@ -1778,7 +1844,7 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
                   </div>
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-center">
                     <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">Подписчики</p>
-                    <p className="text-2xl font-black text-emerald-400 mt-1">{42 + (subscriptions?.length || 0)}</p>
+                    <p className="text-2xl font-black text-emerald-400 mt-1">{subscriberCounts[currentUser?.uid || ''] || 0}</p>
                   </div>
                 </div>
 
@@ -2573,6 +2639,13 @@ export const MusicPlayerModal: React.FC<MusicPlayerModalProps> = ({
                     </div>
 
                     <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-2 pr-1 divide-y divide-slate-800/60">
+                      {scannedPhoneTracks.length === 0 && (
+                        <div className="py-10 text-center text-slate-400 space-y-2">
+                          <Music size={28} className="mx-auto text-slate-600" />
+                          <p className="text-xs font-semibold">На телефоне не найдено аудио длиннее 25 секунд</p>
+                          <p className="text-[11px] text-slate-500">Проверьте разрешение на доступ к музыке в настройках приложения</p>
+                        </div>
+                      )}
                       {scannedPhoneTracks.map(track => {
                         const isChecked = selectedScanIds.includes(track.id);
                         return (

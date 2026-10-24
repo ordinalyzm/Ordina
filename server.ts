@@ -440,6 +440,25 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
     return { rows: [], rowCount: 1 };
   }
 
+  if (normalized.includes('DELETE FROM messages WHERE "chatId" = $1 OR "chatId" = $2') || normalized.includes('DELETE FROM messages WHERE "chatId" IN') || normalized.includes('DELETE FROM messages WHERE chatId IN')) {
+    const chatIds = new Set(params.filter((p: any) => typeof p === 'string'));
+    Object.keys(localDb.messages).forEach(id => {
+      const m = localDb.messages[id];
+      if (chatIds.has(m.chatId)) {
+        delete localDb.messages[id];
+      } else {
+        try {
+          const parsed = JSON.parse(m.data);
+          if (!parsed.groupId && (chatIds.has(parsed.senderId) && chatIds.has(parsed.receiverId))) {
+            delete localDb.messages[id];
+          }
+        } catch (e) {}
+      }
+    });
+    saveLocalDb();
+    return { rows: [], rowCount: 1 };
+  }
+
   if (normalized.includes('DELETE FROM messages WHERE "chatId" =') || normalized.includes('DELETE FROM messages WHERE chatId =')) {
     const chatId = params[0];
     Object.keys(localDb.messages).forEach(id => {
@@ -572,11 +591,10 @@ async function queryLocal(sql: string, params: any[] = []): Promise<{ rows: any[
   }
 
   if (normalized.includes('FROM messages WHERE "chatId" IN') || normalized.includes('FROM messages WHERE chatId IN')) {
-    const cid1 = params[0];
-    const cid2 = params[1];
-    const limit = params[2] || 100;
+    const limit = typeof params[params.length - 1] === 'number' ? params[params.length - 1] : 100;
+    const targetIds = new Set(params.filter((p: any) => typeof p === 'string'));
     const rows = Object.values(localDb.messages)
-      .filter(m => m.chatId === cid1 || m.chatId === cid2)
+      .filter(m => targetIds.has(m.chatId))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, limit)
       .map(m => ({ data: m.data }));
@@ -946,33 +964,9 @@ const cleanupStickers = async () => {
   }
 };
 
-/**
- * Auto-purge delivered messages older than 14 days to preserve database space.
- * Runs every 24 hours.
- */
-const autoPurgeDeliveredMessages = async () => {
-  try {
-    const fourteenDaysAgo = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
-    console.log(`[Auto-Purge] Running scheduled purge for messages created before ${fourteenDaysAgo}...`);
-    const { rows } = await pool.query('SELECT id, data FROM messages WHERE "createdAt" < $1', [fourteenDaysAgo]);
-    let deletedCount = 0;
-    for (const row of rows) {
-      try {
-        const msg = JSON.parse(row.data);
-        if (msg.status === 'delivered' || msg.deliveryStatus === 'delivered' || msg.status === 'read' || (msg.readBy && msg.readBy.length > 0)) {
-          await pool.query('DELETE FROM messages WHERE id = $1', [row.id]);
-          deletedCount++;
-        }
-      } catch (e) {}
-    }
-    console.log(`[Auto-Purge] Cleaned up ${deletedCount} delivered messages older than 14 days.`);
-  } catch (err) {
-    console.error('[Auto-Purge] Error during delivered messages cleanup:', err);
-  }
-};
-
-// Schedule Auto-Purge every 24 hours
-setInterval(autoPurgeDeliveredMessages, 24 * 60 * 60 * 1000);
+// Авто-удаление истории сообщений отключено.
+// Раньше сервер раз в сутки молча удалял всю доставленную переписку старше 14 дней —
+// для пользователя это выглядело как «чаты удалились сами».
 
 const seedGlobalChannel = async () => {
   try {
@@ -1469,7 +1463,7 @@ ${JSON.stringify(tracks, null, 2)}
 Без markdown кавычек, только чистый JSON.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: { responseMimeType: 'application/json' }
       });
@@ -1780,6 +1774,19 @@ ${JSON.stringify(tracks, null, 2)}
   const PORT = Number(process.env.PORT) || 3000;
   const onlineUsers = new Map<string, { socketId: string, status: string, customStatus?: string }>();
   const socketFloodMap = new Map<string, { count: number, windowStart: number }>();
+  
+  interface VoiceParticipant {
+    uid: string;
+    displayName: string;
+    photoURL?: string;
+    isMuted: boolean;
+    isVideo: boolean;
+    isScreenShare: boolean;
+    isSpeaking: boolean;
+    joinedAt: number;
+  }
+  const activeVoiceRooms = new Map<string, Map<string, VoiceParticipant>>();
+  const active1on1Calls = new Map<string, { callId: string; callerUid: string; targetUid: string; isVideo: boolean; startedAt: number }>();
 
   function getBotAsUser(b: any) {
   return {
@@ -1925,10 +1932,18 @@ function getRandomGroupName(): string {
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
+    const handshakeUid = socket.handshake.query?.uid as string;
+    if (handshakeUid) {
+      (socket as any).uid = handshakeUid;
+      socket.join(`user:${handshakeUid}`);
+    }
+
     socket.on('auth:sync', async (userData: any) => {
       try {
-        const uid = userData.uid;
+        const uid = userData?.uid;
+        if (!uid) return;
         (socket as any).uid = uid;
+        socket.join(`user:${uid}`);
         
         const checkEmail = (userData.email || '').toLowerCase().trim();
         if (checkEmail && localDb.banned_emails && localDb.banned_emails[checkEmail]) {
@@ -1944,13 +1959,18 @@ io.on('connection', (socket) => {
         
         if (row) {
           const serverData = JSON.parse(row.data);
+          // Пустые и служебные значения (аноним/гость) не должны затирать настоящее имя пользователя
+          const incomingName = typeof userData.displayName === 'string' ? userData.displayName.trim() : '';
+          const isPlaceholderName = !incomingName || incomingName === 'Anonymous' || incomingName === 'Пользователь' || incomingName.startsWith('Гость ');
+          const incomingUsername = typeof userData.username === 'string' ? userData.username.trim() : '';
+
           finalData = {
             ...serverData,
             ...userData,
-            displayName: userData.displayName || serverData.displayName || getRandomUserName(),
+            displayName: isPlaceholderName ? (serverData.displayName || getRandomUserName()) : incomingName,
             photoURL: userData.photoURL || serverData.photoURL || '',
             bio: userData.bio || serverData.bio || '',
-            username: userData.username || serverData.username || '',
+            username: incomingUsername || serverData.username || '',
             profileBackgroundURL: userData.profileBackgroundURL || serverData.profileBackgroundURL || '',
             customStatus: userData.customStatus || serverData.customStatus || '',
             activeTitleId: userData.activeTitleId || serverData.activeTitleId || '',
@@ -2181,11 +2201,13 @@ io.on('connection', (socket) => {
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
-          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [historyId, limit]);
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2, $3) ORDER BY "createdAt" DESC LIMIT $4', [historyId, myUid, chatId, limit]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && (
+            m.chatId === historyId ||
             (m.senderId === myUid && m.receiverId === chatId) ||
-            (m.senderId === chatId && m.receiverId === myUid)
+            (m.senderId === chatId && m.receiverId === myUid) ||
+            (m.receiverId === chatId && m.senderId === myUid)
           ));
         }
         socket.emit('chat:history', { chatId, messages });
@@ -2222,11 +2244,13 @@ io.on('connection', (socket) => {
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
-          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT $2', [historyId, data.limit || 100]);
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2, $3) ORDER BY "createdAt" DESC LIMIT $4', [historyId, myUid, chatId, data.limit || 100]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && (
+            m.chatId === historyId ||
             (m.senderId === myUid && m.receiverId === chatId) ||
-            (m.senderId === chatId && m.receiverId === myUid)
+            (m.senderId === chatId && m.receiverId === myUid) ||
+            (m.receiverId === chatId && m.senderId === myUid)
           ));
         }
         socket.emit('chat:history', { chatId, messages });
@@ -2262,11 +2286,13 @@ io.on('connection', (socket) => {
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && m.senderId === myUid && m.receiverId === myUid);
         } else {
-          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" = $1 ORDER BY "createdAt" DESC LIMIT 100', [historyId]);
+          const { rows } = await pool.query('SELECT data FROM messages WHERE "chatId" IN ($1, $2, $3) ORDER BY "createdAt" DESC LIMIT $4', [historyId, myUid, chatId, 100]);
           messages = rows.map((row: any) => JSON.parse(row.data)).reverse();
           messages = messages.filter((m: any) => !m.groupId && (
+            m.chatId === historyId ||
             (m.senderId === myUid && m.receiverId === chatId) ||
-            (m.senderId === chatId && m.receiverId === myUid)
+            (m.senderId === chatId && m.receiverId === myUid) ||
+            (m.receiverId === chatId && m.senderId === myUid)
           ));
         }
         socket.emit('chat:history', { chatId, messages });
@@ -3520,7 +3546,7 @@ io.on('connection', (socket) => {
 Только валидный JSON.`;
 
         const response = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
@@ -3558,9 +3584,40 @@ io.on('connection', (socket) => {
           return;
         }
 
+        // Удалить переписку «для всех» может только её участник
+        const requesterUid = (socket as any).uid;
+        if (requesterUid && requesterUid !== data.user1 && requesterUid !== data.user2) {
+          console.warn('[ChatDelete] Unauthorized delete attempt by', requesterUid);
+          return;
+        }
+
         const historyId = data.user1 === data.user2 ? data.user1 : [data.user1, data.user2].sort().join('_');
-        await pool.query('DELETE FROM messages WHERE ("chatId" = $1 AND "groupId" IS NULL)', [historyId]);
-        await pool.query('DELETE FROM messages WHERE ("senderId" = $1 AND "receiverId" = $2) OR ("senderId" = $2 AND "receiverId" = $1)', [data.user1, data.user2]);
+
+        // 1. Только сообщения этой беседы.
+        // Раньше здесь удалялись ещё и все сообщения с chatId = uid участников,
+        // из-за чего вместе с личным чатом стирался «Блокнот».
+        await pool.query('DELETE FROM messages WHERE "chatId" = $1', [historyId]).catch(console.error);
+
+        // 2. Also delete JSONB-matched direct messages if in PG
+        if (!isFallback) {
+          await pool.query(
+            "DELETE FROM messages WHERE ((data::jsonb->>'senderId' = $1 AND data::jsonb->>'receiverId' = $2) OR (data::jsonb->>'senderId' = $2 AND data::jsonb->>'receiverId' = $1)) AND (data::jsonb->>'groupId' IS NULL OR data::jsonb->>'groupId' = '')",
+            [data.user1, data.user2]
+          ).catch(() => {});
+        }
+
+        // 3. Clean up localDb fallback if active
+        if (localDb.messages) {
+          for (const [mId, mObj] of Object.entries(localDb.messages)) {
+            const isThisChat = mObj.chatId === historyId ||
+              (!mObj.groupId && ((mObj.senderId === data.user1 && mObj.receiverId === data.user2) ||
+                                 (mObj.senderId === data.user2 && mObj.receiverId === data.user1)));
+            if (isThisChat) {
+              delete localDb.messages[mId];
+            }
+          }
+          saveLocalDb();
+        }
         
         for (const [u1, u2] of [[data.user1, data.user2], [data.user2, data.user1]]) {
            const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [u1]);
@@ -3571,6 +3628,10 @@ io.on('connection', (socket) => {
                uData.activeChats.unshift('global_channel');
              }
              await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(uData), u1]);
+             if (localDb.users?.[u1]) {
+               localDb.users[u1].data = JSON.stringify(uData);
+               saveLocalDb();
+             }
              io.to(`user:${u1}`).emit('auth:synced', uData);
              io.emit('user:updated', uData);
            }
@@ -3578,9 +3639,34 @@ io.on('connection', (socket) => {
 
         io.to(`user:${data.user1}`).emit('chat:deleted_everyone', data.user2);
         io.to(`user:${data.user2}`).emit('chat:deleted_everyone', data.user1);
-        io.emit('chat:purged', { user1: data.user1, user2: data.user2 });
       } catch (e) {
         console.error('Error in chat:delete_everyone:', e);
+      }
+    });
+
+    socket.on('chat:delete_for_me', async (data: { userId?: string, targetId: string }) => {
+      try {
+        const uid = (socket as any).uid || data?.userId;
+        const targetId = data?.targetId;
+        if (!uid || !targetId) return;
+
+        const { rows } = await pool.query('SELECT data FROM users WHERE uid = $1', [uid]);
+        if (rows[0]) {
+          let uData = JSON.parse(rows[0].data);
+          uData.activeChats = (uData.activeChats || []).filter((id: any) => id !== targetId);
+          if (!uData.activeChats.includes('global_channel')) {
+            uData.activeChats.unshift('global_channel');
+          }
+          await pool.query('UPDATE users SET data = $1 WHERE uid = $2', [JSON.stringify(uData), uid]);
+          if (localDb.users?.[uid]) {
+            localDb.users[uid].data = JSON.stringify(uData);
+            saveLocalDb();
+          }
+          socket.emit('auth:synced', uData);
+          socket.emit('chat:deleted_for_me', targetId);
+        }
+      } catch (e) {
+        console.error('Error in chat:delete_for_me:', e);
       }
     });
 
@@ -3590,6 +3676,20 @@ io.on('connection', (socket) => {
           console.warn('[GroupDelete] Cannot delete global channel or empty ID');
           return;
         }
+
+        // Удалить группу для всех может только владелец или админ
+        const requesterUid = (socket as any).uid;
+        const isAdminUser = requesterUid === 'le6qifgHZsV99qTBzSe3VZpYVlE2' || (socket as any).isAdmin;
+        const { rows: gRows } = await pool.query('SELECT data FROM groups WHERE id = $1', [data.id]);
+        if (gRows[0]) {
+          let groupData: any = {};
+          try { groupData = JSON.parse(gRows[0].data); } catch (e) {}
+          if (!isAdminUser && requesterUid && groupData.ownerId && groupData.ownerId !== requesterUid) {
+            socket.emit('group:delete_denied', { id: data.id });
+            return;
+          }
+        }
+
         await pool.query('DELETE FROM messages WHERE "chatId" = $1', [data.id]);
         await pool.query('DELETE FROM groups WHERE id = $1', [data.id]);
         io.emit('group:deleted', data.id);
@@ -3703,11 +3803,16 @@ io.on('connection', (socket) => {
           }
         }
 
+        // Защита от потери данных: пустые значения не должны затирать уже сохранённые имя и юзернейм
+        const incomingDisplayName = typeof data?.profile?.displayName === 'string' ? data.profile.displayName.trim() : '';
+        const incomingUsername = typeof data?.profile?.username === 'string' ? data.profile.username.trim() : '';
+
         const finalProfile = {
           ...existing,
           ...(data?.profile || {}),
           uid: targetUid,
-          displayName: data?.profile?.displayName || existing.displayName || 'Пользователь'
+          displayName: incomingDisplayName || existing.displayName || 'Пользователь',
+          username: incomingUsername || existing.username || ''
         };
         
         localDb.users = localDb.users || {};
@@ -4050,6 +4155,11 @@ io.on('connection', (socket) => {
     });
 
     socket.on('user:delete_all_data', async (uid: string) => {
+      const requesterUid = (socket as any).uid;
+      if (!uid || (requesterUid && requesterUid !== uid)) {
+        console.warn('[UserDelete] Unauthorized delete_all_data attempt');
+        return;
+      }
       await pool.query('DELETE FROM messages WHERE data LIKE $1 OR data LIKE $2', [`%${uid}%`, `%${uid}%`]);
       await pool.query('DELETE FROM groups WHERE data LIKE $1 AND id != $2', [`%${uid}%`, 'global_channel']);
       await pool.query('DELETE FROM users WHERE uid = $1', [uid]);
@@ -4069,6 +4179,136 @@ io.on('connection', (socket) => {
         const fromUid = data.from || (socket as any).uid;
         io.to(`user:${data.to}`).emit('mesh:signal', { from: fromUid, signal: data.signal });
       }
+    });
+
+    // ====================================================
+    // REAL-TIME AUDIO & VIDEO CALLING (1-ON-1)
+    // ====================================================
+    socket.on('call:initiate', (payload: { callId: string; targetUid: string; caller: any; isVideo: boolean; chatId: string }) => {
+      if (!payload || !payload.targetUid) return;
+      active1on1Calls.set(payload.callId, {
+        callId: payload.callId,
+        callerUid: payload.caller?.uid,
+        targetUid: payload.targetUid,
+        isVideo: !!payload.isVideo,
+        startedAt: Date.now()
+      });
+      io.to(`user:${payload.targetUid}`).emit('call:incoming', {
+        callId: payload.callId,
+        caller: payload.caller,
+        isVideo: payload.isVideo,
+        chatId: payload.chatId
+      });
+    });
+
+    socket.on('call:accept', (payload: { callId: string; callerUid: string; targetUid: string }) => {
+      if (!payload || !payload.callerUid) return;
+      io.to(`user:${payload.callerUid}`).emit('call:accepted', payload);
+    });
+
+    socket.on('call:reject', (payload: { callId: string; callerUid: string; targetUid: string; reason?: string }) => {
+      if (payload && payload.callId) active1on1Calls.delete(payload.callId);
+      if (payload && payload.callerUid) {
+        io.to(`user:${payload.callerUid}`).emit('call:rejected', payload);
+      }
+    });
+
+    socket.on('call:end', (payload: { callId: string; targetUid: string }) => {
+      if (payload && payload.callId) active1on1Calls.delete(payload.callId);
+      if (payload && payload.targetUid) {
+        io.to(`user:${payload.targetUid}`).emit('call:ended', payload);
+      }
+    });
+
+    socket.on('call:signal', (payload: { callId: string; targetUid: string; data: any }) => {
+      if (!payload || !payload.targetUid) return;
+      const myUid = (socket as any).uid || payload.data?.fromUid;
+      io.to(`user:${payload.targetUid}`).emit('call:signal', {
+        callId: payload.callId,
+        fromUid: myUid,
+        data: payload.data
+      });
+    });
+
+    socket.on('call:busy', (payload: { callId: string; callerUid: string }) => {
+      if (payload && payload.callerUid) {
+        io.to(`user:${payload.callerUid}`).emit('call:busy', payload);
+      }
+    });
+
+    // ====================================================
+    // GROUP VOICE ROOMS & LIVE BROADCASTS (Discord / Telegram style)
+    // ====================================================
+    socket.on('voice-room:join', (payload: { roomId: string; user: { uid: string; displayName: string; photoURL?: string }; isVideo?: boolean; isMuted?: boolean }) => {
+      if (!payload || !payload.roomId || !payload.user?.uid) return;
+      const { roomId, user, isVideo, isMuted } = payload;
+      
+      socket.join(`voice:${roomId}`);
+      (socket as any).currentVoiceRoom = roomId;
+      
+      if (!activeVoiceRooms.has(roomId)) {
+        activeVoiceRooms.set(roomId, new Map());
+      }
+      const room = activeVoiceRooms.get(roomId)!;
+      room.set(user.uid, {
+        uid: user.uid,
+        displayName: user.displayName || 'Пользователь',
+        photoURL: user.photoURL,
+        isMuted: isMuted ?? false,
+        isVideo: isVideo ?? false,
+        isScreenShare: false,
+        isSpeaking: false,
+        joinedAt: Date.now()
+      });
+
+      const participants = Array.from(room.values());
+      io.to(`voice:${roomId}`).emit('voice-room:participants', { roomId, participants });
+      io.emit('voice-room:status', { roomId, active: true, count: participants.length, participants });
+    });
+
+    socket.on('voice-room:leave', (payload: { roomId: string; uid: string }) => {
+      if (!payload || !payload.roomId || !payload.uid) return;
+      const { roomId, uid } = payload;
+      socket.leave(`voice:${roomId}`);
+      (socket as any).currentVoiceRoom = null;
+      
+      const room = activeVoiceRooms.get(roomId);
+      if (room) {
+        room.delete(uid);
+        const participants = Array.from(room.values());
+        if (room.size === 0) {
+          activeVoiceRooms.delete(roomId);
+          io.emit('voice-room:status', { roomId, active: false, count: 0, participants: [] });
+        } else {
+          io.to(`voice:${roomId}`).emit('voice-room:participants', { roomId, participants });
+          io.emit('voice-room:status', { roomId, active: true, count: participants.length, participants });
+        }
+      }
+    });
+
+    socket.on('voice-room:signal', (payload: { roomId: string; targetUid: string; fromUid: string; signal: any }) => {
+      if (!payload || !payload.targetUid) return;
+      io.to(`user:${payload.targetUid}`).emit('voice-room:signal', payload);
+    });
+
+    socket.on('voice-room:media-update', (payload: { roomId: string; uid: string; isMuted?: boolean; isVideo?: boolean; isScreenShare?: boolean; isSpeaking?: boolean }) => {
+      if (!payload || !payload.roomId || !payload.uid) return;
+      const { roomId, uid, ...updates } = payload;
+      const room = activeVoiceRooms.get(roomId);
+      if (room && room.has(uid)) {
+        const p = room.get(uid)!;
+        Object.assign(p, updates);
+        io.to(`voice:${roomId}`).emit('voice-room:participant-updated', { roomId, uid, updates });
+      }
+    });
+
+    socket.on('voice-room:get-all', (callback?: (all: Record<string, any[]>) => void) => {
+      const all: Record<string, any[]> = {};
+      activeVoiceRooms.forEach((map, roomId) => {
+        all[roomId] = Array.from(map.values());
+      });
+      if (typeof callback === 'function') callback(all);
+      else socket.emit('voice-room:all-rooms', all);
     });
 
     // Mesh Gateway Broadcast to Server
@@ -4496,6 +4736,18 @@ io.on('connection', (socket) => {
         localDb.artist_subscribers = localDb.artist_subscribers || {};
         const subscribers: string[] = localDb.artist_subscribers[artistId] || [];
         socket.emit('artist:subscribers_count', { artistId, count: subscribers.length, subscribers });
+      } catch (err) {}
+    });
+
+    // Отдает количество подписчиков сразу по всем авторам (для отображения на каналах)
+    socket.on('artist:get_all_counts', () => {
+      try {
+        localDb.artist_subscribers = localDb.artist_subscribers || {};
+        const counts: Record<string, number> = {};
+        for (const [artistId, subs] of Object.entries(localDb.artist_subscribers)) {
+          counts[artistId] = Array.isArray(subs) ? subs.length : 0;
+        }
+        socket.emit('artist:all_subscribers_counts', { counts });
       } catch (err) {}
     });
 
@@ -5007,6 +5259,32 @@ io.on('connection', (socket) => {
              io.emit('user:updated', u);
           }
         } catch(e) {}
+
+        // Clean up any group voice rooms
+        activeVoiceRooms.forEach((room, roomId) => {
+          if (room.has(disconnectedUid!)) {
+            room.delete(disconnectedUid!);
+            const participants = Array.from(room.values());
+            if (room.size === 0) {
+              activeVoiceRooms.delete(roomId);
+              io.emit('voice-room:status', { roomId, active: false, count: 0, participants: [] });
+            } else {
+              io.to(`voice:${roomId}`).emit('voice-room:participants', { roomId, participants });
+              io.emit('voice-room:status', { roomId, active: true, count: participants.length, participants });
+            }
+          }
+        });
+
+        // Clean up any 1-on-1 calls
+        for (const [callId, call] of active1on1Calls.entries()) {
+          if (call.callerUid === disconnectedUid) {
+            io.to(`user:${call.targetUid}`).emit('call:ended', { callId });
+            active1on1Calls.delete(callId);
+          } else if (call.targetUid === disconnectedUid) {
+            io.to(`user:${call.callerUid}`).emit('call:ended', { callId });
+            active1on1Calls.delete(callId);
+          }
+        }
       }
       console.log('User disconnected:', socket.id);
     });

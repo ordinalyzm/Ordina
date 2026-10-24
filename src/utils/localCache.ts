@@ -473,6 +473,11 @@ export async function mergeDelta(chats: Chat[] = [], messages: Message[], curren
         if (ver > maxVer) maxVer = ver;
 
         if (dbInstance) {
+          // Защита от отката данных: не перезаписываем более новую локальную версию чата
+          const existing = await dbInstance.query('SELECT version FROM chats WHERE id = ?;', [chat.id]);
+          const localVer = existing.values && existing.values.length > 0 ? existing.values[0].version || 0 : 0;
+          if (localVer > ver) continue;
+
           await dbInstance.run(
             'INSERT OR REPLACE INTO chats (id, type, name, photoURL, version, rawJson) VALUES (?, ?, ?, ?, ?, ?);',
             [chat.id, chat.type, chat.name || '', chat.photoURL || '', ver, JSON.stringify(chat)]
@@ -502,6 +507,13 @@ export async function mergeDelta(chats: Chat[] = [], messages: Message[], curren
           if (!isGlobal && !isDirect && !isGroup) {
             continue; // Skip foreign messages
           }
+        }
+
+        // Защита от отката данных: не перезаписываем более новую локальную версию сообщения
+        if (dbInstance) {
+          const existing = await dbInstance.query('SELECT version FROM messages WHERE id = ?;', [msg.id]);
+          const localVer = existing.values && existing.values.length > 0 ? existing.values[0].version || 0 : 0;
+          if (localVer > ver) continue;
         }
 
         await saveMessage(msg, currentUserId);

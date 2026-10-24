@@ -6,6 +6,8 @@ import { playMeshNodeConnectSound } from '../lib/audio';
 import { p2pManager, P2PPeerStatus } from '../lib/p2pWebRTC';
 import { obfuscationEngine } from '../lib/obfuscation';
 import { bleMeshEngine, BLEPeerDevice } from '../lib/bleMesh';
+import { MeshTransport } from '../utils/meshTransport';
+import { Capacitor } from '@capacitor/core';
 import { multiTierRouter, TransportTier } from '../lib/multiTierRouter';
 import { Activity, Wifi, Radio, Cpu, Send, RefreshCw, Trash2, CheckCircle2, ShieldAlert, ArrowRight, Zap, MapPin, Server, Smartphone, HardDrive, ShieldCheck, Mail, Bluetooth, Layers, Eye, EyeOff } from 'lucide-react';
 
@@ -49,11 +51,27 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
   const hwSpecs = detectDeviceHardwareSpecs();
   const mailmanPackets = getMailmanCarrierPackets();
 
+  // На телефоне реальный радиомеш ведёт MeshTransport (нативный BLE),
+  // в браузере — запасной движок bleMeshEngine (Web Bluetooth).
+  const collectNodes = (): BLEPeerDevice[] => {
+    if (Capacitor.isNativePlatform()) {
+      return MeshTransport.getPeers().map((p) => ({
+        id: p.mac || p.uid,
+        name: p.name,
+        connected: true,
+        rssi: p.rssi,
+        lastSeen: p.lastSeen,
+        isNativeAPK: true
+      }));
+    }
+    return bleMeshEngine.getConnectedBLEDevices();
+  };
+
   useEffect(() => {
     if (isOpen) {
       setQueuedPackets(getQueuedMeshPackets());
       setP2PPeers(p2pManager.getAllPeerStatuses());
-      setBleDevices(bleMeshEngine.getConnectedBLEDevices());
+      setBleDevices(collectNodes());
       setAntiDPIMetrics(obfuscationEngine.getMetrics());
       setActiveTier(multiTierRouter.determineActiveTier());
 
@@ -78,13 +96,40 @@ export const MeshInspectorModal: React.FC<MeshInspectorModalProps> = ({
   const handleScanBLE = async () => {
     setIsScanningBLE(true);
     setBleScanError(null);
-    const res = await bleMeshEngine.scanAndConnectBLEDevice();
-    setIsScanningBLE(false);
-    if (res.success) {
-      setBleDevices(bleMeshEngine.getConnectedBLEDevices());
-      playMeshNodeConnectSound();
-    } else if (res.error) {
-      setBleScanError(res.error);
+    try {
+      if (Capacitor.isNativePlatform()) {
+        // Запускаем настоящий нативный BLE-поиск (тот же радиоканал, что и меш-сообщения)
+        await MeshTransport.startContinuousMesh();
+        // Даём радиоэфиру время собрать маяки соседних телефонов
+        await new Promise((r) => setTimeout(r, 2500));
+        const peers = MeshTransport.getPeers();
+        setBleDevices(
+          peers.map((p) => ({
+            id: p.mac || p.uid,
+            name: p.name,
+            connected: true,
+            rssi: p.rssi,
+            lastSeen: p.lastSeen,
+            isNativeAPK: true
+          }))
+        );
+        if (peers.length > 0) {
+          playMeshNodeConnectSound();
+        } else {
+          setBleScanError('Рядом не найдено устройств Ордина. Включите Bluetooth на обоих телефонах и подождите несколько секунд.');
+        }
+        return;
+      }
+
+      const res = await bleMeshEngine.scanAndConnectBLEDevice();
+      if (res.success) {
+        setBleDevices(bleMeshEngine.getConnectedBLEDevices());
+        playMeshNodeConnectSound();
+      } else if (res.error) {
+        setBleScanError(res.error);
+      }
+    } finally {
+      setIsScanningBLE(false);
     }
   };
 

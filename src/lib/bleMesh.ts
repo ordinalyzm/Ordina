@@ -88,24 +88,6 @@ class BLEMeshEngine {
   public init(currentUid: string) {
     this.currentUid = currentUid;
     this.isAPKMode = Capacitor.isNativePlatform();
-
-    if (this.isAPKMode) {
-      // Auto-register native APK node
-      this.registerAPKNativePeer();
-    }
-  }
-
-  private registerAPKNativePeer() {
-    const apkDeviceId = `apk_node_${this.currentUid?.slice(0, 6) || 'local'}`;
-    if (!this.bleDevices.has(apkDeviceId)) {
-      this.bleDevices.set(apkDeviceId, {
-        id: apkDeviceId,
-        name: `Android APK Mesh Модем (${Capacitor.getPlatform().toUpperCase()})`,
-        connected: true,
-        lastSeen: Date.now(),
-        isNativeAPK: true
-      });
-    }
   }
 
   public onPacket(handler: MeshPacketHandler): () => void {

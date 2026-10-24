@@ -35,35 +35,46 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        registerPlugin(MusicLibraryPlugin.class);
         super.onCreate(savedInstanceState);
         checkPermissionsAndStartMesh();
         try {
             if (getBridge() != null && getBridge().getWebView() != null) {
                 getBridge().getWebView().getSettings().setMediaPlaybackRequiresUserGesture(false);
+                getBridge().getWebView().setWebChromeClient(new android.webkit.WebChromeClient() {
+                    @Override
+                    public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                        runOnUiThread(() -> request.grant(request.getResources()));
+                    }
+                });
             }
         } catch (Exception ignored) {}
     }
 
     private void checkPermissionsAndStartMesh() {
+        java.util.List<String> permList = new java.util.ArrayList<>();
+        permList.add(Manifest.permission.RECORD_AUDIO);
+        permList.add(Manifest.permission.CAMERA);
+        permList.add(Manifest.permission.MODIFY_AUDIO_SETTINGS);
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            String[] permissions = {
-                Manifest.permission.BLUETOOTH_ADVERTISE,
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
-            };
+            permList.add(Manifest.permission.BLUETOOTH_ADVERTISE);
+            permList.add(Manifest.permission.BLUETOOTH_SCAN);
+            permList.add(Manifest.permission.BLUETOOTH_CONNECT);
+        }
 
-            boolean allGranted = true;
-            for (String perm : permissions) {
-                if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false;
-                    break;
-                }
+        String[] permissions = permList.toArray(new String[0]);
+        boolean allGranted = true;
+        for (String perm : permissions) {
+            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                allGranted = false;
+                break;
             }
+        }
 
-            if (!allGranted) {
-                ActivityCompat.requestPermissions(this, permissions, 101);
-                return;
-            }
+        if (!allGranted) {
+            ActivityCompat.requestPermissions(this, permissions, 101);
+            return;
         }
         startMeshEngine();
     }

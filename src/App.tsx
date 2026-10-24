@@ -119,6 +119,9 @@ import { MusicTrack, MusicPlaylist } from './types';
 import { DEFAULT_PUBLIC_TRACKS, DEFAULT_PUBLIC_PLAYLISTS } from './utils/defaultMusic';
 import { MeshRouter } from './utils/meshRouter';
 import { safeLocalStorageSet, safeLocalStorageGet, safeLocalStorageRemove, purgeAllMessageCaches } from './utils/safeStorage';
+import { callService } from './services/callService';
+import { CallModal } from './components/CallModal';
+import { GroupCallModal } from './components/GroupCallModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -534,6 +537,9 @@ function AppContent() {
       return DEFAULT_PUBLIC_PLAYLISTS;
     }
   });
+
+  // Реальное число подписчиков по авторам (artistId -> количество)
+  const [artistSubscriberCounts, setArtistSubscriberCounts] = useState<Record<string, number>>({});
 
   const persistMusicTracks = useCallback((tracks: MusicTrack[]) => {
     setPersistentBackup('ordina_music_tracks', tracks).catch(() => {});
@@ -1124,7 +1130,7 @@ function AppContent() {
 
         newSocket.emit('auth:sync', {
           uid: user.uid,
-          displayName: localP?.displayName || user.displayName || 'Anonymous',
+          displayName: localP?.displayName || user.displayName || '',
           photoURL: localP?.photoURL || user.photoURL || '',
           bio: localP?.bio || '',
           username: localP?.username || '',
@@ -1175,9 +1181,11 @@ function AppContent() {
       newSocket.emit('groups:fetch');
       newSocket.emit('stickers:list');
       newSocket.emit('music:fetch');
+      newSocket.emit('artist:get_all_counts');
       if (user?.uid) {
         newSocket.emit('bots:list', user.uid);
       }
+      newSocket.emit('voice-room:get-all');
     };
 
     if (newSocket.connected) {
@@ -1236,6 +1244,53 @@ function AppContent() {
     // Tier 1: Real WebRTC P2P Signaling Receiver
     newSocket.on('p2p:signal', (signalData: any) => {
       p2pManager.handleSignal(signalData);
+    });
+
+    // ====================================================
+    // WebRTC 1-on-1 Audio/Video Calls & Group Voice Rooms
+    // ====================================================
+    newSocket.on('call:incoming', (payload: { callId: string; caller: any; isVideo: boolean; chatId: string }) => {
+      if (callService.state !== 'idle') {
+        newSocket.emit('call:busy', { callId: payload.callId, callerUid: payload.caller?.uid });
+        return;
+      }
+      callService.handleIncomingCall(payload.callId, payload.caller, payload.isVideo, payload.chatId);
+      addToast(`Входящий ${payload.isVideo ? 'видеовызов' : 'аудиовызов'} от ${payload.caller?.displayName || 'Пользователь'}`, 'info');
+    });
+
+    newSocket.on('call:accepted', () => {
+      callService.handleCallAccepted();
+      addToast('Вызов принят, защищенное соединение установлено', 'success');
+    });
+
+    newSocket.on('call:rejected', (payload: { callId: string; reason?: string }) => {
+      callService.cleanup();
+      addToast(payload?.reason ? `Вызов отклонен: ${payload.reason}` : 'Абонент отклонил вызов', 'info');
+    });
+
+    newSocket.on('call:ended', () => {
+      callService.cleanup();
+      addToast('Звонок завершён', 'info');
+    });
+
+    newSocket.on('call:busy', () => {
+      callService.cleanup();
+      addToast('Абонент сейчас занят другим звонком', 'error');
+    });
+
+    newSocket.on('call:signal', (payload: { callId: string; fromUid: string; data: any }) => {
+      callService.handleSignal(payload.data);
+    });
+
+    newSocket.on('voice-room:status', (data: { roomId: string; active: boolean; count: number; participants: any[] }) => {
+      setActiveVoiceRoomsMap(prev => ({
+        ...prev,
+        [data.roomId]: data.active ? data.participants : []
+      }));
+    });
+
+    newSocket.on('voice-room:all-rooms', (all: Record<string, any[]>) => {
+      setActiveVoiceRoomsMap(all || {});
     });
 
      newSocket.on('message:received', async (msg: Message) => {
@@ -1380,7 +1435,8 @@ function AppContent() {
         const updated = { ...prev, activeChats: newActive, hiddenChats: newHidden };
         // Don't auto-emit every single message arrival if it's already at top
         if (activeChats[0] !== chatId || hiddenChats.includes(chatId)) {
-          socket?.emit('profile:update', { uid: user.uid, profile: updated });
+          // Отправляем только список чатов, чтобы случайно не перезаписать весь профиль на сервере
+          socket?.emit('profile:update', { uid: user.uid, profile: { activeChats: newActive, hiddenChats: newHidden } });
         }
         return updated;
       });
@@ -1458,9 +1514,18 @@ function AppContent() {
     });
 
     newSocket.on('users:list', (uList: UserProfile[]) => {
-      setUsers(uList);
-      safeLocalStorageSet('ordina_cached_users', JSON.stringify(uList));
-      setPersistentBackup('ordina_cached_users', uList).catch(() => {});
+      if (!Array.isArray(uList) || uList.length === 0) {
+        console.warn('[Sync] Пустой список пользователей проигнорирован — личные чаты не удаляем');
+        return;
+      }
+      // Объединяем с уже известными пользователями: неполный ответ сервера
+      // не должен «удалять» личные чаты из списка.
+      const mergedMap = new Map((usersRef.current || []).map(u => [u.uid, u]));
+      uList.forEach(u => { if (u?.uid) mergedMap.set(u.uid, u); });
+      const merged = Array.from(mergedMap.values());
+      setUsers(merged);
+      safeLocalStorageSet('ordina_cached_users', JSON.stringify(merged));
+      setPersistentBackup('ordina_cached_users', merged).catch(() => {});
     });
 
     newSocket.on('groups:list', (gList: Group[]) => {
@@ -1539,11 +1604,19 @@ function AppContent() {
       // Use functional update to avoid stale profile closure
       setProfile(prev => {
         if (prev?.uid === updatedUser.uid) {
-          const mergedActive = Array.from(new Set([
-            'global_channel',
-            ...(updatedUser.activeChats || []),
-            ...(prev.activeChats || [])
-          ]));
+          const deletedKey = `ordina_deleted_chats_${updatedUser.uid || 'guest'}`;
+          let tombstones = new Set<string>();
+          try {
+            const savedDeleted = localStorage.getItem(deletedKey);
+            if (savedDeleted) tombstones = new Set(JSON.parse(savedDeleted));
+          } catch (e) {}
+
+          // Список чатов объединяем, а не заменяем: устаревший ответ сервера не должен удалять чаты пользователя
+          const serverList = (updatedUser.activeChats || []).filter((id: string) => !tombstones.has(id));
+          const activeList = Array.from(new Set([...(prev.activeChats || []), ...serverList]))
+            .filter((id: string) => !tombstones.has(id));
+          if (!activeList.includes('global_channel')) activeList.unshift('global_channel');
+
           return {
             ...prev,
             ...updatedUser,
@@ -1551,7 +1624,7 @@ function AppContent() {
             photoURL: updatedUser.photoURL || prev.photoURL || '',
             username: updatedUser.username || prev.username || '',
             bio: updatedUser.bio || prev.bio || '',
-            activeChats: mergedActive
+            activeChats: activeList
           };
         }
         return prev;
@@ -1563,11 +1636,20 @@ function AppContent() {
       setProfile(prev => {
         if (!prev) return syncedProfile;
         if (prev.uid !== syncedProfile.uid) return prev;
-        const mergedActive = Array.from(new Set([
-          'global_channel',
-          ...(syncedProfile.activeChats || []),
-          ...(prev.activeChats || [])
-        ]));
+
+        const deletedKey = `ordina_deleted_chats_${syncedProfile.uid || 'guest'}`;
+        let tombstones = new Set<string>();
+        try {
+          const savedDeleted = localStorage.getItem(deletedKey);
+          if (savedDeleted) tombstones = new Set(JSON.parse(savedDeleted));
+        } catch (e) {}
+
+        // Список чатов объединяем, а не заменяем: устаревший ответ сервера не должен удалять чаты пользователя
+        const serverList = (syncedProfile.activeChats || []).filter((id: string) => !tombstones.has(id));
+        const activeList = Array.from(new Set([...(prev.activeChats || []), ...serverList]))
+          .filter((id: string) => !tombstones.has(id));
+        if (!activeList.includes('global_channel')) activeList.unshift('global_channel');
+
         return {
           ...prev,
           ...syncedProfile,
@@ -1575,7 +1657,7 @@ function AppContent() {
           photoURL: syncedProfile.photoURL || prev.photoURL || '',
           username: syncedProfile.username || prev.username || '',
           bio: syncedProfile.bio || prev.bio || '',
-          activeChats: mergedActive
+          activeChats: activeList
         };
       });
 
@@ -1629,16 +1711,9 @@ function AppContent() {
 
     newSocket.on('auth:sync_error', (data: any) => {
       console.error('Auth sync error:', data);
+      // Профиль и список чатов не трогаем: раньше здесь оставался только «Ордина Глобал»,
+      // и все чаты выглядели удалёнными, а профиль терял имя и юзернейм.
       addToast('Ошибка синхронизации профиля', 'error');
-      if (user) {
-        setProfile({
-          uid: user.uid,
-          displayName: user.displayName || 'Пользователь',
-          status: 'online',
-          lastSeen: new Date().toISOString(),
-          activeChats: ['global_channel']
-        } as UserProfile);
-      }
     });
 
     newSocket.on('device:terminated', (data: { deviceId: string }) => {
@@ -1657,25 +1732,16 @@ function AppContent() {
       }
     });
 
-    newSocket.on('chat:deleted_everyone', (otherUserId: string) => {
-      clearChatLocalCache(otherUserId, user?.uid);
-      if (user?.uid) {
-        clearChatLocalCache([user.uid, otherUserId].sort().join('_'), user.uid);
+    newSocket.on('chat:deleted_for_me', (targetId: string) => {
+      purgeChatDataLocally(targetId);
+      if (selectedChatRef.current?.id === targetId) {
+        setSelectedChat(null);
+        setMobileView('list');
       }
-      setMessages(prev => prev.filter(m => !(m.senderId === otherUserId && m.receiverId === user?.uid) && !(m.senderId === user?.uid && m.receiverId === otherUserId)));
-      setRecentPreviews(prev => {
-        const next = { ...prev };
-        delete next[otherUserId];
-        return next;
-      });
-      setProfile(prev => {
-        if (!prev) return prev;
-        const newActive = (prev.activeChats || []).filter(id => id !== otherUserId);
-        if (!newActive.includes('global_channel')) {
-          newActive.unshift('global_channel');
-        }
-        return { ...prev, activeChats: newActive };
-      });
+    });
+
+    newSocket.on('chat:deleted_everyone', (otherUserId: string) => {
+      purgeChatDataLocally(otherUserId);
       if (selectedChatRef.current?.id === otherUserId) {
         setSelectedChat(null);
         setMobileView('list');
@@ -1685,27 +1751,17 @@ function AppContent() {
     newSocket.on('chat:purged', (data: { user1: string, user2: string }) => {
       if (user?.uid === data.user1 || user?.uid === data.user2) {
         const otherId = user.uid === data.user1 ? data.user2 : data.user1;
-        clearChatLocalCache(otherId, user.uid);
-        clearChatLocalCache([data.user1, data.user2].sort().join('_'), user.uid);
-        setMessages(prev => prev.filter(m => !(m.senderId === otherId && m.receiverId === user.uid) && !(m.senderId === user.uid && m.receiverId === otherId)));
-        setRecentPreviews(prev => {
-          const next = { ...prev };
-          delete next[otherId];
-          return next;
-        });
-        setProfile(prev => {
-          if (!prev) return prev;
-          const newActive = (prev.activeChats || []).filter(id => id !== otherId);
-          if (!newActive.includes('global_channel')) {
-            newActive.unshift('global_channel');
-          }
-          return { ...prev, activeChats: newActive };
-        });
+        purgeChatDataLocally(otherId);
         if (selectedChatRef.current?.id === otherId) {
           setSelectedChat(null);
           setMobileView('list');
         }
       }
+    });
+
+    newSocket.on('group:delete_denied', () => {
+      addToast('Недостаточно прав для удаления группы', 'error');
+      newSocket.emit('groups:fetch', { uid: user?.uid });
     });
 
     newSocket.on('group:deleted', (groupId: string) => {
@@ -1831,6 +1887,15 @@ function AppContent() {
         persistMusicTracks(next);
         return next;
       });
+    });
+
+    newSocket.on('artist:all_subscribers_counts', ({ counts }: { counts: Record<string, number> }) => {
+      setArtistSubscriberCounts(counts || {});
+    });
+
+    newSocket.on('artist:subscribers_count', ({ artistId, count }: { artistId: string; count: number }) => {
+      if (!artistId) return;
+      setArtistSubscriberCounts(prev => ({ ...prev, [artistId]: count }));
     });
 
     newSocket.on('music:playlists:list', (pls: MusicPlaylist[]) => {
@@ -2856,6 +2921,7 @@ function AppContent() {
 
   const handleToggleSubscribe = (uploaderId: string) => {
     if (!user) return;
+    const wasSubscribed = subscriptions.includes(uploaderId);
     setSubscriptions(prev => {
       const next = prev.includes(uploaderId)
         ? prev.filter(id => id !== uploaderId)
@@ -2866,6 +2932,14 @@ function AppContent() {
       addToast(next.includes(uploaderId) ? 'Вы подписались на автора!' : 'Вы отписались от автора', 'success');
       return next;
     });
+    // Синхронизируем реальное число подписчиков с сервером
+    if (socket && socket.connected) {
+      if (wasSubscribed) {
+        socket.emit('artist:unsubscribe', { artistId: uploaderId, subscriberId: user.uid });
+      } else {
+        socket.emit('artist:subscribe', { artistId: uploaderId, subscriberId: user.uid });
+      }
+    }
   };
 
   const handleToggleLikeMusicTrack = (trackId: string) => {
@@ -3197,6 +3271,26 @@ function AppContent() {
   const [showBugReportModal, setShowBugReportModal] = useState(false);
   const [showShareAppModal, setShowShareAppModal] = useState(false);
   const [showTextSafetyModal, setShowTextSafetyModal] = useState(false);
+  const [isGroupCallOpen, setIsGroupCallOpen] = useState(false);
+  const [activeVoiceRoomsMap, setActiveVoiceRoomsMap] = useState<Record<string, any[]>>({});
+  const [activeGroupCallRoom, setActiveGroupCallRoom] = useState<{ id: string; name: string; type: 'group' | 'channel' } | null>(null);
+
+  const handleStartGroupCall = useCallback((customRoom?: { id: string; name: string; type: 'group' | 'channel' }) => {
+    if (customRoom) {
+      setActiveGroupCallRoom(customRoom);
+      setIsGroupCallOpen(true);
+      return;
+    }
+    if (!selectedChat || selectedChat.type === 'user') return;
+    const activeGroup = groups.find(g => g.id === selectedChat.id);
+    const roomType = activeGroup?.type === 'channel' ? 'channel' : (selectedChat.type === 'channel' ? 'channel' : 'group');
+    setActiveGroupCallRoom({
+      id: selectedChat.id,
+      name: activeGroup?.name || (roomType === 'channel' ? 'Канал' : 'Группа'),
+      type: roomType
+    });
+    setIsGroupCallOpen(true);
+  }, [selectedChat, groups]);
   const [dismissedRiskText, setDismissedRiskText] = useState<string>('');
   const [showInlineRiskDetails, setShowInlineRiskDetails] = useState<boolean>(false);
   const [aiRiskResult, setAiRiskResult] = useState<DetectedRisk | null>(null);
@@ -3388,6 +3482,79 @@ function AppContent() {
     } catch (error) {
       addToast('Ошибка при создании опроса', 'error');
     }
+  };
+
+  // Real-time Calling Service signal transmitter hook
+  useEffect(() => {
+    callService.onSignal = (targetUid, data) => {
+      if (socket && socket.connected && callService.currentCall) {
+        socket.emit('call:signal', {
+          callId: callService.currentCall.callId,
+          targetUid,
+          data
+        });
+      }
+    };
+    // Показываем пользователю понятную причину, если звонок не может начаться
+    callService.onError = (message) => addToast(message, 'error');
+  }, [socket, addToast]);
+
+  const handleStartDirectCall = (isVideo: boolean, customTargetUser?: UserProfile | null) => {
+    if (!user) return;
+    const target = customTargetUser || (selectedChat?.type === 'user' ? users.find(u => u.uid === selectedChat.id) : null);
+    if (!target) {
+      addToast('Не удалось определить пользователя для вызова', 'error');
+      return;
+    }
+    const callId = `call_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const myProfile: any = profile || user;
+
+    socket?.emit('call:initiate', {
+      callId,
+      targetUid: target.uid,
+      caller: {
+        uid: user.uid,
+        displayName: myProfile.displayName || 'Пользователь',
+        photoURL: myProfile.photoURL
+      },
+      isVideo,
+      chatId: target.uid
+    });
+
+    callService.startOutgoingCall(callId, {
+      uid: target.uid,
+      displayName: target.displayName || 'Пользователь',
+      photoURL: target.photoURL
+    }, isVideo, target.uid);
+  };
+
+  const handleAcceptCall = () => {
+    if (!callService.currentCall || !user) return;
+    socket?.emit('call:accept', {
+      callId: callService.currentCall.callId,
+      callerUid: callService.currentCall.partner.uid,
+      targetUid: user.uid
+    });
+    callService.acceptCall();
+  };
+
+  const handleRejectCall = () => {
+    if (!callService.currentCall || !user) return;
+    socket?.emit('call:reject', {
+      callId: callService.currentCall.callId,
+      callerUid: callService.currentCall.partner.uid,
+      targetUid: user.uid
+    });
+    callService.cleanup();
+  };
+
+  const handleEndCall = () => {
+    if (!callService.currentCall || !user) return;
+    socket?.emit('call:end', {
+      callId: callService.currentCall.callId,
+      targetUid: callService.currentCall.partner.uid
+    });
+    callService.cleanup();
   };
 
   const confirm = useCallback((title: string, message: string, onConfirm: () => void) => {
@@ -3894,6 +4061,15 @@ function AppContent() {
   const attachmentMenuRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
 
+  // Автовысота поля ввода: следим за текстом, в том числе когда он задан программно
+  // (черновик/редактирование), чтобы строки не накладывались друг на друга
+  useEffect(() => {
+    const el = messageInputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 144)}px`;
+  }, [inputText, selectedChat?.id]);
+
   // Close menus on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -4264,10 +4440,14 @@ function AppContent() {
       } : null;
     })() : null;
     
+    // Пустые поля не должны перезаписывать уже сохранённые имя и юзернейм
+    const safeDisplayName = editName.trim() || profile.displayName || '';
+    const safeUsername = editUsername.trim() || profile.username || '';
+
     const updatedProfile = {
       ...profile,
-      displayName: editName,
-      username: editUsername,
+      displayName: safeDisplayName,
+      username: safeUsername,
       bio: editBio,
       photoURL: editAvatar,
       profileBackgroundURL: editBackgroundURL,
@@ -4292,7 +4472,7 @@ function AppContent() {
     // Auth profile also needs safe updating
     try {
       await safeUpdateProfile(user, {
-        displayName: editName,
+        displayName: safeDisplayName,
         photoURL: editAvatar
       });
       addToast('Профиль сохранен', 'success');
@@ -5744,6 +5924,9 @@ function AppContent() {
   const purgeChatDataLocally = (chatId: string) => {
     if (chatId === 'global_channel') return;
     clearChatLocalCache(chatId, user?.uid);
+    if (user?.uid) {
+      clearChatLocalCache([user.uid, chatId].sort().join('_'), user.uid);
+    }
     setMessages(prev => prev.filter(m => 
       m.groupId !== chatId && 
       !( (m.senderId === user?.uid && m.receiverId === chatId) || (m.senderId === chatId && m.receiverId === user?.uid) )
@@ -5751,7 +5934,29 @@ function AppContent() {
     setRecentPreviews(prev => {
       const next = { ...prev };
       delete next[chatId];
+      setPersistentBackup('ordina_recent_previews', next).catch(() => {});
       return next;
+    });
+
+    // Record in deleted chats tombstone so delta/profile sync doesn't resurrect it
+    try {
+      const deletedKey = `ordina_deleted_chats_${user?.uid || 'guest'}`;
+      const savedDeleted = localStorage.getItem(deletedKey);
+      const list = savedDeleted ? JSON.parse(savedDeleted) : [];
+      if (!list.includes(chatId)) {
+        list.push(chatId);
+        safeLocalStorageSet(deletedKey, JSON.stringify(list));
+        setPersistentBackup(deletedKey, list).catch(() => {});
+      }
+    } catch (e) {}
+
+    setProfile(prev => {
+      if (!prev) return prev;
+      const newActive = (prev.activeChats || []).filter(id => id !== chatId);
+      if (!newActive.includes('global_channel')) {
+        newActive.unshift('global_channel');
+      }
+      return { ...prev, activeChats: newActive };
     });
   };
 
@@ -5782,7 +5987,7 @@ function AppContent() {
       setMobileView('list');
       setShowDeleteModal(false);
     } else {
-      socket?.emit('chat:delete_everyone', { user1: user.uid, user2: chatId });
+      socket?.emit('chat:delete_for_me', { userId: user.uid, targetId: chatId });
       setSelectedChat(null);
       setMobileView('list');
       setShowDeleteModal(false);
@@ -5821,7 +6026,7 @@ function AppContent() {
         socket?.emit('group:leave', { id: chatId, uid: user.uid });
         if (selectedChat?.id === chatId) { setSelectedChat(null); setMobileView('list'); }
     } else {
-      socket?.emit('chat:delete_everyone', { user1: user.uid, user2: chatId });
+      socket?.emit('chat:delete_for_me', { userId: user.uid, targetId: chatId });
       if (selectedChat?.id === chatId) { setSelectedChat(null); setMobileView('list'); }
     }
   };
@@ -6862,22 +7067,35 @@ function AppContent() {
               )}
 
               {/* Direct Messages (ЛС) */}
-              {(chatFolder === 'all' || chatFolder === 'direct' || chatFolder === 'archive') && (
-                users.filter(u => {
+              {(chatFolder === 'all' || chatFolder === 'direct' || chatFolder === 'archive') && (() => {
+                const directUsersList = users.filter(u => {
                   if (u.uid === user?.uid) return false;
                   const isArchived = archivedChats.includes(u.uid);
                   if (chatFolder === 'archive') return isArchived;
                   if (isArchived) return false;
                   return ((profile?.activeChats || []).includes(u.uid) || Boolean(recentPreviews[u.uid]) || Boolean(lastMessages[u.uid])) && 
                          !(profile?.hiddenChats || []).includes(u.uid);
-                })
-                .sort((a,b) => {
+                }).sort((a,b) => {
                    const aPinned = (profile?.pinnedChats || []).includes(a.uid);
                    const bPinned = (profile?.pinnedChats || []).includes(b.uid);
                    if (aPinned && !bPinned) return -1;
                    if (!aPinned && bPinned) return 1;
                    return 0;
-                }).map(u => {
+                });
+
+                if (chatFolder === 'direct' && directUsersList.length === 0) {
+                  return (
+                    <div className="py-8 px-4 text-center text-slate-400 text-xs animate-fade-in">
+                      <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-2 text-slate-400">
+                        <Users size={24} />
+                      </div>
+                      <p className="font-bold text-slate-700 dark:text-slate-200 mb-1">Нет активных личных диалогов</p>
+                      <p className="text-[11px] text-slate-400">Используйте поиск вверху, чтобы найти собеседника по имени или @юзернейму.</p>
+                    </div>
+                  );
+                }
+
+                return directUsersList.map(u => {
                   const isPinned = (profile?.pinnedChats || []).includes(u.uid);
                   const isMuted = mutedChats.includes(u.uid) || (profile?.mutedChats?.[u.uid] && (profile.mutedChats[u.uid] === -1 || profile.mutedChats[u.uid] > Date.now()));
                   const isSelected = selectedChatListIds.includes(u.uid);
@@ -6988,8 +7206,8 @@ function AppContent() {
                       </div>
                     </motion.button>
                   );
-                })
-              )}
+                });
+              })()}
 
               {/* Groups & Channels */}
               {(chatFolder === 'all' || chatFolder === 'groups' || chatFolder === 'channels' || chatFolder === 'archive') && (
@@ -7078,6 +7296,17 @@ function AppContent() {
                               {g.isVerified && <Shield size={14} className="text-blue-500 fill-blue-50 shrink-0" />}
                               {isPinned && <Pin size={12} className={selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-200" : "text-slate-400"} />}
                               {isMuted && <BellOff size={12} className={selectedChat?.id === g.id && !isChatListSelectionMode ? "text-blue-200" : "text-amber-500"} />}
+                              {activeVoiceRoomsMap[g.id]?.length > 0 && (
+                                <span className={cn(
+                                  "flex items-center gap-1 text-[9px] font-black px-1.5 py-0.5 rounded-md shrink-0 animate-pulse",
+                                  selectedChat?.id === g.id && !isChatListSelectionMode 
+                                    ? "bg-emerald-400 text-slate-950" 
+                                    : "bg-emerald-500/20 text-emerald-500 border border-emerald-500/30"
+                                )}>
+                                  <Radio size={9} />
+                                  <span>Эфир ({activeVoiceRoomsMap[g.id].length})</span>
+                                </span>
+                              )}
                             </div>
                             <div className="flex items-center gap-1.5 shrink-0 ml-2">
                               {unreadCounts[g.id] > 0 && (
@@ -7745,8 +7974,8 @@ function AppContent() {
                             </div>
                           </div>
 
-                          {/* Telegram-style 4-Button Action Row */}
-                          <div className="grid grid-cols-4 gap-2">
+                          {/* Telegram-style 5-Button Action Row */}
+                          <div className="grid grid-cols-5 gap-1.5">
                             {!isSelf ? (
                               <>
                                 {/* 1. Message */}
@@ -7762,6 +7991,21 @@ function AppContent() {
                                 >
                                   <Send size={18} className="mb-1 text-blue-600" />
                                   <span className="text-[10px] font-bold">Написать</span>
+                                </button>
+
+                                {/* 2. Call */}
+                                <button 
+                                  onClick={() => {
+                                    setShowProfile(false);
+                                    if (targetProfile) {
+                                      handleStartDirectCall(false, targetProfile);
+                                    }
+                                  }}
+                                  className="flex flex-col items-center justify-center p-2.5 bg-slate-50 hover:bg-slate-100 rounded-2xl text-slate-700 transition-all active:scale-95 border border-slate-100 shadow-2xs"
+                                  title="Аудиозвонок"
+                                >
+                                  <Phone size={18} className="mb-1 text-emerald-600" />
+                                  <span className="text-[10px] font-bold text-emerald-700">Звонок</span>
                                 </button>
 
                                 {/* 2. Mute/Unmute */}
@@ -10709,16 +10953,47 @@ function AppContent() {
                     <Settings size={20} />
                   </button>
                 )}
-                 {selectedChat.type === 'user' && selectedChat.id !== user?.uid && (
+                {/* 1-on-1 Direct Audio & Video Call buttons */}
+                {selectedChat.type === 'user' && selectedChat.id !== user?.uid && (
+                  <div className="flex items-center gap-0.5">
+                    <button 
+                      type="button"
+                      onClick={() => handleStartDirectCall(false)}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-emerald-600 dark:hover:text-emerald-400 rounded-xl transition-all active:scale-95"
+                      title="Аудиозвонок (WebRTC P2P)"
+                    >
+                      <Phone size={19} />
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => handleStartDirectCall(true)}
+                      className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl transition-all active:scale-95"
+                      title="Видеозвонок (HD видео)"
+                    >
+                      <VideoIcon size={20} />
+                    </button>
+                  </div>
+                )}
+
+                {/* Group Voice Chat & Live Broadcast Button */}
+                {selectedChat.type !== 'user' && (
                   <button 
-                    onClick={() => {
-                      if ((window as any).addToast) {
-                        (window as any).addToast('Звонки скоро появятся! Мы работаем над качеством.', 'info');
-                      }
-                    }}
-                    className="p-2 hover:bg-slate-100 rounded-xl text-slate-500 transition-colors"
+                    type="button"
+                    onClick={() => handleStartGroupCall()}
+                    className={cn(
+                      "p-2 rounded-xl transition-all flex items-center gap-1.5 text-xs font-bold active:scale-95",
+                      activeVoiceRoomsMap[selectedChat.id]?.length > 0
+                        ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 ring-2 ring-emerald-500/20"
+                        : "hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300"
+                    )}
+                    title={selectedChat.type === 'channel' ? "Прямой эфир / Трансляция" : "Голосовой чат группы"}
                   >
-                    <Phone size={20} />
+                    <Radio size={19} className={activeVoiceRoomsMap[selectedChat.id]?.length > 0 ? "text-emerald-600 dark:text-emerald-400 animate-pulse" : ""} />
+                    {activeVoiceRoomsMap[selectedChat.id]?.length > 0 && (
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-extrabold hidden sm:inline">
+                        ЭФИР ({activeVoiceRoomsMap[selectedChat.id].length})
+                      </span>
+                    )}
                   </button>
                 )}
                 <button 
@@ -10909,6 +11184,36 @@ function AppContent() {
               </>
               )}
             </div>
+
+            {/* Live Broadcast / Group Voice Chat Alert Banner */}
+            {selectedChat.type !== 'user' && activeVoiceRoomsMap[selectedChat.id]?.length > 0 && (
+              <div className="bg-gradient-to-r from-emerald-600 via-emerald-500 to-teal-600 text-white px-4 py-2.5 flex items-center justify-between shadow-md z-30 animate-fade-in border-b border-emerald-400/30">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-xl bg-white/20 backdrop-blur-md flex items-center justify-center shrink-0">
+                    <Radio size={16} className="animate-pulse" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold truncate">
+                      {selectedChat.type === 'channel' ? 'Прямой эфир в канале' : 'Голосовой чат группы'}
+                    </p>
+                    <p className="text-[10px] text-emerald-100 flex items-center gap-1.5">
+                      <span className="font-semibold">{activeVoiceRoomsMap[selectedChat.id].length} в эфире:</span>
+                      <span className="truncate opacity-90">
+                        {activeVoiceRoomsMap[selectedChat.id].map(p => p.displayName).slice(0, 3).join(', ')}
+                        {activeVoiceRoomsMap[selectedChat.id].length > 3 && '...'}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleStartGroupCall()}
+                  className="px-3 py-1.5 rounded-xl bg-white text-emerald-800 text-xs font-extrabold hover:bg-emerald-50 transition-all active:scale-95 shadow-sm shrink-0"
+                >
+                  Войти в эфир
+                </button>
+              </div>
+            )}
 
             {/* Pinned Message Banner */}
             <PinnedMessageBanner
@@ -11126,6 +11431,7 @@ function AppContent() {
                               )}
                               {!isMe && selectedChat.type !== 'user' && (
                                 <div 
+                                  data-no-menu="true"
                                   onClick={() => {
                                     setViewedProfile(sender || null);
                                     setShowProfile(true);
@@ -11145,6 +11451,7 @@ function AppContent() {
                               )}>
                       {!isMe && selectedChat.type !== 'user' && (
                         <span 
+                          data-no-menu="true"
                           onClick={() => {
                             setViewedProfile(sender || null);
                             setShowProfile(true);
@@ -11189,6 +11496,7 @@ function AppContent() {
                           const repliedMsg = messages.find(m => m.id === msg.replyToId);
                           return (
                             <div 
+                              data-no-menu="true"
                               onClick={(e) => { 
                                 e.stopPropagation(); 
                                 scrollToMessage(msg.replyToId!); 
@@ -11263,52 +11571,92 @@ function AppContent() {
                           </>
                         )}
 
-                        {msg.type === 'image' && msg.fileUrl && msg.fileName !== 'sticker.jpg' && (
-                          <FirestoreMedia 
-                            url={msg.fileUrl} 
-                            type="image"
-                            fileName={msg.fileName}
-                            className="rounded-xl max-w-[240px] max-h-[240px] object-cover cursor-pointer hover:opacity-90 transition-opacity" 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const mediaOnly = messages.filter(m => m.type === 'image' && m.fileName !== 'sticker.jpg' || m.type === 'video');
-                              const index = mediaOnly.findIndex(m => m.id === msg.id);
-                              if (index !== -1) setSelectedMediaIndex(index);
-                            }}
-                          />
+                        {(() => {
+                          const resolvedMediaUrl = msg.fileUrl || (msg as any).url || (msg as any).attachment?.url || (msg as any).attachmentUrl;
+                          const isSticker = (msg.type === 'image' || (msg as any).type === 'sticker') && msg.fileName === 'sticker.jpg';
+                          const isImageMsg = (msg.type === 'image' || (msg as any).attachment?.type === 'image' || (!msg.type && resolvedMediaUrl && /\.(jpg|jpeg|png|webp|gif)$/i.test(resolvedMediaUrl))) && !isSticker;
+                          const isVideoMsg = msg.type === 'video' || (msg as any).attachment?.type === 'video' || (!msg.type && resolvedMediaUrl && /\.(mp4|webm|mov|mkv)$/i.test(resolvedMediaUrl));
+
+                          if (isSticker && resolvedMediaUrl) {
+                            return (
+                              <FirestoreMedia 
+                                url={resolvedMediaUrl} 
+                                type="image"
+                                fileName={msg.fileName}
+                                className="rounded-xl max-w-[120px] max-h-[120px] object-contain" 
+                              />
+                            );
+                          }
+
+                          if (isImageMsg) {
+                            if (resolvedMediaUrl) {
+                              return (
+                                <FirestoreMedia 
+                                  url={resolvedMediaUrl} 
+                                  type="image"
+                                  fileName={msg.fileName}
+                                  className="rounded-xl max-w-[240px] max-h-[240px] object-cover cursor-pointer hover:opacity-90 transition-opacity" 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const mediaOnly = messages.filter(m => (m.type === 'image' && m.fileName !== 'sticker.jpg') || m.type === 'video');
+                                    const index = mediaOnly.findIndex(m => m.id === msg.id);
+                                    if (index !== -1) setSelectedMediaIndex(index);
+                                  }}
+                                />
+                              );
+                            } else {
+                              return (
+                                <div className="p-3 bg-black/5 dark:bg-white/5 rounded-xl text-xs text-slate-500 flex items-center gap-2">
+                                  <ImageIcon size={18} className="text-slate-400" />
+                                  <span>[Изображение]</span>
+                                </div>
+                              );
+                            }
+                          }
+
+                          if (isVideoMsg) {
+                            if (resolvedMediaUrl) {
+                              return (
+                                <div className="relative cursor-pointer group/video" data-no-menu="true" onClick={(e) => {
+                                  e.stopPropagation();
+                                  const mediaOnly = messages.filter(m => (m.type === 'image' && m.fileName !== 'sticker.jpg') || m.type === 'video');
+                                  const index = mediaOnly.findIndex(m => m.id === msg.id);
+                                  if (index !== -1) setSelectedMediaIndex(index);
+                                }}>
+                                  <FirestoreMedia 
+                                    url={resolvedMediaUrl} 
+                                    type="video"
+                                    fileName={msg.fileName}
+                                    className="rounded-xl max-w-[240px] max-h-[240px] object-cover pointer-events-none" 
+                                  />
+                                  <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover/video:bg-black/30 transition-colors rounded-xl">
+                                    <Play size={32} className="text-white opacity-80 group-hover:opacity-100 transition-opacity" />
+                                  </div>
+                                </div>
+                              );
+                            } else {
+                              return (
+                                <div className="p-3 bg-black/5 dark:bg-white/5 rounded-xl text-xs text-slate-500 flex items-center gap-2">
+                                  <VideoIcon size={18} className="text-slate-400" />
+                                  <span>[Видео]</span>
+                                </div>
+                              );
+                            }
+                          }
+
+                          return null;
+                        })()}
+
+                        {!msg.text && !msg.content && !msg.fileUrl && !(msg as any).url && !(msg as any).attachment && msg.type !== 'audio' && msg.type !== 'game' && (
+                          <p className="text-xs italic opacity-60">[Сообщение]</p>
                         )}
-                        {msg.type === 'image' && msg.fileUrl && msg.fileName === 'sticker.jpg' && (
-                          <FirestoreMedia 
-                            url={msg.fileUrl} 
-                            type="image"
-                            fileName={msg.fileName}
-                            className="rounded-xl max-w-[120px] max-h-[120px] object-contain" 
-                          />
-                        )}
-                        {msg.type === 'video' && msg.fileUrl && (
-                          <div className="relative cursor-pointer group/video" onClick={(e) => {
-                            e.stopPropagation();
-                            const mediaOnly = messages.filter(m => m.type === 'image' && m.fileName !== 'sticker.jpg' || m.type === 'video');
-                            const index = mediaOnly.findIndex(m => m.id === msg.id);
-                            if (index !== -1) setSelectedMediaIndex(index);
-                          }}>
-                            <FirestoreMedia 
-                              url={msg.fileUrl} 
-                              type="video"
-                              fileName={msg.fileName}
-                              className="rounded-xl max-w-[240px] max-h-[240px] object-cover pointer-events-none" 
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover/video:bg-black/30 transition-colors rounded-xl">
-                              <Play size={32} className="text-white opacity-80 group-hover:opacity-100 transition-opacity" />
-                            </div>
-                          </div>
-                        )}
-                        {msg.type === 'file' && (
+
+                        {(msg.type === 'file' || (!msg.type && (msg as any).attachment?.type === 'file')) && (
                           <button 
                             onClick={async (e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              const url = msg.fileUrl;
+                              const url = msg.fileUrl || (msg as any).url || (msg as any).attachment?.url || (msg as any).attachmentUrl;
                               if (!url) return;
                               
                               const isPdf = (msg.fileName || '').toLowerCase().endsWith('.pdf');
@@ -12492,7 +12840,12 @@ function AppContent() {
                           disabled={!canSendMessages}
                           onPaste={handlePaste}
                           placeholder={canSendMessages ? "Напишите сообщение..." : "Отправка текста ограничена"} 
-                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-normal outline-none caret-blue-500 dark:caret-amber-400"
+                          style={{
+                            position: 'relative',
+                            zIndex: 10,
+                            opacity: 1
+                          }}
+                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm leading-5 box-border py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-medium outline-none caret-blue-500 dark:caret-amber-400 relative z-10"
                           value={inputText}
                           onChange={(e) => {
                             setInputText(e.target.value);
@@ -13143,6 +13496,166 @@ function AppContent() {
         </div>
       )}
 
+      {/* Multi-chat list delete modal with 5-second countdown */}
+      {chatListDeleteModal && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-xs"
+          onClick={() => setChatListDeleteModal(null)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4 border border-slate-100 dark:border-slate-800 animate-scale-up"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-red-100 dark:bg-red-950/60 text-red-600 flex items-center justify-center shrink-0">
+                  <Trash2 size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Удаление чатов
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Выбрано: {chatListDeleteModal.chatIds.length}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setChatListDeleteModal(null)} 
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Вы действительно хотите удалить выбранные диалоги ({chatListDeleteModal.chatIds.length})?
+            </p>
+
+            {chatListDeleteModal.timer > 0 && (
+              <div className="p-3 bg-amber-50 dark:bg-amber-950/40 rounded-2xl border border-amber-200 dark:border-amber-800 text-xs text-amber-800 dark:text-amber-200 flex items-center gap-2.5">
+                <Clock size={16} className="shrink-0 text-amber-600 animate-spin" />
+                <span>Защита от случайного нажатия: подтверждение станет доступно через <strong>{chatListDeleteModal.timer} сек</strong></span>
+              </div>
+            )}
+
+            <div className="pt-2 space-y-2 flex flex-col">
+              <button
+                type="button"
+                disabled={chatListDeleteModal.timer > 0}
+                onClick={() => executeDeleteChatListForMe(chatListDeleteModal.chatIds)}
+                className={cn(
+                  "w-full py-3 px-4 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-xs",
+                  chatListDeleteModal.timer > 0
+                    ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                    : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 active:scale-98"
+                )}
+              >
+                <Trash2 size={16} /> Удалить для меня
+              </button>
+
+              {chatListDeleteModal.canDeleteForEveryone && (
+                <button
+                  type="button"
+                  disabled={chatListDeleteModal.timer > 0}
+                  onClick={() => executeDeleteChatListForEveryone(chatListDeleteModal.chatIds)}
+                  className={cn(
+                    "w-full py-3 px-4 text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-md",
+                    chatListDeleteModal.timer > 0
+                      ? "bg-red-300 dark:bg-red-900/40 cursor-not-allowed"
+                      : "bg-red-600 hover:bg-red-700 active:scale-98 shadow-red-500/20"
+                  )}
+                >
+                  <Trash2 size={16} /> Удалить для всех
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setChatListDeleteModal(null)}
+                className="w-full py-2.5 px-4 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium text-xs text-center transition-colors mt-1"
+              >
+                Отмена
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Transfer Ownership Modal */}
+      {transferOwnershipGroup && (
+        <div 
+          className="fixed inset-0 bg-black/60 z-[99999] flex items-center justify-center p-4 backdrop-blur-xs"
+          onClick={() => setTransferOwnershipGroup(null)}
+        >
+          <div 
+            className="bg-white dark:bg-slate-900 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4 border border-slate-100 dark:border-slate-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                Передача владения
+              </h3>
+              <button 
+                onClick={() => setTransferOwnershipGroup(null)} 
+                className="p-2 text-slate-400 hover:text-slate-600 rounded-xl"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Вы являетесь владельцем группы «{transferOwnershipGroup.name}». Чтобы выйти, передайте права новому владельцу или удалите группу для всех.
+            </p>
+
+            {((transferOwnershipGroup.members || []).filter(m => m !== user?.uid)).length > 0 && (
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase">Новый владелец:</label>
+                <select
+                  value={selectedNewOwnerId}
+                  onChange={(e) => setSelectedNewOwnerId(e.target.value)}
+                  className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold text-slate-800 dark:text-slate-200"
+                >
+                  {(transferOwnershipGroup.members || []).filter(m => m !== user?.uid).map(mId => {
+                    const memberUser = users.find(u => u.uid === mId);
+                    return (
+                      <option key={mId} value={mId}>
+                        {memberUser?.displayName || mId}
+                      </option>
+                    );
+                  })}
+                </select>
+
+                <button
+                  type="button"
+                  disabled={!selectedNewOwnerId}
+                  onClick={() => handleTransferOwnershipAndLeave(transferOwnershipGroup.id, selectedNewOwnerId)}
+                  className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition-colors"
+                >
+                  Передать права и выйти
+                </button>
+              </div>
+            )}
+
+            <button
+              type="button"
+              onClick={() => handleDeleteGroupForEveryone(transferOwnershipGroup.id)}
+              className="w-full py-2.5 px-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold text-xs transition-colors"
+            >
+              Удалить группу для всех
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setTransferOwnershipGroup(null)}
+              className="w-full py-2 text-slate-400 hover:text-slate-600 text-xs font-medium text-center"
+            >
+              Отмена
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Saved Notebook Modal */}
       <SavedNotebookModal
         isOpen={showSavedNotebookModal}
@@ -13355,6 +13868,7 @@ function AppContent() {
         onShareTrackToChat={handleShareMusicTrackToChat}
         subscriptions={subscriptions}
         onToggleSubscribe={handleToggleSubscribe}
+        subscriberCounts={artistSubscriberCounts}
         onPinTrackToProfile={handlePinTrackToProfile}
         pinnedTrackId={profile?.pinnedTrack?.id}
         initialSearch={musicInitialSearch}
@@ -13487,6 +14001,41 @@ function AppContent() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 1-on-1 Direct Audio & Video Call Modal */}
+      <CallModal
+        callService={callService}
+        onEndCall={handleEndCall}
+        onAcceptCall={handleAcceptCall}
+        onRejectCall={handleRejectCall}
+      />
+
+      {/* Group Voice Rooms & Channel Live Broadcasts Modal */}
+      {activeGroupCallRoom && (
+        <GroupCallModal
+          isOpen={isGroupCallOpen}
+          onClose={() => setIsGroupCallOpen(false)}
+          roomId={activeGroupCallRoom.id}
+          roomName={activeGroupCallRoom.name}
+          roomType={activeGroupCallRoom.type}
+          currentUser={{
+            uid: user?.uid || '',
+            displayName: profile?.displayName || user?.displayName || 'Пользователь',
+            photoURL: profile?.photoURL || undefined
+          }}
+          isOwnerOrAdmin={
+            (() => {
+              const activeGroup = groups.find(g => g.id === activeGroupCallRoom.id);
+              return (activeGroup?.ownerId === user?.uid) || (activeGroup?.memberRoles?.[user?.uid || ''] === 'admin') || isGlobalAdmin;
+            })()
+          }
+          socket={socket}
+          onLeave={() => {
+            setIsGroupCallOpen(false);
+            setActiveGroupCallRoom(null);
+          }}
+        />
+      )}
 
       {/* Highest priority Toasts container on top of all modals and overlays */}
       <ToastsContainer toasts={toasts} />

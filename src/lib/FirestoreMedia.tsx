@@ -115,6 +115,7 @@ export const FirestoreMedia: React.FC<FirestoreMediaProps> = (props) => {
         src={resolvedUrl} 
         alt={fileName || 'Image'} 
         className={className} 
+        data-no-menu="true"
         onClick={onClick}
         loading="lazy"
         decoding="async"

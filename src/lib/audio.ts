@@ -164,3 +164,120 @@ export function triggerHapticFeedback(pattern: number[] = [80, 50, 80]) {
     // Ignore vibration failures
   }
 }
+
+/**
+ * Starts outgoing ringback tone (soft rhythmic 425Hz European dialing tone: 1s sound, 3s pause).
+ * Returns a function to immediately stop the ringtone.
+ */
+export function startOutgoingRingtone(): () => void {
+  let isStopped = false;
+  let intervalId: any = null;
+
+  const playBeep = () => {
+    if (isStopped) return;
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(425, now);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.08, now + 0.05);
+      gain.gain.setValueAtTime(0.08, now + 0.95);
+      gain.gain.linearRampToValueAtTime(0.001, now + 1.0);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 1.0);
+    } catch (e) {}
+  };
+
+  playBeep();
+  intervalId = setInterval(playBeep, 4000);
+
+  return () => {
+    isStopped = true;
+    if (intervalId) clearInterval(intervalId);
+  };
+}
+
+/**
+ * Starts incoming call melodic chime ringtone.
+ * Returns a function to immediately stop the ringtone.
+ */
+export function startIncomingRingtone(): () => void {
+  let isStopped = false;
+  let intervalId: any = null;
+
+  const notes = [587.33, 739.99, 880.00, 1174.66]; // D5, F#5, A5, D6 - uplifting pleasant chord
+
+  const playChimeSequence = () => {
+    if (isStopped) return;
+    try {
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+
+      notes.forEach((freq, idx) => {
+        const time = now + idx * 0.12;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, time);
+
+        gain.gain.setValueAtTime(0.001, time);
+        gain.gain.linearRampToValueAtTime(0.12, time + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.45);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(time);
+        osc.stop(time + 0.45);
+      });
+    } catch (e) {}
+  };
+
+  playChimeSequence();
+  intervalId = setInterval(playChimeSequence, 2400);
+
+  return () => {
+    isStopped = true;
+    if (intervalId) clearInterval(intervalId);
+  };
+}
+
+/**
+ * Plays short descending tone when a call ends
+ */
+export function playCallEndTone() {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.exponentialRampToValueAtTime(220, now + 0.28);
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.28);
+  } catch (e) {}
+}
+
