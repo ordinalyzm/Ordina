@@ -98,10 +98,14 @@ select {
   caret-color: #3b82f6 !important;
 }
 
-/* Explicit fallback guaranteeing text typed in chat, search, forms is always legible */
-.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
-.dark textarea {
-  color: #f8fafc;
+/* Explicit fallback guaranteeing text typed in chat, search, forms is always legible.
+   Правило должно лежать в @layer base: иначе оно перебивает классы цвета текста
+   (text-slate-900 и т.п.), и на белых полях текст становится белым на белом. */
+@layer base {
+  .dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
+  .dark textarea {
+    color: #f8fafc;
+  }
 }
 
 /* Ensure placeholder text is legible and distinct */
