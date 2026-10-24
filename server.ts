@@ -13,7 +13,6 @@ import { createServer as createViteServer } from 'vite';
 import { v4 as uuidv4 } from 'uuid';
 import pg from 'pg';
 const { Pool } = pg;
-import cors from 'cors';
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 
@@ -1059,15 +1058,11 @@ async function startServer() {
     next();
   });
 
-  app.use(cors({
-    origin: true,
-    credentials: true
-  }));
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
   // Health / Keep-alive wake-up endpoints
-  app.get(['/api', '/api/', '/api/health'], (req, res) => {
+  app.get(['/api', '/api/', '/api/health', '/health'], (req, res) => {
     res.json({ status: 'ok', server: 'Ordina Backend', timestamp: new Date().toISOString() });
   });
   app.get('/api/ping', (req, res) => {

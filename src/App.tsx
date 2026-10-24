@@ -1063,24 +1063,22 @@ function AppContent() {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s ping per mirror
             
-            const healthUrl = `${candidate}/api/health`;
+            const healthUrl = `${candidate}/health`;
             const res = await fetch(healthUrl, {
               method: 'GET',
               signal: controller.signal,
               headers: { 'Accept': 'application/json' },
-              mode: 'cors'
+              // mode: 'cors' removed - causes issues in Capacitor WebView
             });
             clearTimeout(timeoutId);
 
             if (res.ok) {
-              const data = await res.json().catch(() => null);
-              if (data && data.status === 'ok' && data.server === 'Ordina Backend') {
-                success = true;
-                localStorage.setItem('ordina_active_mirror', candidate);
-                setActiveServerUrl(candidate);
-                console.log('[WakeUp] Backend server is active at', candidate);
-                break;
-              }
+              // Accept any 2xx response, don't require specific JSON structure
+              success = true;
+              localStorage.setItem('ordina_active_mirror', candidate);
+              setActiveServerUrl(candidate);
+              console.log('[WakeUp] Backend server is active at', candidate);
+              break;
             }
           } catch (err: any) {
             console.log(`[WakeUp] Mirror ${candidate} unreachable (attempt ${attempts}/${maxAttempts}):`, err?.message || err);
