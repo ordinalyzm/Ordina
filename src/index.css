@@ -98,21 +98,22 @@ select {
   caret-color: #3b82f6 !important;
 }
 
-/* Explicit fallback guaranteeing text typed in chat, search, forms is always legible */
+/* Dark mode: force visible text color on white inputs (bg-white) */
 .dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
-.dark textarea {
-  color: #f8fafc;
+.dark textarea,
+.dark select {
+  color: #1e293b !important; /* slate-800 - visible on white */
 }
 
-/* Ensure placeholder text is legible and distinct */
+/* Explicit fallback guaranteeing text typed in chat, search, forms is always legible */
 ::placeholder {
   opacity: 0.75;
+  color: #94a3b8 !important; /* slate-400 */
 }
 
-/* Highlighted message pulsing glow animation */
-@keyframes msgReplyPulse {
+/* Highlighted message pulsing glow animation */keyframes msgReplulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
+   -shadow: 0 0 0 0 rgba(245, 158, 11, 0.7);
     transform: scale(1);
   }
   50% {
