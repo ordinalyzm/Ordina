@@ -63,6 +63,7 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [isFrontCamera, setIsFrontCamera] = useState<boolean>(true);
+const [screenShareWarningShown, setScreenShareWarningShown] = useState(false);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -490,6 +491,7 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
         screenStreamRef.current = null;
       }
       setIsScreenShare(false);
+      setScreenShareWarningShown(false);
       socket?.emit('voice-room:media-update', { roomId, uid: currentUser.uid, isScreenShare: false });
       
       // Restore camera if active
@@ -503,36 +505,45 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
         }
       }
     } else {
-      try {
-        if (!navigator.mediaDevices.getDisplayMedia) return;
-        const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        screenStreamRef.current = stream;
-        const screenTrack = stream.getVideoTracks()[0];
+      // Show warning dialog first before starting screen share
+      setScreenShareWarningShown(true);
+    }
+  };
 
-        screenTrack.onended = () => {
-          toggleScreenShare();
-        };
-
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-        }
-
-        peersRef.current.forEach(pc => {
-          const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(screenTrack);
-          } else if (localStreamRef.current) {
-            pc.addTrack(screenTrack, localStreamRef.current);
-          }
-        });
-
-        setIsScreenShare(true);
-        setActiveStageUid(currentUser.uid);
-        socket?.emit('voice-room:media-update', { roomId, uid: currentUser.uid, isScreenShare: true });
-        triggerHapticFeedback([60]);
-      } catch (e) {
-        console.warn('Screen share cancelled:', e);
+  const confirmScreenShare = async () => {
+    setScreenShareWarningShown(false);
+    try {
+      if (!navigator.mediaDevices.getDisplayMedia) {
+        console.warn('getDisplayMedia not supported');
+        return;
       }
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      screenStreamRef.current = stream;
+      const screenTrack = stream.getVideoTracks()[0];
+
+      screenTrack.onended = () => {
+        toggleScreenShare();
+      };
+
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      peersRef.current.forEach(pc => {
+        const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+        if (sender) {
+          sender.replaceTrack(screenTrack);
+        } else if (localStreamRef.current) {
+          pc.addTrack(screenTrack, localStreamRef.current);
+        }
+      });
+
+      setIsScreenShare(true);
+      setActiveStageUid(currentUser.uid);
+      socket?.emit('voice-room:media-update', { roomId, uid: currentUser.uid, isScreenShare: true });
+      triggerHapticFeedback([60]);
+    } catch (e) {
+      console.warn('Screen share cancelled:', e);
     }
   };
 
@@ -552,6 +563,45 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
     playCallEndTone();
     onLeave();
   };
+
+  // ==========================================
+  // SCREEN SHARE WARNING DIALOG
+  // ==========================================
+  if (screenShareWarningShown) {
+    return (
+      <div className="fixed inset-0 z-[10020] bg-black/60 backdrop-blur-sm flex items-center justify-center">
+        <div className="bg-slate-900 border border-slate-700/80 rounded-3xl p-6 sm:p-8 max-w-md w-full mx-4 shadow-2xl">
+          <div className="flex items-start gap-4">
+            <div className="w-12 h-12 rounded-2xl bg-amber-500/20 flex items-center justify-center shrink-0">
+              <MonitorUp size={28} className="text-amber-400" />
+            </div>
+            <div className="flex-1">
+              <h3 className="text-lg font-bold text-white mb-2">Демонстрация экрана</h3>
+              <p className="text-slate-400 text-sm mb-6 leading-relaxed">
+                Вы собираетесь транслировать содержимое своего экрана всем участникам звонка. Убедитесь, что на экране нет конфиденциальной информации (пароли, личные сообщения, банковские данные).
+              </p>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => setScreenShareWarningShown(false)}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-slate-300 text-sm font-medium hover:bg-slate-700 transition-colors"
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmScreenShare}
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-blue-600 border border-blue-500/50 text-white text-sm font-medium hover:bg-blue-500 transition-colors shadow-lg shadow-blue-500/20"
+                >
+                  Начать показ экрана
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isOpen) return null;
 
@@ -715,204 +765,263 @@ export const GroupCallModal: React.FC<GroupCallModalProps> = ({
 
       {/* Main Call Stage Area */}
       <div className="flex-1 flex flex-col min-h-0 bg-slate-950 overflow-hidden relative">
-        {/* If Spotlight Mode or someone has Video / Screen Share */}
-        {spotlightUser ? (
-          <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
-            {/* Center Stage Screen */}
-            <div className="flex-1 bg-black relative flex items-center justify-center overflow-hidden min-h-[220px]">
-              {spotlightUser.isVideo || spotlightUser.isScreenShare ? (
-                <video
-                  ref={spotlightUser.uid === currentUser.uid ? localVideoRef : stageVideoRef}
-                  autoPlay
-                  playsInline
-                  muted={spotlightUser.uid === currentUser.uid}
-                  className="w-full h-full object-contain"
-                />
-              ) : (
-                /* Audio Only Spotlight Avatar */
-                <div className="flex flex-col items-center justify-center p-6 text-center">
-                  <div className="relative mb-4">
-                    <div className={`w-28 sm:w-36 h-28 sm:h-36 rounded-full overflow-hidden bg-slate-900 border-4 transition-all duration-300 shadow-2xl flex items-center justify-center ${
-                      spotlightUser.isSpeaking ? 'border-emerald-400 ring-8 ring-emerald-500/20 scale-105' : 'border-slate-800'
-                    }`}>
-                      {spotlightUser.photoURL ? (
-                        <img src={spotlightUser.photoURL} alt="" className="w-full h-full object-cover" />
-                      ) : (
-                        <span className="text-4xl sm:text-5xl font-black text-emerald-400">
-                          {spotlightUser.displayName?.[0] || 'U'}
-                        </span>
-                      )}
-                    </div>
-                    {spotlightUser.isSpeaking && (
-                      <div className="absolute -inset-3 rounded-full border border-emerald-400/50 animate-ping pointer-events-none" />
-                    )}
-                  </div>
-                  <h3 className="text-xl font-bold text-white mb-1">{spotlightUser.displayName}</h3>
-                  <p className="text-xs text-emerald-400 font-medium">
-                    {spotlightUser.isSpeaking ? 'Говорит прямо сейчас...' : 'На сцене'}
-                  </p>
+        {/* Discord-like layout: 0=grid of avatars, 1=full spotlight + bottom row, 2=split 50/50, 3+=grid of video */}
+        {(() => {
+          const activeSharers = participants.filter(p => p.isVideo || p.isScreenShare);
+
+          // 0 active sharers — grid of avatars for everyone
+          if (activeSharers.length === 0) {
+            return (
+              <div className="flex-1 p-6 sm:p-8 overflow-y-auto custom-scrollbar">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 max-w-7xl mx-auto">
+                  {participants.map(p => {
+                    const isMe = p.uid === currentUser.uid;
+                    return (
+                      <motion.div
+                        key={p.uid}
+                        layout
+                        initial={{ scale: 0.9, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        onClick={() => setActiveStageUid(p.uid)}
+                        className={`relative rounded-3xl p-4 flex flex-col items-center justify-center transition-all duration-200 border cursor-pointer group overflow-hidden ${p.isSpeaking ? 'bg-slate-900 border-emerald-500 shadow-xl shadow-emerald-500/10 ring-2 ring-emerald-500/40' : 'bg-slate-900/70 border-slate-800/80 hover:bg-slate-900 hover:border-slate-700'} min-h-[160px] sm:min-h-[180px]`}
+                      >
+                        <div className="relative my-3 z-10">
+                          <div className={`w-20 h-20 sm:w-24 sm:h-24 rounded-full overflow-hidden bg-slate-800 flex items-center justify-center transition-all ${p.isSpeaking ? 'ring-4 ring-emerald-400 scale-105 shadow-lg shadow-emerald-500/30' : 'border-2 border-slate-700'}`}>
+                            {p.photoURL ? (
+                              <img src={p.photoURL} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-3xl font-black text-slate-300">{p.displayName?.[0] || 'U'}</span>
+                            )}
+                          </div>
+                          {p.isSpeaking && (
+                            <div className="absolute -inset-2.5 rounded-full border-2 border-emerald-400/50 animate-ping pointer-events-none" />
+                          )}
+                          <div className={`absolute -bottom-1 -right-1 p-0.5 rounded-full ${p.isMuted ? 'bg-rose-500' : 'bg-emerald-500'}`}>
+                            {p.isMuted ? <MicOff size={10} className="text-white" /> : <Mic size={10} className="text-white" />}
+                          </div>
+                        </div>
+                        <p className="text-xs font-bold text-white truncate w-full text-center drop-shadow-sm">
+                          {p.displayName} {isMe && '(Вы)'}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate w-full text-center">
+                          {p.isSpeaking ? (
+                            <span className="text-emerald-400 font-bold animate-pulse">Говорит...</span>
+                          ) : p.isMuted ? (
+                            'Без звука'
+                          ) : (
+                            'Слушает'
+                          )}
+                        </p>
+                      </motion.div>
+                    );
+                  })}
                 </div>
-              )}
-
-              {/* Spotlight Overlay Badge */}
-              <div className="absolute top-3 left-3 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs font-bold flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="truncate max-w-[150px]">{spotlightUser.displayName}</span>
-                {spotlightUser.isScreenShare && (
-                  <span className="text-[10px] bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-mono">ЭКРАН</span>
-                )}
-                {spotlightUser.isVideo && !spotlightUser.isScreenShare && (
-                  <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-mono">КАМЕРА</span>
-                )}
               </div>
-            </div>
+            );
+          }
 
-            {/* Sidebar / Bottom Carousel of Other Participants */}
-            <div className="h-32 md:h-auto md:w-64 border-t md:border-t-0 md:border-l border-slate-800 bg-slate-900/60 p-3 overflow-x-auto md:overflow-y-auto flex md:flex-col gap-2.5 custom-scrollbar shrink-0">
-              {participants.map(p => {
-                const isMe = p.uid === currentUser.uid;
-                const isSelected = p.uid === spotlightUser.uid;
-                return (
-                  <div
-                    key={p.uid}
-                    onClick={() => setActiveStageUid(p.uid)}
-                    className={`rounded-2xl p-2.5 flex items-center gap-2.5 cursor-pointer transition-all border shrink-0 min-w-[140px] md:min-w-0 ${
-                      isSelected 
-                        ? 'bg-blue-600/20 border-blue-500 text-white shadow-md' 
-                        : 'bg-slate-900/80 border-slate-800 hover:bg-slate-800 text-slate-300'
-                    }`}
-                  >
-                    <div className="relative shrink-0">
-                      <div className={`w-10 h-10 rounded-xl overflow-hidden bg-slate-800 flex items-center justify-center ${
-                        p.isSpeaking ? 'ring-2 ring-emerald-400' : ''
-                      }`}>
-                        {p.photoURL ? (
-                          <img src={p.photoURL} alt="" className="w-full h-full object-cover" />
+          // 1 active sharer — full-screen spotlight + bottom row of others
+          if (activeSharers.length === 1) {
+            const [sharer] = activeSharers;
+            const stream = sharer.uid === currentUser.uid ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[sharer.uid];
+            const others = participants.filter(p => p.uid !== sharer.uid);
+
+            return (
+              <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <div className="flex-1 bg-black relative flex items-center justify-center">
+                  {stream ? (
+                    <video
+                      ref={sharer.uid === currentUser.uid ? localVideoRef : stageVideoRef}
+                      autoPlay
+                      playsInline
+                      muted={sharer.uid === currentUser.uid}
+                      className="w-full h-full object-contain"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center p-6 text-center">
+                      <div className="w-40 h-40 rounded-full bg-slate-900 border-4 flex items-center justify-center">
+                        {sharer.photoURL ? (
+                          <img src={sharer.photoURL} alt="" className="w-full h-full object-cover" />
                         ) : (
-                          <span className="text-sm font-bold text-slate-200">{p.displayName?.[0]}</span>
+                          <span className="text-6xl font-black text-emerald-400">{sharer.displayName?.[0] || 'U'}</span>
                         )}
                       </div>
-                      <div className={`absolute -bottom-1 -right-1 p-0.5 rounded-full ${p.isMuted ? 'bg-rose-500' : 'bg-emerald-500'}`}>
-                        {p.isMuted ? <MicOff size={9} className="text-white" /> : <Mic size={9} className="text-white" />}
-                      </div>
+                      <h3 className="text-2xl font-bold text-white mt-4">{sharer.displayName}</h3>
+                      <p className="text-emerald-400 text-sm">{sharer.isScreenShare ? 'Демонстрация экрана' : 'Видео с камеры'}</p>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <p className="text-xs font-bold truncate">{p.displayName} {isMe && '(Вы)'}</p>
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {p.isSpeaking ? <span className="text-emerald-400">Говорит</span> : p.isMuted ? 'Без звука' : 'Слушает'}
-                      </p>
-                    </div>
+                  )}
+                  <div className="absolute top-4 left-4 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs font-bold flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="truncate">{sharer.displayName}</span>
+                    {sharer.isScreenShare && (
+                      <span className="text-[10px] bg-purple-500/30 text-purple-300 px-1.5 py-0.5 rounded font-mono">ЭКРАН</span>
+                    )}
+                    {sharer.isVideo && !sharer.isScreenShare && (
+                      <span className="text-[10px] bg-blue-500/30 text-blue-300 px-1.5 py-0.5 rounded font-mono">КАМЕРА</span>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          /* Grid View Mode */
-          <div className="flex-1 p-4 sm:p-6 overflow-y-auto custom-scrollbar">
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 max-w-6xl mx-auto">
-              {participants.map((p) => {
-                const isMe = p.uid === currentUser.uid;
-                const hasVideo = p.isVideo || p.isScreenShare;
-                const stream = isMe ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[p.uid];
+                </div>
+                <div className="h-20 border-t border-slate-800 bg-slate-900/60 p-2 overflow-x-auto custom-scrollbar flex gap-2">
+                  {others.map(p => {
+                    const isMe = p.uid === currentUser.uid;
+                    const hasStream = p.uid === currentUser.uid ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[p.uid];
+                    return (
+                      <div
+                        key={p.uid}
+                        onClick={() => setActiveStageUid(p.uid)}
+                        className={`rounded-2xl p-1.5 flex items-center gap-2 cursor-pointer transition-all border shrink-0 w-48 ${p.uid === sharer.uid ? 'bg-blue-600/20 border-blue-500 text-white shadow-md' : 'bg-slate-900/80 border-slate-800 hover:bg-slate-800 text-slate-300'}`}
+                      >
+                        <div className="relative shrink-0">
+                          <div className={`w-12 h-12 rounded-xl overflow-hidden bg-slate-800 flex items-center justify-center ${p.isSpeaking ? 'ring-2 ring-emerald-400' : ''}`}>
+                            {hasStream ? (
+                              <video autoPlay playsInline muted className="w-full h-full object-cover" />
+                            ) : p.photoURL ? (
+                              <img src={p.photoURL} alt="" className="w-full h-full object-cover" />
+                            ) : (
+                              <span className="text-sm font-bold text-slate-200">{p.displayName?.[0]}</span>
+                            )}
+                          </div>
+                          <div className={`absolute -bottom-1 -right-1 p-0.5 rounded-full ${p.isMuted ? 'bg-rose-500' : 'bg-emerald-500'}`}>
+                            {p.isMuted ? <MicOff size={9} className="text-white" /> : <Mic size={9} className="text-white" />}
+                          </div>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold truncate">{p.displayName} {isMe && '(Вы)'}</p>
+                          <p className="text-[10px] text-slate-400 truncate">
+                            {p.isSpeaking ? <span className="text-emerald-400">Говорит</span> : p.isMuted ? 'Без звука' : 'Слушает'}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
 
-                return (
-                  <motion.div
-                    key={p.uid}
-                    layout
-                    initial={{ scale: 0.9, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    onClick={() => setActiveStageUid(p.uid)}
-                    className={`relative rounded-3xl p-3 sm:p-4 flex flex-col items-center justify-between transition-all duration-200 border cursor-pointer group overflow-hidden ${
-                      p.isSpeaking 
-                        ? 'bg-slate-900 border-emerald-500 shadow-xl shadow-emerald-500/10 ring-2 ring-emerald-500/40' 
-                        : 'bg-slate-900/70 border-slate-800/80 hover:bg-slate-900 hover:border-slate-700'
-                    } min-h-[160px] sm:min-h-[180px]`}
-                  >
-                    {/* Video Stream Background (if available) */}
-                    {hasVideo && stream && (
+          // 2 active sharers — split 50/50
+          if (activeSharers.length === 2) {
+            const [left, right] = activeSharers;
+            const leftStream = left.uid === currentUser.uid ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[left.uid];
+            const rightStream = right.uid === currentUser.uid ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[right.uid];
+
+            return (
+              <div className="flex-1 flex min-h-0 overflow-hidden bg-black">
+                <div
+                  className="flex-1 relative"
+                  onClick={() => setActiveStageUid(left.uid)}
+                >
+                  {leftStream ? (
+                    <video autoPlay playsInline muted={left.uid === currentUser.uid} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-slate-900 flex items-center justify-center text-slate-500 text-sm">
+                      {left.displayName}
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 left-3 px-3 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs font-bold">
+                    {left.displayName} {left.isScreenShare ? ' • ЭКРАН' : ' • КАМЕРА'}
+                  </div>
+                </div>
+                <div
+                  className="flex-1 relative"
+                  onClick={() => setActiveStageUid(right.uid)}
+                >
+                  {rightStream ? (
+                    <video autoPlay playsInline muted={right.uid === currentUser.uid} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full bg-slate-900 flex items-center justify-center text-slate-500 text-sm">
+                      {right.displayName}
+                    </div>
+                  )}
+                  <div className="absolute bottom-3 left-3 px-3 py-1 rounded-xl bg-black/60 backdrop-blur-md border border-white/10 text-xs font-bold">
+                    {right.displayName} {right.isScreenShare ? ' • ЭКРАН' : ' • КАМЕРА'}
+                  </div>
+                </div>
+              </div>
+            );
+          }
+
+          // 3+ active sharers — grid of video streams
+          return (
+            <div className="flex-1 p-4 sm:p-6 overflow-y-auto custom-scrollbar">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4 max-w-7xl mx-auto">
+                {activeSharers.map(p => {
+                  const isMe = p.uid === currentUser.uid;
+                  const stream = isMe ? (screenStreamRef.current || localStreamRef.current) : remoteStreams[p.uid];
+
+                  return (
+                    <motion.div
+                      key={p.uid}
+                      layout
+                      initial={{ scale: 0.9, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      onClick={() => setActiveStageUid(p.uid)}
+                      className={`relative rounded-3xl p-3 sm:p-4 flex flex-col items-center justify-between transition-all duration-200 border cursor-pointer group overflow-hidden ${p.isSpeaking ? 'bg-slate-900 border-emerald-500 shadow-xl shadow-emerald-500/10 ring-2 ring-emerald-500/40' : 'bg-slate-900/70 border-slate-800/80 hover:bg-slate-900 hover:border-slate-700'} min-h-[160px] sm:min-h-[180px]`}
+                    >
                       <div className="absolute inset-0 z-0 bg-black">
-                        <video
-                          autoPlay
-                          playsInline
-                          muted={isMe}
-                          ref={el => {
-                            if (el && el.srcObject !== stream) el.srcObject = stream;
-                          }}
-                          className="w-full h-full object-cover"
-                        />
+                        {stream ? (
+                          <video
+                            autoPlay
+                            playsInline
+                            muted={isMe}
+                            ref={el => {
+                              if (el && el.srcObject !== stream) el.srcObject = stream;
+                            }}
+                            className="w-full h-full object-cover"
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center text-slate-500 text-xs">
+                            Нет потока
+                          </div>
+                        )}
                         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/40 pointer-events-none" />
                       </div>
-                    )}
 
-                    {/* Top Status Badges */}
-                    <div className="w-full flex items-center justify-between gap-1 text-[11px] relative z-10">
-                      <div className="flex items-center gap-1">
-                        {p.hasRaisedHand && (
-                          <span className="p-1 rounded-lg bg-amber-500/30 text-amber-300 border border-amber-500/40 animate-bounce" title="Поднял(а) руку">
-                            <Hand size={13} />
-                          </span>
-                        )}
-                        {p.isScreenShare && (
-                          <span className="p-1 rounded-lg bg-purple-500/30 text-purple-300 border border-purple-500/40" title="Демонстрация экрана">
-                            <MonitorUp size={13} />
-                          </span>
-                        )}
-                        {p.isVideo && !p.isScreenShare && (
-                          <span className="p-1 rounded-lg bg-blue-500/30 text-blue-300 border border-blue-500/40" title="Камера включена">
-                            <Video size={13} />
-                          </span>
-                        )}
-                      </div>
-
-                      <div className={`p-1 rounded-lg backdrop-blur-md ${
-                        p.isMuted ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                      }`}>
-                        {p.isMuted ? <MicOff size={13} /> : <Mic size={13} />}
-                      </div>
-                    </div>
-
-                    {/* Avatar with Speaking Ring (hidden if video active) */}
-                    {!hasVideo && (
-                      <div className="relative my-3 z-10">
-                        <div className={`w-18 h-18 sm:w-20 sm:h-20 rounded-full overflow-hidden bg-slate-800 flex items-center justify-center transition-all ${
-                          p.isSpeaking ? 'ring-4 ring-emerald-400 scale-105 shadow-lg shadow-emerald-500/30' : 'border-2 border-slate-700'
-                        }`}>
-                          {p.photoURL ? (
-                            <img src={p.photoURL} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            <span className="text-2xl font-black text-slate-300">
-                              {p.displayName?.[0] || 'U'}
+                      <div className="w-full flex items-center justify-between gap-1 text-[11px] relative z-10">
+                        <div className="flex items-center gap-1">
+                          {p.hasRaisedHand && (
+                            <span className="p-1 rounded-lg bg-amber-500/30 text-amber-300 border border-amber-500/40 animate-bounce" title="Поднял(а) руку">
+                              <Hand size={13} />
+                            </span>
+                          )}
+                          {p.isScreenShare && (
+                            <span className="p-1 rounded-lg bg-purple-500/30 text-purple-300 border border-purple-500/40" title="Демонстрация экрана">
+                              <MonitorUp size={13} />
+                            </span>
+                          )}
+                          {p.isVideo && !p.isScreenShare && (
+                            <span className="p-1 rounded-lg bg-blue-500/30 text-blue-300 border border-blue-500/40" title="Камера включена">
+                              <Video size={13} />
                             </span>
                           )}
                         </div>
-                        {p.isSpeaking && (
-                          <div className="absolute -inset-2.5 rounded-full border-2 border-emerald-400/50 animate-ping pointer-events-none" />
-                        )}
-                      </div>
-                    )}
 
-                    {/* Participant Name & Status */}
-                    <div className="w-full truncate text-center relative z-10 pt-2">
-                      <p className="text-xs font-bold text-white truncate drop-shadow-sm">
-                        {p.displayName} {isMe && '(Вы)'}
-                      </p>
-                      <p className="text-[10px] text-slate-400 truncate">
-                        {p.isSpeaking ? (
-                          <span className="text-emerald-400 font-bold animate-pulse">Говорит...</span>
-                        ) : p.isMuted ? (
-                          'Без звука'
-                        ) : (
-                          'Слушает'
-                        )}
-                      </p>
-                    </div>
-                  </motion.div>
-                );
-              })}
+                        <div className={`p-1 rounded-lg backdrop-blur-md ${p.isMuted ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}>
+                          {p.isMuted ? <MicOff size={13} /> : <Mic size={13} />}
+                        </div>
+                      </div>
+
+                      <div className="w-full truncate text-center relative z-10 pt-2">
+                        <p className="text-xs font-bold text-white truncate drop-shadow-sm">
+                          {p.displayName} {isMe && '(Вы)'}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {p.isSpeaking ? (
+                            <span className="text-emerald-400 font-bold animate-pulse">Говорит...</span>
+                          ) : p.isMuted ? (
+                            'Без звука'
+                          ) : (
+                            'Слушает'
+                          )}
+                        </p>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Bottom Floating Control Dock */}
