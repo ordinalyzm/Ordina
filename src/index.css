@@ -98,11 +98,18 @@ select {
   caret-color: #3b82f6 !important;
 }
 
-/* Dark mode: force visible text color on white inputs (bg-white) */
-.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]),
-.dark textarea,
-.dark select {
+/* Dark mode: force visible text color on LIGHT-background inputs (bg-white, bg-slate-50, etc.) */
+.dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]):not([type="file"]):not(.dark-bg),
+.dark textarea:not(.dark-bg),
+.dark select:not(.dark-bg) {
   color: #1e293b !important; /* slate-800 - visible on white */
+}
+
+/* Dark mode: force visible text color on DARK-background inputs (bg-slate-800, bg-slate-900, etc.) */
+.dark input.dark-bg,
+.dark textarea.dark-bg,
+.dark select.dark-bg {
+  color: #f1f5f9 !important; /* slate-100 - visible on dark */
 }
 
 /* Explicit fallback guaranteeing text typed in chat, search, forms is always legible */

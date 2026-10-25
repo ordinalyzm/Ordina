@@ -12843,7 +12843,7 @@ function AppContent() {
                             zIndex: 10,
                             opacity: 1
                           }}
-                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm leading-5 box-border py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-medium outline-none caret-blue-500 dark:caret-amber-400 relative z-10"
+                          className="flex-1 w-full min-w-0 bg-transparent border-none focus:ring-0 text-sm leading-5 box-border py-2 px-2 resize-none max-h-36 overflow-y-auto text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 font-medium outline-none caret-blue-500 dark:caret-amber-400 relative z-10 dark-bg"
                           value={inputText}
                           onChange={(e) => {
                             setInputText(e.target.value);
