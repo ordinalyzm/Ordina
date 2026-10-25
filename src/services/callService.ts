@@ -64,6 +64,7 @@ export class CallService {
   private localAnalyser: AnalyserNode | null = null;
   private remoteAnalyser: AnalyserNode | null = null;
   private pendingCandidates: RTCIceCandidateInit[] = [];
+  private pendingOffer: RTCSessionDescriptionInit | null = null;
   private isFrontCamera: boolean = true;
   private durationInterval: any = null;
   private iceRestartAttempts: number = 0;
@@ -164,8 +165,32 @@ export class CallService {
       await this.initLocalMedia(this.currentCall.isVideo);
       this.createPeerConnection();
 
-      // If we already received offer while ringing, process pending candidates
-      if (this.pendingCandidates.length > 0) {
+      // If we received offer while ringing, process it now with local tracks ready
+      if (this.pendingOffer && this.pc) {
+        try {
+          await this.pc.setRemoteDescription(new RTCSessionDescription(this.pendingOffer));
+          // Flush any queued ICE candidates
+          while (this.pendingCandidates.length > 0) {
+            const c = this.pendingCandidates.shift();
+            if (c) await this.pc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+          }
+
+          const answer = await this.pc.createAnswer();
+          await this.pc.setLocalDescription(answer);
+
+          if (this.onSignal) {
+            this.onSignal(this.currentCall.partner.uid, {
+              type: 'answer',
+              sdp: answer,
+              callId: this.currentCall.callId
+            });
+          }
+        } catch (e) {
+          console.error('Error handling queued WebRTC offer:', e);
+        }
+        this.pendingOffer = null;
+      } else if (this.pendingCandidates.length > 0) {
+        // No pending offer, just flush candidates (shouldn't happen but safe)
         for (const c of this.pendingCandidates) {
           await this.pc?.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
         }
@@ -362,6 +387,12 @@ export class CallService {
     if (!this.currentCall) return;
 
     if (data.type === 'offer') {
+      // If we don't have local media yet (incoming call not accepted), queue the offer
+      if (!this.localStream && this.state === 'incoming_ringing') {
+        this.pendingOffer = data.sdp;
+        return;
+      }
+
       this.createPeerConnection();
       if (!this.pc) return;
       try {
@@ -648,6 +679,7 @@ export class CallService {
 
     this.remoteStream = null;
     this.pendingCandidates = [];
+    this.pendingOffer = null;
     this.iceRestartAttempts = 0;
     this.currentCall = null;
     this.isMuted = false;
