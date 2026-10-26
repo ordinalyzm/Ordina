@@ -405,8 +405,11 @@ function ToastsContainer({ toasts }: { toasts: { id: string, message: string, ty
 }
 
 const SERVER_MIRRORS = [
-  'https://ordina-zeta.vercel.app',
+  // Backend mirrors (Express + Socket.io), NOT frontend
+  // Add your actual backend deployment URLs here:
   'https://ordina-server.onrender.com',
+  // 'https://ordina-api.railway.app',
+  // 'https://ordina-backend.fly.dev',
 ];
 
 export const DEFAULT_CLOUD_SERVER = SERVER_MIRRORS[0];
@@ -1061,7 +1064,7 @@ function AppContent() {
         for (const candidate of candidates) {
           try {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s ping per mirror
+            const timeoutId = setTimeout(() => controller.abort(), 35000); // 35s per mirror — Render cold start can take 30s+
             
             const healthUrl = `${candidate}/health`;
             const res = await fetch(healthUrl, {
